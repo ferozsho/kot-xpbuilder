@@ -80,20 +80,28 @@ secret_keys=(
     POSTGRES_PASSWORD SUPERSET_REDIS_PASSWORD SUPERSET_SECRET_KEY
     GUEST_TOKEN_JWT_SECRET SUPERSET_ADMIN_PASSWORD
 )
-# A greenfield stack generates its own secrets with a 16-character floor. A
-# stack adopting pre-existing volumes (XPBUILDER_VOLUMES_EXTERNAL=true) keeps
-# the EXISTING credentials verbatim so the adopted volumes keep working — those
+# Greenfield floor is 16 characters for the infrastructure secrets. The
+# administrator password is a human-facing credential that is often fixed by a
+# site requirement, so it only has to clear a basic 8-character floor. A stack
+# adopting pre-existing volumes (XPBUILDER_VOLUMES_EXTERNAL=true) keeps the
+# EXISTING credentials verbatim so the adopted volumes keep working — those
 # values may legitimately be shorter (e.g. postgres 'superset'), so only
 # require them to be present and warn when they are below the normal floor.
 if [ "$external" = "true" ]; then
-    min_secret_len=1
+    infra_min_len=1
+    admin_min_len=1
 else
-    min_secret_len=16
+    infra_min_len=16
+    admin_min_len=8
 fi
 for key in "${secret_keys[@]}"; do
+    floor="$infra_min_len"
+    if [ "$key" = "SUPERSET_ADMIN_PASSWORD" ]; then
+        floor="$admin_min_len"
+    fi
     value="$(value_of "$key")"
-    if [ "${#value}" -lt "$min_secret_len" ]; then
-        echo "ERROR: $key must contain at least $min_secret_len characters" >&2
+    if [ "${#value}" -lt "$floor" ]; then
+        echo "ERROR: $key must contain at least $floor characters" >&2
         exit 1
     fi
     if [ "$external" = "true" ] && [ "${#value}" -lt 16 ]; then

@@ -43,7 +43,31 @@ The following values are secrets and must exist only in `.env`:
 
 The matching usernames, database name, administrator identity, and origins are
 also declared in `.env`. `bin/bootstrap-env.sh` generates all secrets; fresh
-stacks require at least 16 characters per secret.
+stacks require at least 16 characters for the infrastructure secrets
+(`SUPERSET_SECRET_KEY`, `GUEST_TOKEN_JWT_SECRET`, `SUPERSET_REDIS_PASSWORD`,
+`POSTGRES_PASSWORD`) and at least 8 for `SUPERSET_ADMIN_PASSWORD`, which is a
+site-chosen, human-facing credential.
+
+Changing `SUPERSET_ADMIN_USERNAME` / `SUPERSET_ADMIN_PASSWORD` in `.env` only
+affects future initializations — it never rewrites an existing account. To
+change the credentials of a running stack's administrator, update the metadata
+database as well:
+
+```bash
+# rename the account (keeps its id, role, and dashboard ownership)
+docker exec <instance>_superset /app/.venv/bin/python -c "
+from superset.app import create_app
+app = create_app()
+with app.app_context():
+    from superset import security_manager, db
+    user = security_manager.find_user(username='<old-username>')
+    user.username = '<new-username>'
+    db.session.commit()
+"
+# set the new password
+docker exec <instance>_superset superset fab reset-password \
+    --username <new-username> --password '<new-password>'
+```
 
 ## Mutation gates
 
