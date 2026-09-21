@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# kot5 client operations wrapper — the only privileged entry point for the
+# client account. It always uses the provider-approved compose definition and
+# pins the infrastructure keys, so client edits to compose.yml (or to those
+# keys in .env) cannot redirect the stack at other data or reach the host.
+# Uses only bash + coreutils + sed so it also works inside the client jail.
+#
+# Tracked here as the source of truth; install on the server with:
+#   install -o root -g root -m 0755 ops/kot5 /usr/local/bin/kot5
+# The sudoers grant is /etc/sudoers.d/kotbuilder:
+#   kotbuilder ALL=(root) NOPASSWD: /usr/local/bin/kot5 *
+set -euo pipefail
+
+PROJECT=kot5
+APPROVED_COMPOSE=/etc/kot5/compose.yml
+PINNED_ENV=/etc/kot5/pinned.env
+CLIENT_ENV=/var/www/kot-xpbuilder/.env
+WORK_ENV=/run/kot5-client/effective.env
+BACKUP_DIR=/var/www/kot-xpbuilder/backups
+WEB_PORT=9010
+# Uploaded CSV/Excel files are stored in this database inside the metadata
+# PostgreSQL instance (must match docker/ensure_uploads_db.py).
+UPLOAD_DB=xpbuilder_uploads
+
+usage() {
+    cat <<'TXT'
+kot5 — kot5 Superset stack operations
+
+Usage: sudo kot5 <command>
+
+  status          Show the stack containers and their state
+  health          Verify the web endpoint and container health
+  logs [service]  Show recent logs (default: superset, last 200 lines)
+  up              Start / converge the stack
+  down            Stop the stack (data volumes are kept)
+  restart         Restart the web, worker and beat containers
+  config          Show the pinned infrastructure settings
+  backup          Dump the Superset metadata and uploaded data into ./backups
+
+Restoring a backup is a provider action: hand over the whole backup set
+(metadata + uploads dump) so no uploaded data is lost.
+
+Container shell/exec is intentionally not available.
+TXT
+}
+
+prepare_env() {
+    install -d -m 0700 /run/kot5-client
+    local pinned_keys key line
+    pinned_keys="$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$PINNED_ENV")"
+    : > "$WORK_ENV"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|'#'*) printf '%s\n' "$line" >> "$WORK_ENV"; continue ;;
+        esac
+        key="${line%%=*}"
+        if [[ $'\n'"$pinned_keys"$'\n' == *$'\n'"$key"$'\n'* ]]; then
+            continue
+        fi
+        printf '%s\n' "$line" >> "$WORK_ENV"
+    done < "$CLIENT_ENV"
+    cat "$PINNED_ENV" >> "$WORK_ENV"
+    chmod 600 "$WORK_ENV"
+}
+
+compose() {
+    docker compose --env-file "$WORK_ENV" -f "$APPROVED_COMPOSE" -p "$PROJECT" "$@"
+}
+
+[ -f "$APPROVED_COMPOSE" ] || { echo "ERROR: approved compose file missing ($APPROVED_COMPOSE)" >&2; exit 1; }
+[ -f "$CLIENT_ENV" ] || { echo "ERROR: $CLIENT_ENV is missing" >&2; exit 1; }
+prepare_env
+
+case "${1:-}" in
+    status)  compose ps -a ;;
+    health)
+        compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
+        code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/health" || true)"
+        echo "web /health -> ${code}"
+        ;;
+    logs)
+        shift || true
+        if [ "$#" -gt 0 ]; then compose logs --tail=200 "$@"; else compose logs --tail=200 superset; fi
+        ;;
+    up)      compose up -d --wait --wait-timeout 420 ;;
+    down)    compose down ;;
+    restart) compose restart superset superset-worker superset-beat ;;
+    config)  sed -n '1,20p' "$PINNED_ENV"; echo; compose config --services ;;
+    backup)
+        install -d -m 0750 "$BACKUP_DIR"
+        stamp="$(date -u +%Y%m%d-%H%M%S)"
+        out="$BACKUP_DIR/kot5-metadata-$stamp.dump"
+        compose exec -T superset-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' > "$out"
+        chmod 0640 "$out"
+        ls -lh "$out"
+        # Uploaded files live in their own database; back it up as well so a
+        # restore keeps the files the client uploaded.
+        pg_user="$(sed -n 's/^POSTGRES_USER=//p' "$WORK_ENV")"
+        present="$(compose exec -T superset-db psql -U "$pg_user" -d postgres -tAc \
+            "SELECT 1 FROM pg_database WHERE datname = '$UPLOAD_DB'")"
+        if [ "$present" = "1" ]; then
+            data_out="$BACKUP_DIR/kot5-uploads-$stamp.dump"
+            compose exec -T superset-db pg_dump -U "$pg_user" -d "$UPLOAD_DB" \
+                --format=custom > "$data_out"
+            chmod 0640 "$data_out"
+            ls -lh "$data_out"
+        fi
+        ;;
+    *) usage; exit 2 ;;
+esac

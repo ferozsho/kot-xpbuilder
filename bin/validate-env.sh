@@ -2,7 +2,15 @@
 
 set -euo pipefail
 
-env_file="${1:-}"
+allow_group_env="no"
+env_file=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --allow-group-env) allow_group_env="yes"; shift ;;
+        *) env_file="$1"; shift ;;
+    esac
+done
+
 if [ -z "$env_file" ] || [ ! -f "$env_file" ]; then
     echo "ERROR: .env file not found: ${env_file:-<not provided>}" >&2
     exit 1
@@ -14,9 +22,20 @@ if [ "$(basename "$env_file")" != ".env" ]; then
 fi
 
 mode="$(stat -c '%a' "$env_file")"
-if [ $((10#$mode % 100)) -ne 0 ]; then
-    echo "ERROR: $env_file must not be readable or writable by group/other (use chmod 600)" >&2
+other_bits=$((10#$mode % 10))
+group_bits=$(( (10#$mode / 10) % 10 ))
+if [ "$other_bits" -ne 0 ]; then
+    echo "ERROR: $env_file must not be readable or writable by other users (use chmod 600)" >&2
     exit 1
+fi
+if [ "$group_bits" -ne 0 ]; then
+    if [ "$allow_group_env" != "yes" ]; then
+        echo "ERROR: $env_file (mode $mode) is accessible to its group; secrets must stay private" >&2
+        echo "       (use chmod 600), or pass --allow-group-env when a site deliberately" >&2
+        echo "       shares .env with a restricted group, for example a jailed client." >&2
+        exit 1
+    fi
+    echo "WARNING: $env_file is group-accessible (mode $mode); allowed by --allow-group-env" >&2
 fi
 
 duplicates="$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$env_file" | sort | uniq -d)"

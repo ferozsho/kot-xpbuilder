@@ -63,6 +63,7 @@ Only files whose basename is exactly `.env` are accepted.
 | `customizations/` | Branding images + tail-JS (logo link, "Clear all" fix) |
 | `docker/initialize.sh` | First-run metadata schema, admin, role sync |
 | `docker/ensure_uploads_db.py` | Idempotent provisioning of the built-in file-upload database |
+| `ops/kot5` | Privileged ops wrapper handed to a hosted client (see `ops/README.md`) |
 | `docker/patches/` | Export/verify vendored-source edits as patches |
 | `bin/xpbuilder` | CLI wrapper around `docker compose` |
 | `instances/<site>/.env` | One protected configuration per site (never committed) |
@@ -81,7 +82,7 @@ Only files whose basename is exactly `.env` are accepted.
 | `down` | Stop containers without deleting volumes |
 | `ps` | Show the actual Compose services, state, and ports |
 | `health` | Verify container health and the Superset health endpoint |
-| `backup` | Create a PostgreSQL metadata backup and manifest |
+| `backup` | Create a metadata + uploaded-data backup and manifest |
 | `restore` | Restore a selected backup with explicit confirmation |
 
 Configuration is documented in [docs/configuration.md](docs/configuration.md)
@@ -129,6 +130,13 @@ with app.app_context():
 Set `XPBUILDER_ENABLE_FILE_UPLOADS=no` to skip provisioning the built-in
 database, and enable uploads on an external connection instead (its **Advanced →
 Security** section has the **Allow file uploads to database** checkbox).
+
+Uploaded tables live in that database, so `bin/xpbuilder backup` dumps it
+alongside the Superset metadata (`uploads.dump` + `uploads_sha256` in the
+manifest) and `bin/xpbuilder restore` loads it back — otherwise a restore would
+silently drop the client's uploaded data. Backups taken by the hosted-client
+wrapper (`ops/kot5 backup`) contain the same two dumps, and a restore picks up
+any sibling `*uploads*.dump`, so both sources restore with one command.
 
 ## Compatibility
 

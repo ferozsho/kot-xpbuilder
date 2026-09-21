@@ -31,6 +31,20 @@ volumes.
 Set `XPBUILDER_VOLUMES_EXTERNAL=true` together with the exact existing volume
 names to adopt volumes from an earlier deployment.
 
+### Group-accessible `.env` files
+
+`.env` must normally be mode `600`; `bin/validate-env.sh` rejects anything
+readable or writable by group or other. Some hosted deployments deliberately
+share the file with a restricted group (for example a jailed client workspace
+that owns mode `660`), so provider commands take an explicit opt-in:
+
+```bash
+bin/xpbuilder --allow-group-env --env-file /var/www/kot-xpbuilder/.env health
+```
+
+`--allow-group-env` only relaxes the group bits; readable/writable by other
+users is still rejected. Without the flag nothing changes.
+
 ## File uploads
 
 | Variable | Purpose |
@@ -49,6 +63,11 @@ The role password is derived from `SUPERSET_SECRET_KEY` and is never written to
 `.env`, so rotating `SUPERSET_SECRET_KEY` requires re-running the provisioner.
 Re-running is always safe: the role, database, and connection are converged to
 the expected state (and existing uploads are left untouched).
+
+Uploaded tables are part of the backup set: `bin/xpbuilder backup` dumps the
+upload store as `uploads.dump` (recorded in the manifest as `uploads_backup` /
+`uploads_sha256`) and `bin/xpbuilder restore` recreates the role, database, and
+connection before loading it back.
 
 ```bash
 docker exec -i <instance>_superset \

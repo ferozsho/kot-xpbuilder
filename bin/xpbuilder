@@ -6,14 +6,22 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_file="$root/.env"
 
 usage() {
-    echo "Usage: xpbuilder [--env-file /path/.env] config|build|init|upgrade|up|down|ps|health|logs|backup|restore|patch [args]" >&2
+    echo "Usage: xpbuilder [--env-file /path/.env] [--allow-group-env]" >&2
+    echo "                 config|build|init|upgrade|up|down|ps|health|logs|backup|restore|patch [args]" >&2
     exit 2
 }
 
-if [ "${1:-}" = "--env-file" ]; then
-    env_file="${2:-}"
-    shift 2
-fi
+allow_group_env=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --env-file) env_file="${2:-}"; shift 2 ;;
+        # Opt-in for sites whose .env is intentionally readable by a restricted
+        # group (for example a jailed client workspace). Other-user bits are
+        # still rejected.
+        --allow-group-env) allow_group_env=(--allow-group-env); shift ;;
+        *) break ;;
+    esac
+done
 
 command_name="${1:-}"
 [ -n "$command_name" ] || usage
@@ -24,7 +32,7 @@ if [ "$command_name" = "patch" ]; then
     exec "$root/docker/patches/new-patch.sh" "$@"
 fi
 
-"$root/bin/validate-env.sh" "$env_file"
+"$root/bin/validate-env.sh" "${allow_group_env[@]}" "$env_file"
 
 value_of() {
     local key="$1"

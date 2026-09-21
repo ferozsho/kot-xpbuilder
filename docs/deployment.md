@@ -78,7 +78,9 @@ Pick one:
 - **Adopt existing volumes** — set the exact external volume names in `.env`.
 - **Restore from backup** — `bin/xpbuilder --env-file <env> backup` on the
   source, copy the snapshot, then `bin/xpbuilder --env-file <env> restore
-  <backup>` on the target.
+  <backup>` on the target. A backup set contains **both** `superset-metadata.dump`
+  and `uploads.dump` (the files uploaded through the UI): run the restore from
+  the directory holding them so the upload store is recreated and reloaded too.
 - **Start fresh** — run `bin/xpbuilder --env-file <env> init`, then connect
   the site's databases from the Superset UI.
 

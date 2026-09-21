@@ -5,6 +5,16 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+# Never inherit a site configuration. Exported XPBUILDER_*/POSTGRES_*/SUPERSET_*
+# values take precedence over --env-file, which would point this test at a real
+# stack and let it create, converge, or delete that stack's containers and
+# volumes.
+while IFS= read -r variable; do
+    case "$variable" in
+        XPBUILDER_*|POSTGRES_*|SUPERSET_*|GUEST_TOKEN_*) unset "$variable" ;;
+    esac
+done < <(compgen -v)
+
 suffix="$(date +%s)-$$"
 instance="xpbuildertest${suffix//-/}"
 temporary="$(mktemp -d)"
@@ -33,6 +43,16 @@ bin/bootstrap-env.sh \
     --host-port "$port" >/dev/null
 
 compose=(docker compose --env-file "$env_file" -f compose.yml -p "$instance")
+
+# Refuse to run if anything still resolves the stack somewhere else: this test
+# creates and deletes containers and volumes.
+resolved_container="$("${compose[@]}" config --format json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["superset"]["container_name"])')"
+if [ "$resolved_container" != "${instance}_superset" ]; then
+    echo "ERROR: refusing to run: compose resolved container '$resolved_container'" >&2
+    echo "       expected '${instance}_superset' (check for exported site variables)" >&2
+    exit 1
+fi
 
 "${compose[@]}" build
 "${compose[@]}" up -d superset-db superset-redis
@@ -89,5 +109,89 @@ for attempt in $(seq 1 40); do
     fi
     sleep 3
 done
+
+uploads_psql() {
+    "${compose[@]}" exec -T superset-db \
+        psql -U "$(value_of POSTGRES_USER)" -d xpbuilder_uploads -tAc "$1"
+}
+
+metadata_psql() {
+    "${compose[@]}" exec -T superset-db \
+        psql -U "$(value_of POSTGRES_USER)" -d "$(value_of POSTGRES_DB)" -tAc "$1"
+}
+
+api() {
+    curl --silent --fail --max-time 30 "$@"
+}
+
+echo "Checking that file uploads are provisioned"
+token="$(api -X POST "http://127.0.0.1:${port}/api/v1/security/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$(value_of SUPERSET_ADMIN_USERNAME)\",\"password\":\"$(value_of SUPERSET_ADMIN_PASSWORD)\",\"provider\":\"db\",\"refresh\":true}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+
+upload_query='(filters:!((col:allow_file_upload,opr:upload_is_enabled,value:!t)))'
+upload_view="$(api "http://127.0.0.1:${port}/api/v1/database/?q=${upload_query}" \
+    -H "Authorization: Bearer ${token}")"
+upload_capable="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' <<< "$upload_view")"
+if [ "$upload_capable" != "1" ]; then
+    echo "ERROR: expected exactly one upload-capable connection, got '$upload_capable'" >&2
+    exit 1
+fi
+database_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["result"][0]["id"])' <<< "$upload_view")"
+
+echo "Uploading a CSV into the built-in upload store"
+printf 'city,sales\nSkopje,4200\nPristina,3100\n' > "$temporary/upload-check.csv"
+api -X POST "http://127.0.0.1:${port}/api/v1/database/${database_id}/upload/" \
+    -H "Authorization: Bearer ${token}" \
+    -F type=csv -F table_name=integration_upload -F schema=public \
+    -F "file=@$temporary/upload-check.csv" >/dev/null
+
+uploaded_rows="$(uploads_psql 'SELECT count(*) FROM integration_upload')"
+if [ "$uploaded_rows" != "2" ]; then
+    echo "ERROR: uploaded CSV produced '$uploaded_rows' rows, expected 2" >&2
+    exit 1
+fi
+
+echo "Backing up metadata plus uploaded data"
+backup_root="$temporary/backups"
+backup_dir="$(bin/backup.sh "$env_file" "$instance" "$backup_root" \
+    | sed -n 's/^Backup completed: //p')"
+if [ ! -s "$backup_dir/uploads.dump" ]; then
+    echo "ERROR: backup did not include the upload store ($backup_dir)" >&2
+    ls -l "$backup_dir"
+    exit 1
+fi
+
+echo "Simulating loss of the upload store and restoring it"
+"${compose[@]}" exec -T superset-db \
+    psql -U "$(value_of POSTGRES_USER)" -d postgres \
+    -c 'DROP DATABASE xpbuilder_uploads WITH (FORCE)' >/dev/null
+
+sed -i 's/^XPBUILDER_ALLOW_RESTORE=no$/XPBUILDER_ALLOW_RESTORE=yes/' "$env_file"
+bin/restore.sh "$env_file" "$instance" \
+    "$backup_dir/superset-metadata.dump" "restore-$instance" >/dev/null
+
+for attempt in $(seq 1 60); do
+    if curl --fail --silent --max-time 5 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+        break
+    fi
+    if [ "$attempt" -eq 60 ]; then
+        echo "ERROR: XPBuilder web service did not come back after the restore" >&2
+        exit 1
+    fi
+    sleep 3
+done
+
+restored_rows="$(uploads_psql 'SELECT count(*) FROM integration_upload')"
+if [ "$restored_rows" != "2" ]; then
+    echo "ERROR: restore produced '$restored_rows' uploaded rows, expected 2" >&2
+    exit 1
+fi
+restored_connections="$(metadata_psql 'SELECT count(*) FROM dbs WHERE allow_file_upload')"
+if [ "$restored_connections" != "1" ]; then
+    echo "ERROR: restore left '$restored_connections' upload-capable connections" >&2
+    exit 1
+fi
 
 echo "XPBuilder integration checks passed"
