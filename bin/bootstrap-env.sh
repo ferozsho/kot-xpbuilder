@@ -81,6 +81,10 @@ version="$(cat "$root/VERSION")"
     printf 'XPBUILDER_ALLOW_INITIALIZE=yes\n'
     printf 'XPBUILDER_ALLOW_SCHEMA_UPGRADE=no\n'
     printf 'XPBUILDER_ALLOW_RESTORE=no\n'
+    # Built-in database that uploaded CSV/Excel files are stored in (created
+    # during `init`); set to `no` to leave the upload menu disabled.
+    printf 'XPBUILDER_ENABLE_FILE_UPLOADS=yes\n'
+    printf 'XPBUILDER_UPLOAD_DB_NAME=File uploads\n'
     printf 'POSTGRES_USER=xpbuilder\n'
     printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
     printf 'POSTGRES_DB=xpbuilder\n'

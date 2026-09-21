@@ -31,6 +31,11 @@ x-superset-environment: &x-superset-environment
   # home page.
   XPBUILDER_BRAND_URL: ${XPBUILDER_BRAND_URL:-/}
   SUPERSET_LOG_LEVEL: ${SUPERSET_LOG_LEVEL:-INFO}
+  # Built-in database that uploaded CSV / Excel / columnar files are written
+  # to. Provisioned by docker/ensure_uploads_db.py during `init` (and
+  # re-runnable on an existing stack); set ENABLE=no to keep uploads off.
+  XPBUILDER_ENABLE_FILE_UPLOADS: ${XPBUILDER_ENABLE_FILE_UPLOADS:-yes}
+  XPBUILDER_UPLOAD_DB_NAME: ${XPBUILDER_UPLOAD_DB_NAME:-File uploads}
 
 services:
   superset:

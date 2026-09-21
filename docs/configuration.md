@@ -31,6 +31,35 @@ volumes.
 Set `XPBUILDER_VOLUMES_EXTERNAL=true` together with the exact existing volume
 names to adopt volumes from an earlier deployment.
 
+## File uploads
+
+| Variable | Purpose |
+| --- | --- |
+| `XPBUILDER_ENABLE_FILE_UPLOADS` | `no` skips provisioning the built-in upload database (default `yes`) |
+| `XPBUILDER_UPLOAD_DB_NAME` | Name of the upload connection in Superset (default `File uploads`) |
+
+`bin/xpbuilder init` runs `docker/ensure_uploads_db.py`, which creates the
+`xpbuilder_uploads` role and database inside the metadata PostgreSQL instance
+and registers a Superset connection with **Allow file uploads to database**
+enabled and the `public` schema allow-listed. Uploaded CSV/Excel/Parquet files
+are stored in that database, which lives in the metadata volume — size the
+volume for the data a site uploads.
+
+The role password is derived from `SUPERSET_SECRET_KEY` and is never written to
+`.env`, so rotating `SUPERSET_SECRET_KEY` requires re-running the provisioner.
+Re-running is always safe: the role, database, and connection are converged to
+the expected state (and existing uploads are left untouched).
+
+```bash
+docker exec -i <instance>_superset \
+    /app/.venv/bin/python /opt/xpbuilder/bin/ensure_uploads_db.py
+```
+
+Uploads are also gated by the `can_upload` permission on `Database`, which
+upstream Superset grants to the **Admin** and **Alpha** roles only. Give a role
+like **Gamma** that permission explicitly if its users should be able to upload
+(see the README for the one-liner).
+
 ## Secrets
 
 The following values are secrets and must exist only in `.env`:

@@ -100,4 +100,13 @@ with app.app_context():
     security_manager.add_permission_role(gamma, permission_view)
 PY
 
+# Without an upload-capable database connection, Superset greys out
+# "Upload file to database" for every user, including administrators.
+if [ "${XPBUILDER_ENABLE_FILE_UPLOADS:-yes}" = "no" ]; then
+    echo "Skipping the built-in file upload database (XPBUILDER_ENABLE_FILE_UPLOADS=no)"
+else
+    echo "Provisioning the built-in file upload database"
+    /app/.venv/bin/python /opt/xpbuilder/bin/ensure_uploads_db.py
+fi
+
 echo "XPBuilder initialization completed successfully"

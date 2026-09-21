@@ -82,6 +82,29 @@ Pick one:
 - **Start fresh** — run `bin/xpbuilder --env-file <env> init`, then connect
   the site's databases from the Superset UI.
 
+## Enable file uploads on an existing stack
+
+Superset only offers **Upload file to database** when at least one connection
+has *Allow file uploads to database* enabled, so a stack created before uploads
+were provisioned (or initialized with `XPBUILDER_ENABLE_FILE_UPLOADS=no`) greys
+the menu out for everyone, administrators included. Converge it in place — no
+rebuild and no restart:
+
+```bash
+# images built after this feature ship the provisioner:
+docker exec -i <instance>_superset \
+    /app/.venv/bin/python /opt/xpbuilder/bin/ensure_uploads_db.py
+
+# older images: stream the same script from the repo checkout instead
+cd /var/www/kot-xpbuilder
+docker exec -i <instance>_superset \
+    /app/.venv/bin/python - < docker/ensure_uploads_db.py
+```
+
+Then reload the Databases page: the upload menu is enabled once the API reports
+at least one upload-capable connection. The script is idempotent and leaves
+previously uploaded tables alone.
+
 ## Bring it up
 
 ```bash
@@ -102,3 +125,7 @@ python3 tests/contract/runtime_contract.py --base-url http://localhost:<port> \
 - To expose Superset through a reverse proxy, terminate TLS at the proxy and
   forward to the site's host port; keep `XPBUILDER_ALLOWED_ORIGINS` in sync so
   embedded dashboards and CORS keep working.
+- Uploaded files travel through the reverse proxy: raise the request body limit
+  in the proxy site config (nginx defaults to 1 MB), for example
+  `client_max_body_size 200m;` in the `server` block, otherwise larger CSV or
+  Excel files fail with HTTP 413 before reaching Superset.

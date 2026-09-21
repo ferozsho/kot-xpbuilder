@@ -62,6 +62,7 @@ Only files whose basename is exactly `.env` are accepted.
 | `config/superset_config.py` | Baked runtime configuration (env-driven only) |
 | `customizations/` | Branding images + tail-JS (logo link, "Clear all" fix) |
 | `docker/initialize.sh` | First-run metadata schema, admin, role sync |
+| `docker/ensure_uploads_db.py` | Idempotent provisioning of the built-in file-upload database |
 | `docker/patches/` | Export/verify vendored-source edits as patches |
 | `bin/xpbuilder` | CLI wrapper around `docker compose` |
 | `instances/<site>/.env` | One protected configuration per site (never committed) |
@@ -88,10 +89,46 @@ and server deployment in [docs/deployment.md](docs/deployment.md).
 
 ## Connecting your own data
 
-No database is registered out of the box. Once the stack is healthy, add any
-reachable SQL database from **Settings → Database Connections** (or
-`superset set-database-uri`), then build datasets, charts, and dashboards in
-the usual Superset way. The Report Designer reads the same datasets.
+A new stack is initialized with one ready-to-use connection so files can be
+uploaded immediately. Add any other reachable SQL database from **Settings →
+Database Connections** (or `superset set-database-uri`), then build datasets,
+charts, and dashboards in the usual Superset way. The Report Designer reads the
+same datasets.
+
+### Uploading files (CSV, Excel, Parquet)
+
+`bin/xpbuilder init` provisions a built-in **File uploads** database:
+
+- a dedicated `xpbuilder_uploads` PostgreSQL database inside the metadata
+  instance, owned by the unprivileged `xpbuilder_uploads` role (uploaded data
+  never lives in, and cannot reach, Superset's own metadata database);
+- a Superset connection named by `XPBUILDER_UPLOAD_DB_NAME` with **Allow file
+  uploads to database** enabled and the `public` schema allow-listed.
+
+Files are then imported from **Databases ‣ Upload file to database** (or
+**+ ‣ Upload CSV/Excel/Columnar**), which creates a table in that database plus
+a dataset that charts can be built on.
+
+Superset only offers the upload menu when at least one connection accepts file
+uploads; without one the menu entries stay greyed out for every user, including
+administrators. Uploads are also gated by the `can_upload` permission on
+`Database`, which upstream Superset grants to **Admin** and **Alpha** only —
+users with the Gamma role do not see the menu. Grant it deliberately if a site
+wants non-admin uploads:
+
+```bash
+docker exec <instance>_superset /app/.venv/bin/python -c "
+from superset.app import create_app
+app = create_app()
+with app.app_context():
+    sm = app.appbuilder.sm
+    sm.add_permission_role(sm.find_role('Gamma'), sm.add_permission_view_menu('can_upload', 'Database'))
+"
+```
+
+Set `XPBUILDER_ENABLE_FILE_UPLOADS=no` to skip provisioning the built-in
+database, and enable uploads on an external connection instead (its **Advanced →
+Security** section has the **Allow file uploads to database** checkbox).
 
 ## Compatibility
 

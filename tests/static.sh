@@ -5,7 +5,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-python3 -m py_compile config/superset_config.py tests/contract/*.py
+python3 -m py_compile config/superset_config.py docker/*.py tests/contract/*.py
 python3 tests/contract/check_compatibility.py
 python3 -m json.tool compatibility.json >/dev/null
 
