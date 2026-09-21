@@ -1,0 +1,9 @@
+teacher_id,teacher_name,assigned_courses,assigned_course_count,total_students,student_completion_count,student_completion_percentage,average_course_performance,data_origin
+TCH-001,Amina Rahman,CRS-001,1,12,6,50.0,72.0,synthetic_demo
+TCH-002,Daniel Okafor,CRS-002; CRS-009,2,24,0,0.0,73.8,synthetic_demo
+TCH-003,Elena Petrova,CRS-003,1,12,0,0.0,72.5,synthetic_demo
+TCH-004,Hassan Malik,CRS-004; CRS-010,2,18,6,25.0,74.1,synthetic_demo
+TCH-005,Isabella Costa,CRS-005,1,12,6,50.0,75.5,synthetic_demo
+TCH-006,Jonas Berg,CRS-006,1,12,6,50.0,76.8,synthetic_demo
+TCH-007,Mei Chen,CRS-007,1,12,0,0.0,74.1,synthetic_demo
+TCH-008,Sofia Alvarez,CRS-008,1,12,0,0.0,73.2,synthetic_demo

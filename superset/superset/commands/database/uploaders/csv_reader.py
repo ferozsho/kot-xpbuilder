@@ -517,7 +517,15 @@ class CSVReader(BaseDataReader):
             kwargs["chunksize"] = chunk_size
             kwargs["iterator"] = True
 
-        return self._read_csv(file, kwargs)
+        dataframe = self._read_csv(file, kwargs)
+        if dataframe.empty:
+            raise DatabaseUploadFailed(
+                message=_(
+                    "The CSV file contains headers but no data rows. "
+                    "Add at least one record before uploading."
+                )
+            )
+        return dataframe
 
     def file_metadata(self, file: FileStorage) -> FileMetadata:
         """
@@ -534,6 +542,13 @@ class CSVReader(BaseDataReader):
             "low_memory": False,
         }
         df = self._read_csv(file, kwargs)
+        if df.empty:
+            raise DatabaseUploadFailed(
+                message=_(
+                    "The CSV file contains headers but no data rows. "
+                    "Add at least one record before uploading."
+                )
+            )
         return {
             "items": [
                 {

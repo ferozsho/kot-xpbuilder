@@ -153,6 +153,50 @@ if [ "$uploaded_rows" != "2" ]; then
     exit 1
 fi
 
+echo "Checking that duplicate uploads replace instead of duplicating records"
+api -X POST "http://127.0.0.1:${port}/api/v1/database/${database_id}/upload/" \
+    -H "Authorization: Bearer ${token}" \
+    -F type=csv -F table_name=integration_upload -F schema=public \
+    -F already_exists=replace \
+    -F "file=@$temporary/upload-check.csv" >/dev/null
+
+replaced_rows="$(uploads_psql 'SELECT count(*) FROM integration_upload')"
+if [ "$replaced_rows" != "2" ]; then
+    echo "ERROR: replacement upload produced '$replaced_rows' rows, expected 2" >&2
+    exit 1
+fi
+upload_datasets="$(metadata_psql "SELECT count(*) FROM tables WHERE table_name = 'integration_upload'")"
+if [ "$upload_datasets" != "1" ]; then
+    echo "ERROR: replacement upload produced '$upload_datasets' datasets, expected 1" >&2
+    exit 1
+fi
+
+echo "Checking that a header-only CSV is rejected without creating a table"
+printf 'city,sales\n' > "$temporary/header-only.csv"
+empty_response="$temporary/header-only-response.json"
+empty_status="$(curl --silent --max-time 30 \
+    --output "$empty_response" --write-out '%{http_code}' \
+    -X POST "http://127.0.0.1:${port}/api/v1/database/${database_id}/upload/" \
+    -H 'Accept: application/json' \
+    -H "Authorization: Bearer ${token}" \
+    -F type=csv -F table_name=integration_empty_upload -F schema=public \
+    -F "file=@$temporary/header-only.csv")"
+if [ "$empty_status" != "422" ]; then
+    echo "ERROR: header-only upload returned HTTP '$empty_status', expected 422" >&2
+    cat "$empty_response" >&2
+    exit 1
+fi
+if ! grep -q 'contains headers but no data rows' "$empty_response"; then
+    echo "ERROR: header-only upload did not return an actionable message" >&2
+    cat "$empty_response" >&2
+    exit 1
+fi
+empty_table="$(uploads_psql "SELECT to_regclass('public.integration_empty_upload') IS NULL")"
+if [ "$empty_table" != "t" ]; then
+    echo "ERROR: header-only upload created an empty database table" >&2
+    exit 1
+fi
+
 echo "Backing up metadata plus uploaded data"
 backup_root="$temporary/backups"
 backup_dir="$(bin/backup.sh "$env_file" "$instance" "$backup_root" \

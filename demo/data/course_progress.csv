@@ -1,0 +1,121 @@
+progress_id,enrollment_id,student_id,course_id,progress_percent,completion_status,last_activity_date,data_origin
+PRG-001,ENR-001,STU-001,CRS-001,100,Completed,2025-12-28,synthetic_demo
+PRG-002,ENR-002,STU-001,CRS-005,100,Completed,2026-01-09,synthetic_demo
+PRG-003,ENR-003,STU-002,CRS-004,45,In Progress,2025-11-08,synthetic_demo
+PRG-004,ENR-004,STU-002,CRS-008,74,In Progress,2025-12-19,synthetic_demo
+PRG-005,ENR-005,STU-003,CRS-007,62,In Progress,2025-11-30,synthetic_demo
+PRG-006,ENR-006,STU-003,CRS-001,91,In Progress,2026-01-10,synthetic_demo
+PRG-007,ENR-007,STU-004,CRS-010,79,In Progress,2025-12-22,synthetic_demo
+PRG-008,ENR-008,STU-004,CRS-004,36,In Progress,2025-11-21,synthetic_demo
+PRG-009,ENR-009,STU-005,CRS-003,96,In Progress,2026-01-13,synthetic_demo
+PRG-010,ENR-010,STU-005,CRS-007,53,In Progress,2025-12-13,synthetic_demo
+PRG-011,ENR-011,STU-006,CRS-006,100,Completed,2026-01-22,synthetic_demo
+PRG-012,ENR-012,STU-006,CRS-010,100,Completed,2026-02-03,synthetic_demo
+PRG-013,ENR-013,STU-007,CRS-009,58,In Progress,2025-12-16,synthetic_demo
+PRG-014,ENR-014,STU-007,CRS-003,87,In Progress,2026-01-26,synthetic_demo
+PRG-015,ENR-015,STU-008,CRS-002,75,In Progress,2026-01-07,synthetic_demo
+PRG-016,ENR-016,STU-008,CRS-006,32,In Progress,2025-12-07,synthetic_demo
+PRG-017,ENR-017,STU-009,CRS-005,92,In Progress,2026-01-29,synthetic_demo
+PRG-018,ENR-018,STU-009,CRS-009,49,In Progress,2025-12-29,synthetic_demo
+PRG-019,ENR-019,STU-010,CRS-008,37,In Progress,2025-12-10,synthetic_demo
+PRG-020,ENR-020,STU-010,CRS-002,66,In Progress,2026-01-20,synthetic_demo
+PRG-021,ENR-021,STU-011,CRS-001,100,Completed,2026-02-16,synthetic_demo
+PRG-022,ENR-022,STU-011,CRS-005,100,Completed,2026-02-28,synthetic_demo
+PRG-023,ENR-023,STU-012,CRS-004,71,In Progress,2026-01-23,synthetic_demo
+PRG-024,ENR-024,STU-012,CRS-008,28,In Progress,2025-12-23,synthetic_demo
+PRG-025,ENR-025,STU-013,CRS-007,88,In Progress,2026-02-14,synthetic_demo
+PRG-026,ENR-026,STU-013,CRS-001,45,In Progress,2026-01-14,synthetic_demo
+PRG-027,ENR-027,STU-014,CRS-010,33,In Progress,2025-12-26,synthetic_demo
+PRG-028,ENR-028,STU-014,CRS-004,62,In Progress,2026-02-05,synthetic_demo
+PRG-029,ENR-029,STU-015,CRS-003,50,In Progress,2026-01-17,synthetic_demo
+PRG-030,ENR-030,STU-015,CRS-007,79,In Progress,2026-02-27,synthetic_demo
+PRG-031,ENR-031,STU-016,CRS-006,100,Completed,2026-03-13,synthetic_demo
+PRG-032,ENR-032,STU-016,CRS-010,100,Completed,2026-03-25,synthetic_demo
+PRG-033,ENR-033,STU-017,CRS-009,84,In Progress,2026-03-02,synthetic_demo
+PRG-034,ENR-034,STU-017,CRS-003,41,In Progress,2026-01-30,synthetic_demo
+PRG-035,ENR-035,STU-018,CRS-002,29,In Progress,2026-01-11,synthetic_demo
+PRG-036,ENR-036,STU-018,CRS-006,58,In Progress,2026-02-21,synthetic_demo
+PRG-037,ENR-037,STU-019,CRS-005,46,In Progress,2026-02-02,synthetic_demo
+PRG-038,ENR-038,STU-019,CRS-009,75,In Progress,2026-03-15,synthetic_demo
+PRG-039,ENR-039,STU-020,CRS-008,63,In Progress,2026-02-24,synthetic_demo
+PRG-040,ENR-040,STU-020,CRS-002,92,In Progress,2026-04-06,synthetic_demo
+PRG-041,ENR-041,STU-021,CRS-001,100,Completed,2026-04-07,synthetic_demo
+PRG-042,ENR-042,STU-021,CRS-005,100,Completed,2026-04-19,synthetic_demo
+PRG-043,ENR-043,STU-022,CRS-004,97,In Progress,2026-04-09,synthetic_demo
+PRG-044,ENR-044,STU-022,CRS-008,54,In Progress,2026-03-09,synthetic_demo
+PRG-045,ENR-045,STU-023,CRS-007,42,In Progress,2026-02-18,synthetic_demo
+PRG-046,ENR-046,STU-023,CRS-001,71,In Progress,2026-03-31,synthetic_demo
+PRG-047,ENR-047,STU-024,CRS-010,59,In Progress,2026-03-12,synthetic_demo
+PRG-048,ENR-048,STU-024,CRS-004,88,In Progress,2026-04-22,synthetic_demo
+PRG-049,ENR-049,STU-025,CRS-003,76,In Progress,2026-04-03,synthetic_demo
+PRG-050,ENR-050,STU-025,CRS-007,33,In Progress,2026-03-03,synthetic_demo
+PRG-051,ENR-051,STU-026,CRS-006,100,Completed,2026-05-02,synthetic_demo
+PRG-052,ENR-052,STU-026,CRS-010,100,Completed,2026-05-14,synthetic_demo
+PRG-053,ENR-053,STU-027,CRS-009,38,In Progress,2026-03-06,synthetic_demo
+PRG-054,ENR-054,STU-027,CRS-003,67,In Progress,2026-04-16,synthetic_demo
+PRG-055,ENR-055,STU-028,CRS-002,55,In Progress,2026-03-28,synthetic_demo
+PRG-056,ENR-056,STU-028,CRS-006,84,In Progress,2026-05-08,synthetic_demo
+PRG-057,ENR-057,STU-029,CRS-005,72,In Progress,2026-04-19,synthetic_demo
+PRG-058,ENR-058,STU-029,CRS-009,29,In Progress,2026-03-19,synthetic_demo
+PRG-059,ENR-059,STU-030,CRS-008,89,In Progress,2026-05-11,synthetic_demo
+PRG-060,ENR-060,STU-030,CRS-002,46,In Progress,2026-04-10,synthetic_demo
+PRG-061,ENR-061,STU-031,CRS-001,100,Completed,2026-05-27,synthetic_demo
+PRG-062,ENR-062,STU-031,CRS-005,100,Completed,2026-06-08,synthetic_demo
+PRG-063,ENR-063,STU-032,CRS-004,51,In Progress,2026-04-13,synthetic_demo
+PRG-064,ENR-064,STU-032,CRS-008,80,In Progress,2026-05-24,synthetic_demo
+PRG-065,ENR-065,STU-033,CRS-007,68,In Progress,2026-05-05,synthetic_demo
+PRG-066,ENR-066,STU-033,CRS-001,97,In Progress,2026-06-15,synthetic_demo
+PRG-067,ENR-067,STU-034,CRS-010,85,In Progress,2026-05-27,synthetic_demo
+PRG-068,ENR-068,STU-034,CRS-004,42,In Progress,2026-04-26,synthetic_demo
+PRG-069,ENR-069,STU-035,CRS-003,30,In Progress,2026-04-07,synthetic_demo
+PRG-070,ENR-070,STU-035,CRS-007,59,In Progress,2026-05-18,synthetic_demo
+PRG-071,ENR-071,STU-036,CRS-006,100,Completed,2026-06-21,synthetic_demo
+PRG-072,ENR-072,STU-036,CRS-010,100,Completed,2026-07-03,synthetic_demo
+PRG-073,ENR-073,STU-037,CRS-009,64,In Progress,2026-05-21,synthetic_demo
+PRG-074,ENR-074,STU-037,CRS-003,93,In Progress,2026-07-01,synthetic_demo
+PRG-075,ENR-075,STU-038,CRS-002,81,In Progress,2026-06-12,synthetic_demo
+PRG-076,ENR-076,STU-038,CRS-006,38,In Progress,2026-05-12,synthetic_demo
+PRG-077,ENR-077,STU-039,CRS-005,98,In Progress,2026-07-04,synthetic_demo
+PRG-078,ENR-078,STU-039,CRS-009,55,In Progress,2026-06-03,synthetic_demo
+PRG-079,ENR-079,STU-040,CRS-008,43,In Progress,2026-05-15,synthetic_demo
+PRG-080,ENR-080,STU-040,CRS-002,72,In Progress,2026-06-25,synthetic_demo
+PRG-081,ENR-081,STU-041,CRS-001,100,Completed,2026-07-16,synthetic_demo
+PRG-082,ENR-082,STU-041,CRS-005,100,Completed,2026-07-28,synthetic_demo
+PRG-083,ENR-083,STU-042,CRS-004,77,In Progress,2026-06-28,synthetic_demo
+PRG-084,ENR-084,STU-042,CRS-008,34,In Progress,2026-05-28,synthetic_demo
+PRG-085,ENR-085,STU-043,CRS-007,94,In Progress,2026-07-20,synthetic_demo
+PRG-086,ENR-086,STU-043,CRS-001,51,In Progress,2026-06-19,synthetic_demo
+PRG-087,ENR-087,STU-044,CRS-010,39,In Progress,2026-05-31,synthetic_demo
+PRG-088,ENR-088,STU-044,CRS-004,68,In Progress,2026-07-11,synthetic_demo
+PRG-089,ENR-089,STU-045,CRS-003,56,In Progress,2026-06-22,synthetic_demo
+PRG-090,ENR-090,STU-045,CRS-007,85,In Progress,2026-08-02,synthetic_demo
+PRG-091,ENR-091,STU-046,CRS-006,100,Completed,2026-08-10,synthetic_demo
+PRG-092,ENR-092,STU-046,CRS-010,100,Completed,2026-08-22,synthetic_demo
+PRG-093,ENR-093,STU-047,CRS-009,90,In Progress,2026-08-05,synthetic_demo
+PRG-094,ENR-094,STU-047,CRS-003,47,In Progress,2026-07-05,synthetic_demo
+PRG-095,ENR-095,STU-048,CRS-002,35,In Progress,2026-06-16,synthetic_demo
+PRG-096,ENR-096,STU-048,CRS-006,64,In Progress,2026-07-27,synthetic_demo
+PRG-097,ENR-097,STU-049,CRS-005,52,In Progress,2026-07-08,synthetic_demo
+PRG-098,ENR-098,STU-049,CRS-009,81,In Progress,2026-08-18,synthetic_demo
+PRG-099,ENR-099,STU-050,CRS-008,69,In Progress,2026-07-30,synthetic_demo
+PRG-100,ENR-100,STU-050,CRS-002,98,In Progress,2026-08-31,synthetic_demo
+PRG-101,ENR-101,STU-051,CRS-001,100,Completed,2026-08-31,synthetic_demo
+PRG-102,ENR-102,STU-051,CRS-005,100,Completed,2026-08-31,synthetic_demo
+PRG-103,ENR-103,STU-052,CRS-004,31,In Progress,2026-07-02,synthetic_demo
+PRG-104,ENR-104,STU-052,CRS-008,60,In Progress,2026-08-12,synthetic_demo
+PRG-105,ENR-105,STU-053,CRS-007,48,In Progress,2026-07-24,synthetic_demo
+PRG-106,ENR-106,STU-053,CRS-001,77,In Progress,2026-08-31,synthetic_demo
+PRG-107,ENR-107,STU-054,CRS-010,65,In Progress,2026-08-15,synthetic_demo
+PRG-108,ENR-108,STU-054,CRS-004,94,In Progress,2026-08-31,synthetic_demo
+PRG-109,ENR-109,STU-055,CRS-003,82,In Progress,2026-08-31,synthetic_demo
+PRG-110,ENR-110,STU-055,CRS-007,39,In Progress,2026-08-06,synthetic_demo
+PRG-111,ENR-111,STU-056,CRS-006,100,Completed,2026-08-31,synthetic_demo
+PRG-112,ENR-112,STU-056,CRS-010,100,Completed,2026-08-31,synthetic_demo
+PRG-113,ENR-113,STU-057,CRS-009,44,In Progress,2026-08-09,synthetic_demo
+PRG-114,ENR-114,STU-057,CRS-003,73,In Progress,2026-08-31,synthetic_demo
+PRG-115,ENR-115,STU-058,CRS-002,61,In Progress,2026-08-31,synthetic_demo
+PRG-116,ENR-116,STU-058,CRS-006,90,In Progress,2026-08-31,synthetic_demo
+PRG-117,ENR-117,STU-059,CRS-005,78,In Progress,2026-08-31,synthetic_demo
+PRG-118,ENR-118,STU-059,CRS-009,35,In Progress,2026-08-22,synthetic_demo
+PRG-119,ENR-119,STU-060,CRS-008,95,In Progress,2026-08-31,synthetic_demo
+PRG-120,ENR-120,STU-060,CRS-002,52,In Progress,2026-08-31,synthetic_demo

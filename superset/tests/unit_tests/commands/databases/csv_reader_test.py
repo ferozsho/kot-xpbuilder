@@ -62,6 +62,8 @@ CSV_DATA_SKIP_INITIAL_SPACE = [
     ["      name1", "30", "city1", "1990-02-01"],
 ]
 
+CSV_DATA_HEADERS_ONLY = [["Name", "Age", "City", "Birth"]]
+
 
 @pytest.mark.parametrize(
     "file, options, expected_cols, expected_values",
@@ -1381,6 +1383,24 @@ def test_csv_reader_chunk_concatenation_error_logging():
 
         # Verify concat was called (meaning chunking happened)
         assert mock_concat.called
+
+
+def test_csv_reader_rejects_headers_without_records(app_context: None) -> None:
+    csv_reader = CSVReader(options=CSVReaderOptions())
+
+    with pytest.raises(DatabaseUploadFailed) as exc_info:
+        csv_reader.file_to_dataframe(create_csv_file(CSV_DATA_HEADERS_ONLY))
+
+    assert "contains headers but no data rows" in str(exc_info.value)
+
+
+def test_csv_metadata_rejects_headers_without_records(app_context: None) -> None:
+    csv_reader = CSVReader(options=CSVReaderOptions())
+
+    with pytest.raises(DatabaseUploadFailed) as exc_info:
+        csv_reader.file_metadata(create_csv_file(CSV_DATA_HEADERS_ONLY))
+
+    assert "contains headers but no data rows" in str(exc_info.value)
 
 
 def test_csv_reader_chunk_concatenation_error_warning(caplog):

@@ -1,0 +1,11 @@
+course_id,course_name,category,assigned_teacher_id,enrollment_count,completion_count,completion_percentage,average_grade,course_status,data_origin
+CRS-001,Data Literacy Essentials,Data & Analytics,TCH-001,12,6,50.0,72.0,Active,synthetic_demo
+CRS-002,Leadership Foundations,Leadership,TCH-002,12,0,0.0,73.0,Active,synthetic_demo
+CRS-003,Cybersecurity Awareness,Compliance,TCH-003,12,0,0.0,72.5,Active,synthetic_demo
+CRS-004,Project Delivery,Operations,TCH-004,12,0,0.0,74.2,Active,synthetic_demo
+CRS-005,Customer Experience,Customer Success,TCH-005,12,6,50.0,75.5,Active,synthetic_demo
+CRS-006,Financial Acumen,Business Skills,TCH-006,12,6,50.0,76.8,Active,synthetic_demo
+CRS-007,Inclusive Collaboration,People & Culture,TCH-007,12,0,0.0,74.1,Active,synthetic_demo
+CRS-008,Applied Generative AI,Technology,TCH-008,12,0,0.0,73.2,Active,synthetic_demo
+CRS-009,Strategic Communication,Business Skills,TCH-002,12,0,0.0,74.5,Active,synthetic_demo
+CRS-010,Sustainable Operations,Operations,TCH-004,12,6,50.0,74.0,Active,synthetic_demo

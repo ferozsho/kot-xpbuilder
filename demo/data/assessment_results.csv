@@ -1,0 +1,241 @@
+assessment_result_id,enrollment_id,student_id,course_id,assessment_name,score,max_score,assessment_date,result_status,data_origin
+ASM-001,ENR-001,STU-001,CRS-001,Knowledge Check 1,59,100,2025-09-22,Needs Support,synthetic_demo
+ASM-002,ENR-001,STU-001,CRS-001,Knowledge Check 2,70,100,2025-10-13,Passed,synthetic_demo
+ASM-003,ENR-002,STU-001,CRS-005,Knowledge Check 1,79,100,2025-10-04,Passed,synthetic_demo
+ASM-004,ENR-002,STU-001,CRS-005,Knowledge Check 2,90,100,2025-10-25,Passed,synthetic_demo
+ASM-005,ENR-003,STU-002,CRS-004,Knowledge Check 1,81,100,2025-09-27,Passed,synthetic_demo
+ASM-006,ENR-003,STU-002,CRS-004,Knowledge Check 2,92,100,2025-10-18,Passed,synthetic_demo
+ASM-007,ENR-004,STU-002,CRS-008,Knowledge Check 1,48,100,2025-10-09,Needs Support,synthetic_demo
+ASM-008,ENR-004,STU-002,CRS-008,Knowledge Check 2,59,100,2025-10-30,Needs Support,synthetic_demo
+ASM-009,ENR-005,STU-003,CRS-007,Knowledge Check 1,50,100,2025-10-02,Needs Support,synthetic_demo
+ASM-010,ENR-005,STU-003,CRS-007,Knowledge Check 2,61,100,2025-10-23,Passed,synthetic_demo
+ASM-011,ENR-006,STU-003,CRS-001,Knowledge Check 1,73,100,2025-10-14,Passed,synthetic_demo
+ASM-012,ENR-006,STU-003,CRS-001,Knowledge Check 2,84,100,2025-11-04,Passed,synthetic_demo
+ASM-013,ENR-007,STU-004,CRS-010,Knowledge Check 1,72,100,2025-10-07,Passed,synthetic_demo
+ASM-014,ENR-007,STU-004,CRS-010,Knowledge Check 2,83,100,2025-10-28,Passed,synthetic_demo
+ASM-015,ENR-008,STU-004,CRS-004,Knowledge Check 1,95,100,2025-10-19,Passed,synthetic_demo
+ASM-016,ENR-008,STU-004,CRS-004,Knowledge Check 2,53,100,2025-11-09,Needs Support,synthetic_demo
+ASM-017,ENR-009,STU-005,CRS-003,Knowledge Check 1,97,100,2025-10-12,Passed,synthetic_demo
+ASM-018,ENR-009,STU-005,CRS-003,Knowledge Check 2,55,100,2025-11-02,Needs Support,synthetic_demo
+ASM-019,ENR-010,STU-005,CRS-007,Knowledge Check 1,64,100,2025-10-24,Passed,synthetic_demo
+ASM-020,ENR-010,STU-005,CRS-007,Knowledge Check 2,75,100,2025-11-14,Passed,synthetic_demo
+ASM-021,ENR-011,STU-006,CRS-006,Knowledge Check 1,66,100,2025-10-17,Passed,synthetic_demo
+ASM-022,ENR-011,STU-006,CRS-006,Knowledge Check 2,77,100,2025-11-07,Passed,synthetic_demo
+ASM-023,ENR-012,STU-006,CRS-010,Knowledge Check 1,86,100,2025-10-29,Passed,synthetic_demo
+ASM-024,ENR-012,STU-006,CRS-010,Knowledge Check 2,97,100,2025-11-19,Passed,synthetic_demo
+ASM-025,ENR-013,STU-007,CRS-009,Knowledge Check 1,88,100,2025-10-22,Passed,synthetic_demo
+ASM-026,ENR-013,STU-007,CRS-009,Knowledge Check 2,99,100,2025-11-12,Passed,synthetic_demo
+ASM-027,ENR-014,STU-007,CRS-003,Knowledge Check 1,58,100,2025-11-03,Needs Support,synthetic_demo
+ASM-028,ENR-014,STU-007,CRS-003,Knowledge Check 2,69,100,2025-11-24,Passed,synthetic_demo
+ASM-029,ENR-015,STU-008,CRS-002,Knowledge Check 1,60,100,2025-10-27,Passed,synthetic_demo
+ASM-030,ENR-015,STU-008,CRS-002,Knowledge Check 2,71,100,2025-11-17,Passed,synthetic_demo
+ASM-031,ENR-016,STU-008,CRS-006,Knowledge Check 1,80,100,2025-11-08,Passed,synthetic_demo
+ASM-032,ENR-016,STU-008,CRS-006,Knowledge Check 2,91,100,2025-11-29,Passed,synthetic_demo
+ASM-033,ENR-017,STU-009,CRS-005,Knowledge Check 1,82,100,2025-11-01,Passed,synthetic_demo
+ASM-034,ENR-017,STU-009,CRS-005,Knowledge Check 2,93,100,2025-11-22,Passed,synthetic_demo
+ASM-035,ENR-018,STU-009,CRS-009,Knowledge Check 1,49,100,2025-11-13,Needs Support,synthetic_demo
+ASM-036,ENR-018,STU-009,CRS-009,Knowledge Check 2,60,100,2025-12-04,Passed,synthetic_demo
+ASM-037,ENR-019,STU-010,CRS-008,Knowledge Check 1,51,100,2025-11-06,Needs Support,synthetic_demo
+ASM-038,ENR-019,STU-010,CRS-008,Knowledge Check 2,62,100,2025-11-27,Passed,synthetic_demo
+ASM-039,ENR-020,STU-010,CRS-002,Knowledge Check 1,74,100,2025-11-18,Passed,synthetic_demo
+ASM-040,ENR-020,STU-010,CRS-002,Knowledge Check 2,85,100,2025-12-09,Passed,synthetic_demo
+ASM-041,ENR-021,STU-011,CRS-001,Knowledge Check 1,76,100,2025-11-11,Passed,synthetic_demo
+ASM-042,ENR-021,STU-011,CRS-001,Knowledge Check 2,87,100,2025-12-02,Passed,synthetic_demo
+ASM-043,ENR-022,STU-011,CRS-005,Knowledge Check 1,96,100,2025-11-23,Passed,synthetic_demo
+ASM-044,ENR-022,STU-011,CRS-005,Knowledge Check 2,54,100,2025-12-14,Needs Support,synthetic_demo
+ASM-045,ENR-023,STU-012,CRS-004,Knowledge Check 1,98,100,2025-11-16,Passed,synthetic_demo
+ASM-046,ENR-023,STU-012,CRS-004,Knowledge Check 2,56,100,2025-12-07,Needs Support,synthetic_demo
+ASM-047,ENR-024,STU-012,CRS-008,Knowledge Check 1,65,100,2025-11-28,Passed,synthetic_demo
+ASM-048,ENR-024,STU-012,CRS-008,Knowledge Check 2,76,100,2025-12-19,Passed,synthetic_demo
+ASM-049,ENR-025,STU-013,CRS-007,Knowledge Check 1,67,100,2025-11-21,Passed,synthetic_demo
+ASM-050,ENR-025,STU-013,CRS-007,Knowledge Check 2,78,100,2025-12-12,Passed,synthetic_demo
+ASM-051,ENR-026,STU-013,CRS-001,Knowledge Check 1,90,100,2025-12-03,Passed,synthetic_demo
+ASM-052,ENR-026,STU-013,CRS-001,Knowledge Check 2,48,100,2025-12-24,Needs Support,synthetic_demo
+ASM-053,ENR-027,STU-014,CRS-010,Knowledge Check 1,89,100,2025-11-26,Passed,synthetic_demo
+ASM-054,ENR-027,STU-014,CRS-010,Knowledge Check 2,100,100,2025-12-17,Passed,synthetic_demo
+ASM-055,ENR-028,STU-014,CRS-004,Knowledge Check 1,59,100,2025-12-08,Needs Support,synthetic_demo
+ASM-056,ENR-028,STU-014,CRS-004,Knowledge Check 2,70,100,2025-12-29,Passed,synthetic_demo
+ASM-057,ENR-029,STU-015,CRS-003,Knowledge Check 1,61,100,2025-12-01,Passed,synthetic_demo
+ASM-058,ENR-029,STU-015,CRS-003,Knowledge Check 2,72,100,2025-12-22,Passed,synthetic_demo
+ASM-059,ENR-030,STU-015,CRS-007,Knowledge Check 1,81,100,2025-12-13,Passed,synthetic_demo
+ASM-060,ENR-030,STU-015,CRS-007,Knowledge Check 2,92,100,2026-01-03,Passed,synthetic_demo
+ASM-061,ENR-031,STU-016,CRS-006,Knowledge Check 1,83,100,2025-12-06,Passed,synthetic_demo
+ASM-062,ENR-031,STU-016,CRS-006,Knowledge Check 2,94,100,2025-12-27,Passed,synthetic_demo
+ASM-063,ENR-032,STU-016,CRS-010,Knowledge Check 1,50,100,2025-12-18,Needs Support,synthetic_demo
+ASM-064,ENR-032,STU-016,CRS-010,Knowledge Check 2,61,100,2026-01-08,Passed,synthetic_demo
+ASM-065,ENR-033,STU-017,CRS-009,Knowledge Check 1,52,100,2025-12-11,Needs Support,synthetic_demo
+ASM-066,ENR-033,STU-017,CRS-009,Knowledge Check 2,63,100,2026-01-01,Passed,synthetic_demo
+ASM-067,ENR-034,STU-017,CRS-003,Knowledge Check 1,75,100,2025-12-23,Passed,synthetic_demo
+ASM-068,ENR-034,STU-017,CRS-003,Knowledge Check 2,86,100,2026-01-13,Passed,synthetic_demo
+ASM-069,ENR-035,STU-018,CRS-002,Knowledge Check 1,77,100,2025-12-16,Passed,synthetic_demo
+ASM-070,ENR-035,STU-018,CRS-002,Knowledge Check 2,88,100,2026-01-06,Passed,synthetic_demo
+ASM-071,ENR-036,STU-018,CRS-006,Knowledge Check 1,97,100,2025-12-28,Passed,synthetic_demo
+ASM-072,ENR-036,STU-018,CRS-006,Knowledge Check 2,55,100,2026-01-18,Needs Support,synthetic_demo
+ASM-073,ENR-037,STU-019,CRS-005,Knowledge Check 1,99,100,2025-12-21,Passed,synthetic_demo
+ASM-074,ENR-037,STU-019,CRS-005,Knowledge Check 2,57,100,2026-01-11,Needs Support,synthetic_demo
+ASM-075,ENR-038,STU-019,CRS-009,Knowledge Check 1,66,100,2026-01-02,Passed,synthetic_demo
+ASM-076,ENR-038,STU-019,CRS-009,Knowledge Check 2,77,100,2026-01-23,Passed,synthetic_demo
+ASM-077,ENR-039,STU-020,CRS-008,Knowledge Check 1,68,100,2025-12-26,Passed,synthetic_demo
+ASM-078,ENR-039,STU-020,CRS-008,Knowledge Check 2,79,100,2026-01-16,Passed,synthetic_demo
+ASM-079,ENR-040,STU-020,CRS-002,Knowledge Check 1,91,100,2026-01-07,Passed,synthetic_demo
+ASM-080,ENR-040,STU-020,CRS-002,Knowledge Check 2,49,100,2026-01-28,Needs Support,synthetic_demo
+ASM-081,ENR-041,STU-021,CRS-001,Knowledge Check 1,93,100,2025-12-31,Passed,synthetic_demo
+ASM-082,ENR-041,STU-021,CRS-001,Knowledge Check 2,51,100,2026-01-21,Needs Support,synthetic_demo
+ASM-083,ENR-042,STU-021,CRS-005,Knowledge Check 1,60,100,2026-01-12,Passed,synthetic_demo
+ASM-084,ENR-042,STU-021,CRS-005,Knowledge Check 2,71,100,2026-02-02,Passed,synthetic_demo
+ASM-085,ENR-043,STU-022,CRS-004,Knowledge Check 1,62,100,2026-01-05,Passed,synthetic_demo
+ASM-086,ENR-043,STU-022,CRS-004,Knowledge Check 2,73,100,2026-01-26,Passed,synthetic_demo
+ASM-087,ENR-044,STU-022,CRS-008,Knowledge Check 1,82,100,2026-01-17,Passed,synthetic_demo
+ASM-088,ENR-044,STU-022,CRS-008,Knowledge Check 2,93,100,2026-02-07,Passed,synthetic_demo
+ASM-089,ENR-045,STU-023,CRS-007,Knowledge Check 1,84,100,2026-01-10,Passed,synthetic_demo
+ASM-090,ENR-045,STU-023,CRS-007,Knowledge Check 2,95,100,2026-01-31,Passed,synthetic_demo
+ASM-091,ENR-046,STU-023,CRS-001,Knowledge Check 1,54,100,2026-01-22,Needs Support,synthetic_demo
+ASM-092,ENR-046,STU-023,CRS-001,Knowledge Check 2,65,100,2026-02-12,Passed,synthetic_demo
+ASM-093,ENR-047,STU-024,CRS-010,Knowledge Check 1,53,100,2026-01-15,Needs Support,synthetic_demo
+ASM-094,ENR-047,STU-024,CRS-010,Knowledge Check 2,64,100,2026-02-05,Passed,synthetic_demo
+ASM-095,ENR-048,STU-024,CRS-004,Knowledge Check 1,76,100,2026-01-27,Passed,synthetic_demo
+ASM-096,ENR-048,STU-024,CRS-004,Knowledge Check 2,87,100,2026-02-17,Passed,synthetic_demo
+ASM-097,ENR-049,STU-025,CRS-003,Knowledge Check 1,78,100,2026-01-20,Passed,synthetic_demo
+ASM-098,ENR-049,STU-025,CRS-003,Knowledge Check 2,89,100,2026-02-10,Passed,synthetic_demo
+ASM-099,ENR-050,STU-025,CRS-007,Knowledge Check 1,98,100,2026-02-01,Passed,synthetic_demo
+ASM-100,ENR-050,STU-025,CRS-007,Knowledge Check 2,56,100,2026-02-22,Needs Support,synthetic_demo
+ASM-101,ENR-051,STU-026,CRS-006,Knowledge Check 1,100,100,2026-01-25,Passed,synthetic_demo
+ASM-102,ENR-051,STU-026,CRS-006,Knowledge Check 2,58,100,2026-02-15,Needs Support,synthetic_demo
+ASM-103,ENR-052,STU-026,CRS-010,Knowledge Check 1,67,100,2026-02-06,Passed,synthetic_demo
+ASM-104,ENR-052,STU-026,CRS-010,Knowledge Check 2,78,100,2026-02-27,Passed,synthetic_demo
+ASM-105,ENR-053,STU-027,CRS-009,Knowledge Check 1,69,100,2026-01-30,Passed,synthetic_demo
+ASM-106,ENR-053,STU-027,CRS-009,Knowledge Check 2,80,100,2026-02-20,Passed,synthetic_demo
+ASM-107,ENR-054,STU-027,CRS-003,Knowledge Check 1,92,100,2026-02-11,Passed,synthetic_demo
+ASM-108,ENR-054,STU-027,CRS-003,Knowledge Check 2,50,100,2026-03-04,Needs Support,synthetic_demo
+ASM-109,ENR-055,STU-028,CRS-002,Knowledge Check 1,94,100,2026-02-04,Passed,synthetic_demo
+ASM-110,ENR-055,STU-028,CRS-002,Knowledge Check 2,52,100,2026-02-25,Needs Support,synthetic_demo
+ASM-111,ENR-056,STU-028,CRS-006,Knowledge Check 1,61,100,2026-02-16,Passed,synthetic_demo
+ASM-112,ENR-056,STU-028,CRS-006,Knowledge Check 2,72,100,2026-03-09,Passed,synthetic_demo
+ASM-113,ENR-057,STU-029,CRS-005,Knowledge Check 1,63,100,2026-02-09,Passed,synthetic_demo
+ASM-114,ENR-057,STU-029,CRS-005,Knowledge Check 2,74,100,2026-03-02,Passed,synthetic_demo
+ASM-115,ENR-058,STU-029,CRS-009,Knowledge Check 1,83,100,2026-02-21,Passed,synthetic_demo
+ASM-116,ENR-058,STU-029,CRS-009,Knowledge Check 2,94,100,2026-03-14,Passed,synthetic_demo
+ASM-117,ENR-059,STU-030,CRS-008,Knowledge Check 1,85,100,2026-02-14,Passed,synthetic_demo
+ASM-118,ENR-059,STU-030,CRS-008,Knowledge Check 2,96,100,2026-03-07,Passed,synthetic_demo
+ASM-119,ENR-060,STU-030,CRS-002,Knowledge Check 1,55,100,2026-02-26,Needs Support,synthetic_demo
+ASM-120,ENR-060,STU-030,CRS-002,Knowledge Check 2,66,100,2026-03-19,Passed,synthetic_demo
+ASM-121,ENR-061,STU-031,CRS-001,Knowledge Check 1,57,100,2026-02-19,Needs Support,synthetic_demo
+ASM-122,ENR-061,STU-031,CRS-001,Knowledge Check 2,68,100,2026-03-12,Passed,synthetic_demo
+ASM-123,ENR-062,STU-031,CRS-005,Knowledge Check 1,77,100,2026-03-03,Passed,synthetic_demo
+ASM-124,ENR-062,STU-031,CRS-005,Knowledge Check 2,88,100,2026-03-24,Passed,synthetic_demo
+ASM-125,ENR-063,STU-032,CRS-004,Knowledge Check 1,79,100,2026-02-24,Passed,synthetic_demo
+ASM-126,ENR-063,STU-032,CRS-004,Knowledge Check 2,90,100,2026-03-17,Passed,synthetic_demo
+ASM-127,ENR-064,STU-032,CRS-008,Knowledge Check 1,99,100,2026-03-08,Passed,synthetic_demo
+ASM-128,ENR-064,STU-032,CRS-008,Knowledge Check 2,57,100,2026-03-29,Needs Support,synthetic_demo
+ASM-129,ENR-065,STU-033,CRS-007,Knowledge Check 1,48,100,2026-03-01,Needs Support,synthetic_demo
+ASM-130,ENR-065,STU-033,CRS-007,Knowledge Check 2,59,100,2026-03-22,Needs Support,synthetic_demo
+ASM-131,ENR-066,STU-033,CRS-001,Knowledge Check 1,71,100,2026-03-13,Passed,synthetic_demo
+ASM-132,ENR-066,STU-033,CRS-001,Knowledge Check 2,82,100,2026-04-03,Passed,synthetic_demo
+ASM-133,ENR-067,STU-034,CRS-010,Knowledge Check 1,70,100,2026-03-06,Passed,synthetic_demo
+ASM-134,ENR-067,STU-034,CRS-010,Knowledge Check 2,81,100,2026-03-27,Passed,synthetic_demo
+ASM-135,ENR-068,STU-034,CRS-004,Knowledge Check 1,93,100,2026-03-18,Passed,synthetic_demo
+ASM-136,ENR-068,STU-034,CRS-004,Knowledge Check 2,51,100,2026-04-08,Needs Support,synthetic_demo
+ASM-137,ENR-069,STU-035,CRS-003,Knowledge Check 1,95,100,2026-03-11,Passed,synthetic_demo
+ASM-138,ENR-069,STU-035,CRS-003,Knowledge Check 2,53,100,2026-04-01,Needs Support,synthetic_demo
+ASM-139,ENR-070,STU-035,CRS-007,Knowledge Check 1,62,100,2026-03-23,Passed,synthetic_demo
+ASM-140,ENR-070,STU-035,CRS-007,Knowledge Check 2,73,100,2026-04-13,Passed,synthetic_demo
+ASM-141,ENR-071,STU-036,CRS-006,Knowledge Check 1,64,100,2026-03-16,Passed,synthetic_demo
+ASM-142,ENR-071,STU-036,CRS-006,Knowledge Check 2,75,100,2026-04-06,Passed,synthetic_demo
+ASM-143,ENR-072,STU-036,CRS-010,Knowledge Check 1,84,100,2026-03-28,Passed,synthetic_demo
+ASM-144,ENR-072,STU-036,CRS-010,Knowledge Check 2,95,100,2026-04-18,Passed,synthetic_demo
+ASM-145,ENR-073,STU-037,CRS-009,Knowledge Check 1,86,100,2026-03-21,Passed,synthetic_demo
+ASM-146,ENR-073,STU-037,CRS-009,Knowledge Check 2,97,100,2026-04-11,Passed,synthetic_demo
+ASM-147,ENR-074,STU-037,CRS-003,Knowledge Check 1,56,100,2026-04-02,Needs Support,synthetic_demo
+ASM-148,ENR-074,STU-037,CRS-003,Knowledge Check 2,67,100,2026-04-23,Passed,synthetic_demo
+ASM-149,ENR-075,STU-038,CRS-002,Knowledge Check 1,58,100,2026-03-26,Needs Support,synthetic_demo
+ASM-150,ENR-075,STU-038,CRS-002,Knowledge Check 2,69,100,2026-04-16,Passed,synthetic_demo
+ASM-151,ENR-076,STU-038,CRS-006,Knowledge Check 1,78,100,2026-04-07,Passed,synthetic_demo
+ASM-152,ENR-076,STU-038,CRS-006,Knowledge Check 2,89,100,2026-04-28,Passed,synthetic_demo
+ASM-153,ENR-077,STU-039,CRS-005,Knowledge Check 1,80,100,2026-03-31,Passed,synthetic_demo
+ASM-154,ENR-077,STU-039,CRS-005,Knowledge Check 2,91,100,2026-04-21,Passed,synthetic_demo
+ASM-155,ENR-078,STU-039,CRS-009,Knowledge Check 1,100,100,2026-04-12,Passed,synthetic_demo
+ASM-156,ENR-078,STU-039,CRS-009,Knowledge Check 2,58,100,2026-05-03,Needs Support,synthetic_demo
+ASM-157,ENR-079,STU-040,CRS-008,Knowledge Check 1,49,100,2026-04-05,Needs Support,synthetic_demo
+ASM-158,ENR-079,STU-040,CRS-008,Knowledge Check 2,60,100,2026-04-26,Passed,synthetic_demo
+ASM-159,ENR-080,STU-040,CRS-002,Knowledge Check 1,72,100,2026-04-17,Passed,synthetic_demo
+ASM-160,ENR-080,STU-040,CRS-002,Knowledge Check 2,83,100,2026-05-08,Passed,synthetic_demo
+ASM-161,ENR-081,STU-041,CRS-001,Knowledge Check 1,74,100,2026-04-10,Passed,synthetic_demo
+ASM-162,ENR-081,STU-041,CRS-001,Knowledge Check 2,85,100,2026-05-01,Passed,synthetic_demo
+ASM-163,ENR-082,STU-041,CRS-005,Knowledge Check 1,94,100,2026-04-22,Passed,synthetic_demo
+ASM-164,ENR-082,STU-041,CRS-005,Knowledge Check 2,52,100,2026-05-13,Needs Support,synthetic_demo
+ASM-165,ENR-083,STU-042,CRS-004,Knowledge Check 1,96,100,2026-04-15,Passed,synthetic_demo
+ASM-166,ENR-083,STU-042,CRS-004,Knowledge Check 2,54,100,2026-05-06,Needs Support,synthetic_demo
+ASM-167,ENR-084,STU-042,CRS-008,Knowledge Check 1,63,100,2026-04-27,Passed,synthetic_demo
+ASM-168,ENR-084,STU-042,CRS-008,Knowledge Check 2,74,100,2026-05-18,Passed,synthetic_demo
+ASM-169,ENR-085,STU-043,CRS-007,Knowledge Check 1,65,100,2026-04-20,Passed,synthetic_demo
+ASM-170,ENR-085,STU-043,CRS-007,Knowledge Check 2,76,100,2026-05-11,Passed,synthetic_demo
+ASM-171,ENR-086,STU-043,CRS-001,Knowledge Check 1,88,100,2026-05-02,Passed,synthetic_demo
+ASM-172,ENR-086,STU-043,CRS-001,Knowledge Check 2,99,100,2026-05-23,Passed,synthetic_demo
+ASM-173,ENR-087,STU-044,CRS-010,Knowledge Check 1,87,100,2026-04-25,Passed,synthetic_demo
+ASM-174,ENR-087,STU-044,CRS-010,Knowledge Check 2,98,100,2026-05-16,Passed,synthetic_demo
+ASM-175,ENR-088,STU-044,CRS-004,Knowledge Check 1,57,100,2026-05-07,Needs Support,synthetic_demo
+ASM-176,ENR-088,STU-044,CRS-004,Knowledge Check 2,68,100,2026-05-28,Passed,synthetic_demo
+ASM-177,ENR-089,STU-045,CRS-003,Knowledge Check 1,59,100,2026-04-30,Needs Support,synthetic_demo
+ASM-178,ENR-089,STU-045,CRS-003,Knowledge Check 2,70,100,2026-05-21,Passed,synthetic_demo
+ASM-179,ENR-090,STU-045,CRS-007,Knowledge Check 1,79,100,2026-05-12,Passed,synthetic_demo
+ASM-180,ENR-090,STU-045,CRS-007,Knowledge Check 2,90,100,2026-06-02,Passed,synthetic_demo
+ASM-181,ENR-091,STU-046,CRS-006,Knowledge Check 1,81,100,2026-05-05,Passed,synthetic_demo
+ASM-182,ENR-091,STU-046,CRS-006,Knowledge Check 2,92,100,2026-05-26,Passed,synthetic_demo
+ASM-183,ENR-092,STU-046,CRS-010,Knowledge Check 1,48,100,2026-05-17,Needs Support,synthetic_demo
+ASM-184,ENR-092,STU-046,CRS-010,Knowledge Check 2,59,100,2026-06-07,Needs Support,synthetic_demo
+ASM-185,ENR-093,STU-047,CRS-009,Knowledge Check 1,50,100,2026-05-10,Needs Support,synthetic_demo
+ASM-186,ENR-093,STU-047,CRS-009,Knowledge Check 2,61,100,2026-05-31,Passed,synthetic_demo
+ASM-187,ENR-094,STU-047,CRS-003,Knowledge Check 1,73,100,2026-05-22,Passed,synthetic_demo
+ASM-188,ENR-094,STU-047,CRS-003,Knowledge Check 2,84,100,2026-06-12,Passed,synthetic_demo
+ASM-189,ENR-095,STU-048,CRS-002,Knowledge Check 1,75,100,2026-05-15,Passed,synthetic_demo
+ASM-190,ENR-095,STU-048,CRS-002,Knowledge Check 2,86,100,2026-06-05,Passed,synthetic_demo
+ASM-191,ENR-096,STU-048,CRS-006,Knowledge Check 1,95,100,2026-05-27,Passed,synthetic_demo
+ASM-192,ENR-096,STU-048,CRS-006,Knowledge Check 2,53,100,2026-06-17,Needs Support,synthetic_demo
+ASM-193,ENR-097,STU-049,CRS-005,Knowledge Check 1,97,100,2026-05-20,Passed,synthetic_demo
+ASM-194,ENR-097,STU-049,CRS-005,Knowledge Check 2,55,100,2026-06-10,Needs Support,synthetic_demo
+ASM-195,ENR-098,STU-049,CRS-009,Knowledge Check 1,64,100,2026-06-01,Passed,synthetic_demo
+ASM-196,ENR-098,STU-049,CRS-009,Knowledge Check 2,75,100,2026-06-22,Passed,synthetic_demo
+ASM-197,ENR-099,STU-050,CRS-008,Knowledge Check 1,66,100,2026-05-25,Passed,synthetic_demo
+ASM-198,ENR-099,STU-050,CRS-008,Knowledge Check 2,77,100,2026-06-15,Passed,synthetic_demo
+ASM-199,ENR-100,STU-050,CRS-002,Knowledge Check 1,89,100,2026-06-06,Passed,synthetic_demo
+ASM-200,ENR-100,STU-050,CRS-002,Knowledge Check 2,100,100,2026-06-27,Passed,synthetic_demo
+ASM-201,ENR-101,STU-051,CRS-001,Knowledge Check 1,91,100,2026-05-30,Passed,synthetic_demo
+ASM-202,ENR-101,STU-051,CRS-001,Knowledge Check 2,49,100,2026-06-20,Needs Support,synthetic_demo
+ASM-203,ENR-102,STU-051,CRS-005,Knowledge Check 1,58,100,2026-06-11,Needs Support,synthetic_demo
+ASM-204,ENR-102,STU-051,CRS-005,Knowledge Check 2,69,100,2026-07-02,Passed,synthetic_demo
+ASM-205,ENR-103,STU-052,CRS-004,Knowledge Check 1,60,100,2026-06-04,Passed,synthetic_demo
+ASM-206,ENR-103,STU-052,CRS-004,Knowledge Check 2,71,100,2026-06-25,Passed,synthetic_demo
+ASM-207,ENR-104,STU-052,CRS-008,Knowledge Check 1,80,100,2026-06-16,Passed,synthetic_demo
+ASM-208,ENR-104,STU-052,CRS-008,Knowledge Check 2,91,100,2026-07-07,Passed,synthetic_demo
+ASM-209,ENR-105,STU-053,CRS-007,Knowledge Check 1,82,100,2026-06-09,Passed,synthetic_demo
+ASM-210,ENR-105,STU-053,CRS-007,Knowledge Check 2,93,100,2026-06-30,Passed,synthetic_demo
+ASM-211,ENR-106,STU-053,CRS-001,Knowledge Check 1,52,100,2026-06-21,Needs Support,synthetic_demo
+ASM-212,ENR-106,STU-053,CRS-001,Knowledge Check 2,63,100,2026-07-12,Passed,synthetic_demo
+ASM-213,ENR-107,STU-054,CRS-010,Knowledge Check 1,51,100,2026-06-14,Needs Support,synthetic_demo
+ASM-214,ENR-107,STU-054,CRS-010,Knowledge Check 2,62,100,2026-07-05,Passed,synthetic_demo
+ASM-215,ENR-108,STU-054,CRS-004,Knowledge Check 1,74,100,2026-06-26,Passed,synthetic_demo
+ASM-216,ENR-108,STU-054,CRS-004,Knowledge Check 2,85,100,2026-07-17,Passed,synthetic_demo
+ASM-217,ENR-109,STU-055,CRS-003,Knowledge Check 1,76,100,2026-06-19,Passed,synthetic_demo
+ASM-218,ENR-109,STU-055,CRS-003,Knowledge Check 2,87,100,2026-07-10,Passed,synthetic_demo
+ASM-219,ENR-110,STU-055,CRS-007,Knowledge Check 1,96,100,2026-07-01,Passed,synthetic_demo
+ASM-220,ENR-110,STU-055,CRS-007,Knowledge Check 2,54,100,2026-07-22,Needs Support,synthetic_demo
+ASM-221,ENR-111,STU-056,CRS-006,Knowledge Check 1,98,100,2026-06-24,Passed,synthetic_demo
+ASM-222,ENR-111,STU-056,CRS-006,Knowledge Check 2,56,100,2026-07-15,Needs Support,synthetic_demo
+ASM-223,ENR-112,STU-056,CRS-010,Knowledge Check 1,65,100,2026-07-06,Passed,synthetic_demo
+ASM-224,ENR-112,STU-056,CRS-010,Knowledge Check 2,76,100,2026-07-27,Passed,synthetic_demo
+ASM-225,ENR-113,STU-057,CRS-009,Knowledge Check 1,67,100,2026-06-29,Passed,synthetic_demo
+ASM-226,ENR-113,STU-057,CRS-009,Knowledge Check 2,78,100,2026-07-20,Passed,synthetic_demo
+ASM-227,ENR-114,STU-057,CRS-003,Knowledge Check 1,90,100,2026-07-11,Passed,synthetic_demo
+ASM-228,ENR-114,STU-057,CRS-003,Knowledge Check 2,48,100,2026-08-01,Needs Support,synthetic_demo
+ASM-229,ENR-115,STU-058,CRS-002,Knowledge Check 1,92,100,2026-07-04,Passed,synthetic_demo
+ASM-230,ENR-115,STU-058,CRS-002,Knowledge Check 2,50,100,2026-07-25,Needs Support,synthetic_demo
+ASM-231,ENR-116,STU-058,CRS-006,Knowledge Check 1,59,100,2026-07-16,Needs Support,synthetic_demo
+ASM-232,ENR-116,STU-058,CRS-006,Knowledge Check 2,70,100,2026-08-06,Passed,synthetic_demo
+ASM-233,ENR-117,STU-059,CRS-005,Knowledge Check 1,61,100,2026-07-09,Passed,synthetic_demo
+ASM-234,ENR-117,STU-059,CRS-005,Knowledge Check 2,72,100,2026-07-30,Passed,synthetic_demo
+ASM-235,ENR-118,STU-059,CRS-009,Knowledge Check 1,81,100,2026-07-21,Passed,synthetic_demo
+ASM-236,ENR-118,STU-059,CRS-009,Knowledge Check 2,92,100,2026-08-11,Passed,synthetic_demo
+ASM-237,ENR-119,STU-060,CRS-008,Knowledge Check 1,83,100,2026-07-14,Passed,synthetic_demo
+ASM-238,ENR-119,STU-060,CRS-008,Knowledge Check 2,94,100,2026-08-04,Passed,synthetic_demo
+ASM-239,ENR-120,STU-060,CRS-002,Knowledge Check 1,53,100,2026-07-26,Needs Support,synthetic_demo
+ASM-240,ENR-120,STU-060,CRS-002,Knowledge Check 2,64,100,2026-08-16,Passed,synthetic_demo
