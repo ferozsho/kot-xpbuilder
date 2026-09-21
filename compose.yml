@@ -1,0 +1,175 @@
+# Standalone (Moodle-free) Kot XPBuilder runtime.
+#
+# Superset, its PostgreSQL metadata store and Redis are the only services.
+# There is no Moodle network, connector, or read-only MariaDB replica: point
+# Superset at whatever external database you want to analyze through the
+# regular Superset "Connect a database" flow.
+
+name: ${XPBUILDER_INSTANCE:?XPBUILDER_INSTANCE is required}
+
+x-xpbuilder-image: &x-xpbuilder-image
+  image: ${XPBUILDER_IMAGE:-kot-xpbuilder:local}
+  build:
+    context: .
+    target: xpbuilder
+    args:
+      XPBUILDER_VERSION: ${XPBUILDER_VERSION:-0.1.0}
+      DEV_MODE: ${DEV_MODE:-false}
+
+x-superset-environment: &x-superset-environment
+  SUPERSET_CONFIG_PATH: /app/xpbuilder/superset_config.py
+  SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?SUPERSET_SECRET_KEY is required}
+  GUEST_TOKEN_JWT_SECRET: ${GUEST_TOKEN_JWT_SECRET:?GUEST_TOKEN_JWT_SECRET is required}
+  GUEST_TOKEN_JWT_AUDIENCE: ${GUEST_TOKEN_JWT_AUDIENCE:?GUEST_TOKEN_JWT_AUDIENCE is required}
+  SUPERSET_REDIS_PASSWORD: ${SUPERSET_REDIS_PASSWORD:?SUPERSET_REDIS_PASSWORD is required}
+  POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+  XPBUILDER_ALLOWED_ORIGINS: ${XPBUILDER_ALLOWED_ORIGINS:?XPBUILDER_ALLOWED_ORIGINS is required}
+  XPBUILDER_APP_NAME: ${XPBUILDER_APP_NAME:-Advance BI}
+  # Clicking the navbar brand logo goes here; "/" keeps the default Superset
+  # home page.
+  XPBUILDER_BRAND_URL: ${XPBUILDER_BRAND_URL:-/}
+  SUPERSET_LOG_LEVEL: ${SUPERSET_LOG_LEVEL:-INFO}
+
+services:
+  superset:
+    <<: *x-xpbuilder-image
+    container_name: ${XPBUILDER_INSTANCE}_superset
+    restart: unless-stopped
+    command: ["/app/docker/entrypoints/run-server.sh"]
+    environment: *x-superset-environment
+    ports:
+      - "${XPBUILDER_HOST_PORT:?XPBUILDER_HOST_PORT is required}:8088"
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /app/.venv/bin/python -c "import urllib.request;
+          assert urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=5).status == 200"
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 90s
+    networks:
+      xpbuilder-internal: {}
+
+  superset-worker:
+    <<: *x-xpbuilder-image
+    container_name: ${XPBUILDER_INSTANCE}_superset_worker
+    restart: unless-stopped
+    command: ["celery", "-A", "superset.tasks.celery_app:app", "worker", "-l", "INFO"]
+    environment: *x-superset-environment
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          celery -A superset.tasks.celery_app:app inspect ping
+          -d "celery@$${HOSTNAME}" --timeout 8 | grep -q pong
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    networks:
+      - xpbuilder-internal
+
+  superset-beat:
+    <<: *x-xpbuilder-image
+    container_name: ${XPBUILDER_INSTANCE}_superset_beat
+    restart: unless-stopped
+    command: ["celery", "-A", "superset.tasks.celery_app:app", "beat", "-l", "INFO"]
+    environment: *x-superset-environment
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grep -aq celery /proc/1/cmdline"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - xpbuilder-internal
+
+  initialize:
+    <<: *x-xpbuilder-image
+    profiles: ["tools"]
+    command: ["/opt/xpbuilder/bin/initialize.sh", "new"]
+    environment:
+      <<: *x-superset-environment
+      XPBUILDER_ALLOW_INITIALIZE: ${XPBUILDER_ALLOW_INITIALIZE:-no}
+      XPBUILDER_ALLOW_SCHEMA_UPGRADE: ${XPBUILDER_ALLOW_SCHEMA_UPGRADE:-no}
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:?SUPERSET_ADMIN_USERNAME is required}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:?SUPERSET_ADMIN_PASSWORD is required}
+      SUPERSET_ADMIN_FIRSTNAME: ${SUPERSET_ADMIN_FIRSTNAME:?SUPERSET_ADMIN_FIRSTNAME is required}
+      SUPERSET_ADMIN_LASTNAME: ${SUPERSET_ADMIN_LASTNAME:?SUPERSET_ADMIN_LASTNAME is required}
+      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:?SUPERSET_ADMIN_EMAIL is required}
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    networks:
+      - xpbuilder-internal
+
+  superset-db:
+    image: postgres:16-alpine
+    container_name: ${XPBUILDER_INSTANCE}_superset_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - superset-metadata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - xpbuilder-internal
+
+  superset-redis:
+    image: redis:7-alpine
+    container_name: ${XPBUILDER_INSTANCE}_superset_redis
+    restart: unless-stopped
+    command:
+      - sh
+      - -ec
+      - exec redis-server --appendonly yes --requirepass "$${SUPERSET_REDIS_PASSWORD}"
+    environment:
+      SUPERSET_REDIS_PASSWORD: ${SUPERSET_REDIS_PASSWORD:?SUPERSET_REDIS_PASSWORD is required}
+    volumes:
+      - superset-redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${SUPERSET_REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - xpbuilder-internal
+
+volumes:
+  superset-metadata:
+    name: ${XPBUILDER_METADATA_VOLUME:?XPBUILDER_METADATA_VOLUME is required}
+    external: ${XPBUILDER_VOLUMES_EXTERNAL:-false}
+  superset-redis:
+    name: ${XPBUILDER_REDIS_VOLUME:?XPBUILDER_REDIS_VOLUME is required}
+    external: ${XPBUILDER_VOLUMES_EXTERNAL:-false}
+
+networks:
+  xpbuilder-internal:
+    name: ${XPBUILDER_INTERNAL_NETWORK:?XPBUILDER_INTERNAL_NETWORK is required}

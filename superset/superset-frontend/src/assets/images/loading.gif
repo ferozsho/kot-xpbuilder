@@ -1,0 +1,50 @@
+<svg viewBox="0 0 80 80" width="80" height="80" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bi-loader-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#20A7C9" />
+      <stop offset="100%" stop-color="#006699" />
+    </linearGradient>
+    <linearGradient id="bi-text-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#20A7C9" />
+      <stop offset="100%" stop-color="#1B365D" />
+    </linearGradient>
+  </defs>
+  <style>
+    .bi-spin-ring {
+      transform-origin: 40px 40px;
+      animation: bi-spin 1.2s linear infinite;
+    }
+    .bi-pulse-text {
+      transform-origin: 40px 40px;
+      animation: bi-pulse 1.8s ease-in-out infinite alternate;
+    }
+    @keyframes bi-spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    @keyframes bi-pulse {
+      0% { opacity: 0.85; transform: scale(0.97); }
+      100% { opacity: 1; transform: scale(1.03); }
+    }
+  </style>
+
+  <!-- Track Ring -->
+  <circle cx="40" cy="40" r="32" stroke="#E2E8F0" stroke-width="4.5" fill="none" opacity="0.6" />
+
+  <!-- Animated Gradient Arc -->
+  <circle cx="40" cy="40" r="32" stroke="url(#bi-loader-gradient)" stroke-width="4.5" stroke-linecap="round" stroke-dasharray="130 70" fill="none" class="bi-spin-ring">
+    <animateTransform
+      attributeName="transform"
+      type="rotate"
+      from="0 40 40"
+      to="360 40 40"
+      dur="1.2s"
+      repeatCount="indefinite"
+    />
+  </circle>
+
+  <!-- BI Central Branding -->
+  <g class="bi-pulse-text">
+    <text x="40" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="900" font-size="24" fill="url(#bi-text-gradient)" text-anchor="middle" letter-spacing="1">BI</text>
+  </g>
+</svg>

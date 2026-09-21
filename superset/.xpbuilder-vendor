@@ -1,0 +1,5 @@
+Apache Superset 6.1.0
+source: https://github.com/apache/superset
+tag: 6.1.0
+commit: c83fb2bb1dcfac41ac51bcebd82471f4a7180d18
+vendored: 2026-08-26

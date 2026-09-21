@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "contract_version": "1.0",
+  "xpbuilder_version": "0.1.0",
+  "runtime": "standalone",
+  "moodle_integration": false,
+  "superset": {
+    "version": "6.1.0",
+    "build": "source",
+    "source": "https://github.com/apache/superset",
+    "source_tag": "6.1.0",
+    "source_commit": "c83fb2bb1dcfac41ac51bcebd82471f4a7180d18",
+    "vendored_at": "2026-08-26"
+  },
+  "required_contracts": [
+    "security-login",
+    "dashboard-crud",
+    "chart-crud",
+    "dataset-crud",
+    "embedded-dashboard-registration",
+    "guest-token",
+    "health"
+  ]
+}

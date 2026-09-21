@@ -1,0 +1,119 @@
+{#
+    Custom tail JS for Kot XPBuilder Superset stacks.
+
+    Superset 6.1 native filters STAGE a "Clear all" (the select inputs empty)
+    but only commit the clear when "Apply" is clicked — so charts kept their
+    old values and the "Clear all" button looked broken. Auto-clicking Apply is
+    unreliable (Apply can go stale/disabled), so this hook reaches the app's
+    Redux store directly (via the React fiber tree) and dispatches
+    UPDATE_DATA_MASK (value null) for every native filter: this clears the
+    APPLIED data mask, re-queries all charts and collapses the filter chips in
+    one go.
+#}
+{#
+    Brand logo link fixer: when XPBUILDER_BRAND_URL is configured, clicking the
+    navbar brand logo goes to that URL instead of the Superset home page. The
+    logo is a React-rendered anchor, so re-apply on an interval in case the app
+    re-renders the navbar.
+#}
+<script nonce="{{ macros.get_nonce() }}">
+(function () {
+  var brandUrl = {{ config.get('XPBUILDER_BRAND_URL', '/') | tojson }};
+  if (!brandUrl || brandUrl === '/' || brandUrl === '') { return; }
+  function fixBrand() {
+    var img = document.querySelector('img[src*="advance-bi-logo.png"]');
+    if (!img) { return; }
+    var anchor = img.closest('a');
+    if (anchor && anchor.getAttribute('href') !== brandUrl) {
+      anchor.setAttribute('href', brandUrl);
+    }
+  }
+  fixBrand();
+  document.addEventListener('DOMContentLoaded', fixBrand);
+  setInterval(fixBrand, 1500);
+})();
+</script>
+<script nonce="{{ macros.get_nonce() }}">
+(function () {
+  // Only dashboard pages have the native-filter Clear All button.
+  if (window.location.pathname.indexOf('/superset/dashboard/') !== 0 &&
+      window.location.pathname.indexOf('/embedded/') !== 0) {
+    return;
+  }
+
+  function findSupersetStore(doc) {
+    var app = doc.querySelector('#app');
+    if (!app) { return null; }
+    var rootKey = null;
+    var keys = Object.keys(app);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].indexOf('__reactContainer$') === 0) { rootKey = keys[i]; break; }
+    }
+    if (!rootKey) { return null; }
+    var store = null;
+    var seen = [];
+    function walk(node, depth) {
+      if (!node || seen.indexOf(node) !== -1 || depth > 40) { return; }
+      seen.push(node);
+      var props = node.memoizedProps;
+      if (props && props.store && typeof props.store.getState === 'function') {
+        store = props.store;
+        return;
+      }
+      if (node.child) { walk(node.child, depth + 1); }
+      if (node.sibling && !store) { walk(node.sibling, depth); }
+    }
+    walk(app[rootKey], 0);
+    return store;
+  }
+
+  function clearAllNativeFilters(doc) {
+    var store = findSupersetStore(doc);
+    if (!store) { return false; }
+    var dm = store.getState().dataMask || {};
+    var ids = Object.keys(dm);
+    var cleared = false;
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      if (id.indexOf('NATIVE_FILTER-') === 0) {
+        store.dispatch({
+          type: 'UPDATE_DATA_MASK',
+          filterId: id,
+          dataMask: {
+            filterState: { value: null, selectedOptions: [] },
+            extraFormData: {}
+          }
+        });
+        cleared = true;
+      }
+    }
+    return cleared;
+  }
+
+  function hookClearAll(doc) {
+    if (!doc || doc.__xpClearAllHooked) { return; }
+    doc.__xpClearAllHooked = true;
+    doc.addEventListener('click', function (e) {
+      var target = e.target;
+      var btn = target && target.closest ? target.closest('button') : null;
+      if (!btn) { return; }
+      var label = (btn.innerText || '').trim().toLowerCase();
+      if (label !== 'clear all' && label !== 'clear') { return; }
+      // Let Superset's own Clear All run first (clears pending selections /
+      // select inputs), then force-reset the applied data mask so the charts
+      // actually refresh.
+      setTimeout(function () {
+        clearAllNativeFilters(doc);
+      }, 120);
+    });
+  }
+
+  // Hook the direct (non-iframe) dashboard document.
+  if (window.location.pathname.indexOf('/superset/dashboard/') === 0) {
+    hookClearAll(document);
+    // Re-hook after SPA route changes / re-renders in case the document is
+    // replaced or the hook flag is lost.
+    setInterval(function () { hookClearAll(document); }, 2000);
+  }
+})();
+</script>

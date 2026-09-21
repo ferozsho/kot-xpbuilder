@@ -1,0 +1,4 @@
+# Runtime database drivers missing from the pinned Apache Superset image.
+# These packages have no transitive Python dependencies.
+PyMySQL==1.1.1
+psycopg2-binary==2.9.10

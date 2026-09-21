@@ -1,0 +1,24 @@
+# Root build context exclusions for the XPBuilder image.
+# Secrets, backups, and local tooling must never enter the build context.
+.git
+**/.env
+instances/
+backups/
+dist/
+*.log
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.DS_Store
+node_modules/
+.venv/
+
+# Vendored Superset source: exclude heavy, build-irrelevant upstream dirs.
+superset/CHANGELOG/
+superset/CHANGELOG.md
+superset/docs/
+superset/helm/
+superset/RELEASING/
+superset/tests/
+superset/docker-compose*.yml
+superset/dockerize.Dockerfile

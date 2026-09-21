@@ -1,0 +1,13 @@
+.env
+**/.env
+backups/
+dist/
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+node_modules/
+.venv/
+# Superset source baseline repo lives OUTSIDE this repo (dev-machine only):
+# ~/.cache/xpbuilder/superset-baseline.git (see docker/patches/README.md).

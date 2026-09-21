@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+env_file="$root/.env"
+
+usage() {
+    echo "Usage: xpbuilder [--env-file /path/.env] config|build|init|upgrade|up|down|ps|health|logs|backup|restore|patch [args]" >&2
+    exit 2
+}
+
+if [ "${1:-}" = "--env-file" ]; then
+    env_file="${2:-}"
+    shift 2
+fi
+
+command_name="${1:-}"
+[ -n "$command_name" ] || usage
+shift
+
+# `patch` works on the source tree only; it does not need a site env file.
+if [ "$command_name" = "patch" ]; then
+    exec "$root/docker/patches/new-patch.sh" "$@"
+fi
+
+"$root/bin/validate-env.sh" "$env_file"
+
+value_of() {
+    local key="$1"
+    sed -n "s/^${key}=//p" "$env_file" | tail -1
+}
+
+project="$(value_of XPBUILDER_INSTANCE)"
+compose=(docker compose --env-file "$env_file" -f "$root/compose.yml" -p "$project")
+
+case "$command_name" in
+    config)
+        "${compose[@]}" config --quiet
+        echo "Resolved services:"
+        "${compose[@]}" config --services
+        ;;
+    build)
+        "${compose[@]}" build
+        ;;
+    init)
+        "${compose[@]}" up -d superset-db superset-redis
+        "${compose[@]}" --profile tools run --rm initialize \
+            /opt/xpbuilder/bin/initialize.sh new
+        ;;
+    upgrade)
+        "$root/bin/backup.sh" "$env_file" "$project"
+        "${compose[@]}" up -d superset-db superset-redis
+        "${compose[@]}" --profile tools run --rm initialize \
+            /opt/xpbuilder/bin/initialize.sh upgrade
+        ;;
+    up)
+        "${compose[@]}" up -d
+        ;;
+    down)
+        "${compose[@]}" down --remove-orphans
+        ;;
+    ps)
+        "${compose[@]}" ps -a
+        ;;
+    health)
+        services=(superset superset-worker superset-beat superset-db superset-redis)
+        failed=0
+        for service in "${services[@]}"; do
+            container_id="$("${compose[@]}" ps -q "$service")"
+            if [ -z "$container_id" ]; then
+                echo "ERROR: service is not created: $service" >&2
+                failed=1
+                continue
+            fi
+            state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
+            health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
+            printf '%-20s state=%-10s health=%s\n' "$service" "$state" "$health"
+            if [ "$state" != "running" ] || { [ "$health" != "healthy" ] && [ "$health" != "none" ]; }; then
+                failed=1
+            fi
+        done
+        [ "$failed" -eq 0 ] || exit 1
+        "${compose[@]}" exec -T superset /app/.venv/bin/python -c \
+            "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=5).status == 200"
+        echo "XPBuilder health verification passed"
+        ;;
+    logs)
+        "${compose[@]}" logs --tail="${1:-200}" "${@:2}"
+        ;;
+    backup)
+        "$root/bin/backup.sh" "$env_file" "$project" "${1:-$root/backups}"
+        ;;
+    restore)
+        backup="${1:-}"
+        confirmation="${2:-}"
+        [ -n "$backup" ] || usage
+        "$root/bin/restore.sh" "$env_file" "$project" "$backup" "$confirmation"
+        ;;
+    *)
+        usage
+        ;;
+esac
