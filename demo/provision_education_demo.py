@@ -268,10 +268,11 @@ def xy_chart(
             "groupby": groupby or [],
             "metrics": [metric_definition],
             "rich_tooltip": True,
-            "show_value": kind == "bar",
+            "show_value": False,
             "truncate_metric": True,
             "x_axis": x_axis,
             "x_axis_label": x_axis.replace("_", " ").title(),
+            "x_axis_label_rotation": 25 if kind == "bar" else 0,
             "x_axis_sort_series": "sum",
             "x_axis_sort_series_ascending": False,
             "y_axis_format": "SMART_NUMBER",
@@ -705,6 +706,36 @@ def dashboard_css() -> str:
 @media (max-width: 768px) {
   .dashboard-content { padding: 8px; }
   .dashboard-component-chart-holder { border-radius: 10px; }
+  #main-menu { height: 64px !important; overflow: hidden !important; }
+  #main-menu > .ant-row {
+    height: 64px !important; min-height: 64px !important;
+    flex-wrap: nowrap !important;
+  }
+  #main-menu .main-nav { display: none !important; }
+  main.ant-layout-content > div {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  main.ant-layout-content > div > div:nth-child(-n + 2) {
+    display: none !important;
+  }
+  main.ant-layout-content > div > div:nth-child(n + 3) {
+    grid-column: 1 !important; width: 100% !important;
+  }
+  .dashboard-header-container { display: none !important; }
+  .dashboard, .dashboard-content, .grid-container {
+    left: 0 !important; max-width: 100% !important; width: 100% !important;
+  }
+  .grid-row {
+    display: flex !important; flex-direction: column !important;
+    gap: 12px !important; height: auto !important;
+  }
+  .grid-row > div, .grid-row .resizable-container,
+  .grid-row .dashboard-component-chart-holder {
+    flex: 0 0 auto !important; max-width: 100% !important; width: 100% !important;
+  }
+  .big_number_total .header-line {
+    font-size: 42px !important; line-height: 1.1 !important;
+  }
 }
 """.strip()
 
@@ -745,11 +776,12 @@ def layout_for(title: str, charts: list[dict[str, Any]]) -> dict[str, Any]:
             "id": "MARKDOWN-DEMO-NOTICE",
             "meta": {
                 "code": (
-                    '<div class="demo-banner"><strong>Synthetic demo data</strong> '
-                    "- realistic, relationship-safe education records for product "
-                    "demonstration; no production learner data is shown.</div>"
+                    f'<div class="demo-banner"><strong>{title}</strong><br>'
+                    "Synthetic demo data - realistic, relationship-safe education "
+                    "records for product demonstration; no production learner data "
+                    "is shown.</div>"
                 ),
-                "height": 6,
+                "height": 10,
                 "width": 12,
             },
             "parents": ["ROOT_ID", "GRID_ID", "ROW-DEMO-NOTICE"],
