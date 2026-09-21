@@ -506,7 +506,7 @@ test('should NOT render the user actions when user is anonymous', async () => {
   expect(screen.queryByText('User')).not.toBeInTheDocument();
 });
 
-test('should render the About section and version_string, sha or build_number when available', async () => {
+test('should not render the About section or upstream version strings', async () => {
   useSelectorMock.mockReturnValue({ roles: user.roles });
   const {
     data: {
@@ -521,27 +521,27 @@ test('should render the About section and version_string, sha or build_number wh
     useTheme: true,
   });
   userEvent.hover(screen.getByText('Settings'));
-  const about = await screen.findByText('About');
 
-  // The version information is rendered as combined text in a single element
-  // Use getAllByText to get all matching elements and check the first one
-  const versionTexts = await screen.findAllByText(
-    (_, element) =>
-      element?.textContent?.includes(`Version: ${version_string}`) ?? false,
-  );
-  const shaTexts = await screen.findAllByText(
-    (_, element) =>
-      element?.textContent?.includes(`SHA: ${version_sha}`) ?? false,
-  );
-  const buildTexts = await screen.findAllByText(
-    (_, element) =>
-      element?.textContent?.includes(`Build: ${build_number}`) ?? false,
-  );
-
-  expect(about).toBeInTheDocument();
-  expect(versionTexts[0]).toBeInTheDocument();
-  expect(shaTexts[0]).toBeInTheDocument();
-  expect(buildTexts[0]).toBeInTheDocument();
+  expect(await screen.findByText('Settings')).toBeInTheDocument();
+  expect(screen.queryByText('About')).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(
+      (_, element) =>
+        element?.textContent?.includes(`Version: ${version_string}`) ?? false,
+    ),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(
+      (_, element) =>
+        element?.textContent?.includes(`SHA: ${version_sha}`) ?? false,
+    ),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(
+      (_, element) =>
+        element?.textContent?.includes(`Build: ${build_number}`) ?? false,
+    ),
+  ).not.toBeInTheDocument();
 });
 
 test('should render the Documentation link when available', async () => {
