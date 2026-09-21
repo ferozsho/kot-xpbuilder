@@ -110,6 +110,11 @@ Files are then imported from **Databases ‣ Upload file to database** (or
 **+ ‣ Upload CSV/Excel/Columnar**), which creates a table in that database plus
 a dataset that charts can be built on.
 
+Header-only CSVs are rejected before table creation with an actionable error.
+For a complete, relationship-safe synthetic education demo—including six CSVs,
+six curated datasets, four responsive dashboards, and idempotent provisioning—
+see [demo/README.md](demo/README.md).
+
 Superset only offers the upload menu when at least one connection accepts file
 uploads; without one the menu entries stay greyed out for every user, including
 administrators. Uploads are also gated by the `can_upload` permission on
