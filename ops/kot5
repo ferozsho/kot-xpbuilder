@@ -123,15 +123,17 @@ case "${1:-}" in
             chmod 0640 "$data_out"
             ls -lh "$data_out"
         fi
-        # The bundled MariaDB holds the site's own data (plain SQL dump).
+        # The bundled MariaDB holds the site's own data (plain SQL dump). The
+        # credential is read from the pinned environment so a rotated password
+        # is picked up (the container environment is only read at first init).
         mariadb_db="$(sed -n 's/^MARIADB_DATABASE=//p' "$WORK_ENV" | tail -1)"
+        mariadb_root_password="$(sed -n 's/^MARIADB_ROOT_PASSWORD=//p' "$WORK_ENV" | tail -1)"
         mariadb_id="$(compose ps -q mariadb 2>/dev/null || true)"
         if [ -n "$mariadb_db" ] && [ -n "$mariadb_id" ]; then
             mariadb_out="$BACKUP_DIR/kot5-mariadb-$stamp.dump"
-            compose exec -T mariadb sh -c \
-                "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb-dump -u root \
-                --single-transaction --routines --triggers --events \
-                --databases \"\$MARIADB_DATABASE\"" > "$mariadb_out"
+            compose exec -T -e MYSQL_PWD="$mariadb_root_password" mariadb \
+                mariadb-dump -u root --single-transaction --routines --triggers \
+                --events --databases "$mariadb_db" > "$mariadb_out"
             if [ ! -s "$mariadb_out" ]; then
                 echo "ERROR: MariaDB backup is empty" >&2
                 exit 1

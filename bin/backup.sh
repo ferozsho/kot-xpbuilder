@@ -71,15 +71,18 @@ image_id="$(docker inspect --format '{{.Image}}' "${project}_superset" 2>/dev/nu
 # converged since the database was added simply has no container to dump, so
 # the section is skipped rather than failing the backup.
 mariadb_db="$(value_of MARIADB_DATABASE)"
+# Read the credential from .env rather than from the container environment: the
+# environment is only applied when the image creates an empty volume, so a
+# rotated password would otherwise keep using the old value here.
+mariadb_root_password="$(value_of MARIADB_ROOT_PASSWORD)"
 mariadb_checksum=""
 mariadb_id="$("${compose[@]}" ps -q mariadb 2>/dev/null || true)"
 if [ -n "$mariadb_id" ] \
     && [ "$(docker inspect --format '{{.State.Running}}' "$mariadb_id")" = "true" ]; then
     echo "Backing up the MariaDB data store ($mariadb_db)"
-    "${compose[@]}" exec -T mariadb sh -c \
-        "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb-dump -u root \
-        --single-transaction --routines --triggers --events \
-        --databases \"\$MARIADB_DATABASE\"" > "$mariadb_partial"
+    "${compose[@]}" exec -T -e MYSQL_PWD="$mariadb_root_password" mariadb \
+        mariadb-dump -u root --single-transaction --routines --triggers \
+        --events --databases "$mariadb_db" > "$mariadb_partial"
     if [ ! -s "$mariadb_partial" ]; then
         echo "ERROR: MariaDB backup is empty" >&2
         exit 1

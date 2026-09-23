@@ -26,17 +26,25 @@ value_of() {
 control_database="$(value_of PHPMYADMIN_CONTROL_DATABASE)"
 control_user="$(value_of PHPMYADMIN_CONTROL_USER)"
 control_password="$(value_of PHPMYADMIN_CONTROL_PASSWORD)"
+# Read the credential from .env rather than from the container environment: the
+# environment is only applied when the image creates an empty volume, so a
+# rotated password would otherwise keep using the old value here.
+root_password="$(value_of MARIADB_ROOT_PASSWORD)"
 # A single quote in a site-chosen password must not break the statement.
 control_password_sql="${control_password//\'/\'\'}"
 
 compose=(docker compose --env-file "$env_file" -f "$root/compose.yml" -p "$project")
 
+# The MariaDB client runs on the host-facing side of `compose exec`, so the
+# credential is passed as an environment variable of that process.
+mariadb_client() {
+    "${compose[@]}" exec -T -e MYSQL_PWD="$root_password" mariadb "$@"
+}
+
 echo "Waiting for the bundled MariaDB to accept connections"
 ready="no"
 for _ in $(seq 1 60); do
-    if "${compose[@]}" exec -T mariadb sh -c \
-        "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb -u root \
-        -e \"SELECT 1\"" >/dev/null 2>&1; then
+    if mariadb_client mariadb -u root -e "SELECT 1" >/dev/null 2>&1; then
         ready="yes"
         break
     fi
@@ -50,12 +58,10 @@ fi
 echo "Provisioning the phpMyAdmin configuration storage ($control_database)"
 # phpMyAdmin's own schema file creates the database and its pma__* tables.
 "${compose[@]}" exec -T phpmyadmin cat /var/www/html/sql/create_tables.sql \
-    | "${compose[@]}" exec -T mariadb sh -c \
-        "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb -u root"
+    | mariadb_client mariadb -u root
 
 # The control account is used for the storage tables only.
-"${compose[@]}" exec -T mariadb sh -c \
-    "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb -u root" <<SQL
+mariadb_client mariadb -u root <<SQL
 CREATE USER IF NOT EXISTS '${control_user}'@'%' IDENTIFIED BY '${control_password_sql}';
 ALTER USER '${control_user}'@'%' IDENTIFIED BY '${control_password_sql}';
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX
@@ -66,11 +72,9 @@ SQL
 
 # Report what phpMyAdmin will find: the pma__* tables plus the grant that lets
 # the control account use them.
-storage_tables="$("${compose[@]}" exec -T mariadb sh -c \
-    "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb -u root --skip-column-names --batch" \
+storage_tables="$(mariadb_client mariadb -u root --skip-column-names --batch \
     <<< "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${control_database}' AND table_name LIKE 'pma%';")"
-storage_grants="$("${compose[@]}" exec -T mariadb sh -c \
-    "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb -u root --skip-column-names --batch" \
+storage_grants="$(mariadb_client mariadb -u root --skip-column-names --batch \
     <<< "SELECT COUNT(*) FROM mysql.db WHERE Db = '${control_database}' AND User = '${control_user}';")"
 
 if [ "${storage_tables:-0}" -lt 1 ] || [ "${storage_grants:-0}" -lt 1 ]; then

@@ -177,9 +177,7 @@ scoped to a single database.
 ### Rotating the MariaDB root password
 
 The MariaDB image only reads `MARIADB_ROOT_PASSWORD` when it creates an empty
-volume, so an existing stack needs the account changed as well (both hosts are
-needed: `localhost` for container-local clients such as `mariadb-dump`, `%` for
-phpMyAdmin):
+volume, so an existing stack needs the account changed as well:
 
 ```bash
 cd /var/www/kot-xpbuilder
@@ -193,9 +191,11 @@ SQL
 # then replace MARIADB_ROOT_PASSWORD in .env (and in the provider's pinned.env)
 ```
 
-`bin/xpbuilder backup`, `bin/xpbuilder pmadb`, and `ops/kot5 backup` all read
-`MARIADB_ROOT_PASSWORD` from `.env`, so keep it in step or those commands fail
-to authenticate.
+Both hosts must be changed: `localhost` is used by container-local clients such
+as `mariadb-dump`, `%` by phpMyAdmin. The tooling (`bin/backup.sh`,
+`bin/provision-pmadb.sh`, `ops/kot5 backup`) reads the credential from `.env`,
+never from the container environment, so no container restart is required — the
+environment variable only matters when MariaDB initializes an empty volume.
 
 Changing `SUPERSET_ADMIN_USERNAME` / `SUPERSET_ADMIN_PASSWORD` in `.env` only
 affects future initializations — it never rewrites an existing account. To
