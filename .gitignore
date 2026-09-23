@@ -3,6 +3,8 @@
 backups/
 dist/
 *.log
+# Local operations cheat-sheet (may contain host references):
+commands.md
 __pycache__/
 *.py[cod]
 .pytest_cache/
