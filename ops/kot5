@@ -102,7 +102,14 @@ case "${1:-}" in
         fi
         compose restart "${services[@]}"
         ;;
-    config)  sed -n '1,20p' "$PINNED_ENV"; echo; compose config --services ;;
+    config)
+        # Infrastructure settings only. The pinned file also holds provider
+        # secrets (database and phpMyAdmin control passwords) which must never
+        # be echoed to the client.
+        sed -n '/^[A-Za-z_][A-Za-z0-9_]*=/{/PASSWORD\|SECRET/!p;}' "$PINNED_ENV"
+        echo
+        compose config --services
+        ;;
     backup)
         install -d -m 0750 "$BACKUP_DIR"
         stamp="$(date -u +%Y%m%d-%H%M%S)"
