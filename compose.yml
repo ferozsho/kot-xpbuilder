@@ -167,6 +167,68 @@ services:
     networks:
       - xpbuilder-internal
 
+  # Bundled MariaDB for site data that is managed in phpMyAdmin and analyzed in
+  # Superset (connect with a `mysql+pymysql://` SQLAlchemy URI pointing at
+  # host `mariadb`). The server never listens on a host port: only the site's
+  # own containers can reach it.
+  mariadb:
+    image: mariadb:11.4
+    container_name: ${XPBUILDER_INSTANCE}_mariadb
+    restart: unless-stopped
+    # utf8mb4 throughout: the default for Moodle-style content and emoji.
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MARIADB_DATABASE: ${MARIADB_DATABASE:?MARIADB_DATABASE is required}
+      MARIADB_USER: ${MARIADB_USER:?MARIADB_USER is required}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?MARIADB_PASSWORD is required}
+      # The root account stays local to the container (image default); only the
+      # unprivileged MARIADB_USER is reachable from Superset and phpMyAdmin.
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?MARIADB_ROOT_PASSWORD is required}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - xpbuilder-internal
+
+  # phpMyAdmin front end for the bundled MariaDB. Visitors sign in with the
+  # database credentials (cookie auth); no credentials are baked into the
+  # container. The published port is bound to 127.0.0.1 on purpose: the public
+  # entry point must be a TLS reverse proxy (see docs/deployment.md).
+  phpmyadmin:
+    image: phpmyadmin:5
+    container_name: ${XPBUILDER_INSTANCE}_phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mariadb
+      PMA_PORT: "3306"
+      # Public URL when a reverse proxy fronts phpMyAdmin (needs the trailing
+      # slash); empty lets phpMyAdmin detect it.
+      PMA_ABSOLUTE_URI: ${XPBUILDER_PHPMYADMIN_URL:-}
+      # Large .sql imports through the browser.
+      UPLOAD_LIMIT: ${XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT:-512M}
+      MAX_EXECUTION_TIME: ${XPBUILDER_PHPMYADMIN_MAX_EXECUTION_TIME:-600}
+    ports:
+      - "127.0.0.1:${XPBUILDER_PHPMYADMIN_HOST_PORT:?XPBUILDER_PHPMYADMIN_HOST_PORT is required}:80"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      # php is always present in this image; bash may not be.
+      test: ["CMD", "php", "-r", "exit(@fsockopen('127.0.0.1', 80) ? 0 : 1);"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - xpbuilder-internal
+
 volumes:
   superset-metadata:
     name: ${XPBUILDER_METADATA_VOLUME:?XPBUILDER_METADATA_VOLUME is required}
@@ -174,6 +236,12 @@ volumes:
   superset-redis:
     name: ${XPBUILDER_REDIS_VOLUME:?XPBUILDER_REDIS_VOLUME is required}
     external: ${XPBUILDER_VOLUMES_EXTERNAL:-false}
+  # Declared explicitly (and always Compose-managed, even on stacks that adopt
+  # pre-existing Superset volumes) so enabling MariaDB cannot fail on a missing
+  # external volume.
+  mariadb-data:
+    name: ${XPBUILDER_MARIADB_VOLUME:?XPBUILDER_MARIADB_VOLUME is required}
+    external: false
 
 networks:
   xpbuilder-internal:

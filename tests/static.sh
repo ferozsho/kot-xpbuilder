@@ -42,6 +42,28 @@ bin/bootstrap-env.sh \
 
 bin/validate-env.sh "$temporary/.env" >/dev/null
 
+# Bundled MariaDB/phpMyAdmin: the phpMyAdmin port must be dedicated to it (a
+# clash with the Superset port is rejected), and the human-facing database
+# password still has to clear its floor.
+sed -i 's/^XPBUILDER_PHPMYADMIN_HOST_PORT=.*/XPBUILDER_PHPMYADMIN_HOST_PORT=18088/' \
+    "$temporary/.env"
+if bin/validate-env.sh "$temporary/.env" >/dev/null 2>&1; then
+    echo "ERROR: a phpMyAdmin port clashing with the Superset port was accepted" >&2
+    exit 1
+fi
+sed -i 's/^XPBUILDER_PHPMYADMIN_HOST_PORT=.*/XPBUILDER_PHPMYADMIN_HOST_PORT=18089/' \
+    "$temporary/.env"
+bin/validate-env.sh "$temporary/.env" >/dev/null
+
+sed -i 's/^MARIADB_PASSWORD=.*/MARIADB_PASSWORD=short/' "$temporary/.env"
+if bin/validate-env.sh "$temporary/.env" >/dev/null 2>&1; then
+    echo "ERROR: a too-short MARIADB_PASSWORD was accepted" >&2
+    exit 1
+fi
+sed -i 's/^MARIADB_PASSWORD=.*/MARIADB_PASSWORD=restored-site-password/' \
+    "$temporary/.env"
+bin/validate-env.sh "$temporary/.env" >/dev/null
+
 # Secret hygiene: a group-accessible .env is rejected unless the site opts in
 # (hosted client workspaces share it with a restricted group), while access by
 # other users is never tolerated.

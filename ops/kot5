@@ -3,6 +3,10 @@
 # client account. It always uses the provider-approved compose definition and
 # pins the infrastructure keys, so client edits to compose.yml (or to those
 # keys in .env) cannot redirect the stack at other data or reach the host.
+# Pinned keys include the MariaDB root password, the MariaDB volume, and the
+# phpMyAdmin loopback port + public URL; the client keeps ownership of the
+# MARIADB_DATABASE / MARIADB_USER / MARIADB_PASSWORD they sign in to phpMyAdmin
+# with.
 # Uses only bash + coreutils + sed so it also works inside the client jail.
 #
 # Tracked here as the source of truth; install on the server with:
@@ -33,9 +37,9 @@ Usage: sudo kot5 <command>
   logs [service]  Show recent logs (default: superset, last 200 lines)
   up              Start / converge the stack
   down            Stop the stack (data volumes are kept)
-  restart         Restart the web, worker and beat containers
+  restart         Restart the web, worker, beat and database containers
   config          Show the pinned infrastructure settings
-  backup          Dump the Superset metadata and uploaded data into ./backups
+  backup          Dump the Superset metadata, uploads, and MariaDB into ./backups
 
 Restoring a backup is a provider action: hand over the whole backup set
 (metadata + uploads dump) so no uploaded data is lost.
@@ -77,6 +81,13 @@ case "${1:-}" in
         compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
         code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/health" || true)"
         echo "web /health -> ${code}"
+        # phpMyAdmin is published on loopback only; the public entry point is
+        # the TLS reverse proxy.
+        pma_port="$(sed -n 's/^XPBUILDER_PHPMYADMIN_HOST_PORT=//p' "$WORK_ENV" | tail -1)"
+        if [ -n "$pma_port" ]; then
+            pma_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${pma_port}/" || true)"
+            echo "phpMyAdmin / -> ${pma_code}"
+        fi
         ;;
     logs)
         shift || true
@@ -84,13 +95,20 @@ case "${1:-}" in
         ;;
     up)      compose up -d --wait --wait-timeout 420 ;;
     down)    compose down ;;
-    restart) compose restart superset superset-worker superset-beat ;;
+    restart)
+        services=(superset superset-worker superset-beat)
+        if [ -n "$(sed -n 's/^MARIADB_DATABASE=//p' "$WORK_ENV" | tail -1)" ]; then
+            services+=(mariadb phpmyadmin)
+        fi
+        compose restart "${services[@]}"
+        ;;
     config)  sed -n '1,20p' "$PINNED_ENV"; echo; compose config --services ;;
     backup)
         install -d -m 0750 "$BACKUP_DIR"
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         out="$BACKUP_DIR/kot5-metadata-$stamp.dump"
-        compose exec -T superset-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' > "$out"
+        compose exec -T superset-db sh -c \
+            "pg_dump -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" --format=custom" > "$out"
         chmod 0640 "$out"
         ls -lh "$out"
         # Uploaded files live in their own database; back it up as well so a
@@ -104,6 +122,22 @@ case "${1:-}" in
                 --format=custom > "$data_out"
             chmod 0640 "$data_out"
             ls -lh "$data_out"
+        fi
+        # The bundled MariaDB holds the site's own data (plain SQL dump).
+        mariadb_db="$(sed -n 's/^MARIADB_DATABASE=//p' "$WORK_ENV" | tail -1)"
+        mariadb_id="$(compose ps -q mariadb 2>/dev/null || true)"
+        if [ -n "$mariadb_db" ] && [ -n "$mariadb_id" ]; then
+            mariadb_out="$BACKUP_DIR/kot5-mariadb-$stamp.dump"
+            compose exec -T mariadb sh -c \
+                "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb-dump -u root \
+                --single-transaction --routines --triggers --events \
+                --databases \"\$MARIADB_DATABASE\"" > "$mariadb_out"
+            if [ ! -s "$mariadb_out" ]; then
+                echo "ERROR: MariaDB backup is empty" >&2
+                exit 1
+            fi
+            chmod 0640 "$mariadb_out"
+            ls -lh "$mariadb_out"
         fi
         ;;
     *) usage; exit 2 ;;

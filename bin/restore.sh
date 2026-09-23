@@ -83,6 +83,45 @@ if [ -n "$uploads_dump" ]; then
         --clean --if-exists < "$uploads_dump"
 fi
 
+# The bundled MariaDB (site data managed in phpMyAdmin) travels with the backup
+# set as mariadb.dump. Locate it through the manifest, and fall back to any
+# sibling *mariadb*.dump so dumps written by the client ops wrapper restore
+# with the same command.
+mariadb_dump=""
+if [ -f "$backup_dir/manifest.json" ]; then
+    mariadb_file="$(python3 - "$backup_dir/manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as handle:
+    manifest = json.load(handle)
+print(manifest.get('mariadb_backup') or '')
+PY
+)"
+    if [ -n "$mariadb_file" ]; then
+        mariadb_dump="$backup_dir/$mariadb_file"
+    fi
+fi
+if [ ! -s "$mariadb_dump" ]; then
+    mariadb_dump=""
+    for candidate in "$backup_dir"/*mariadb*.dump; do
+        if [ -s "$candidate" ]; then
+            mariadb_dump="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -n "$mariadb_dump" ]; then
+    echo "Restoring the MariaDB data store from $(basename "$mariadb_dump")"
+    # Bring the server up first (a restore often runs on a stopped stack) and
+    # wait for it to accept connections before loading the dump.
+    "${compose[@]}" up -d --wait mariadb
+    "${compose[@]}" exec -T mariadb sh -c \
+        "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb -u root" \
+        < "$mariadb_dump"
+fi
+
 echo "Restarting XPBuilder application services"
 "${compose[@]}" up -d superset superset-worker superset-beat
 echo "Restore completed; run bin/xpbuilder health before re-enabling Advanced BI"

@@ -24,10 +24,14 @@ backup="$destination/superset-metadata.dump"
 partial="$backup.partial"
 uploads_backup="$destination/uploads.dump"
 uploads_partial="$uploads_backup.partial"
+# The bundled MariaDB (site data managed in phpMyAdmin) is dumped too, so a
+# restore can never silently lose it.
+mariadb_backup="$destination/mariadb.dump"
+mariadb_partial="$mariadb_backup.partial"
 
 umask 077
 mkdir -p "$destination"
-trap 'rm -f "$partial" "$uploads_partial"' EXIT
+trap 'rm -f "$partial" "$uploads_partial" "$mariadb_partial"' EXIT
 
 compose=(docker compose --env-file "$env_file" -f "$root/compose.yml" -p "$project")
 
@@ -63,14 +67,38 @@ fi
 
 image_id="$(docker inspect --format '{{.Image}}' "${project}_superset" 2>/dev/null || true)"
 
+# The bundled MariaDB is backed up with its own dump. A stack that has not been
+# converged since the database was added simply has no container to dump, so
+# the section is skipped rather than failing the backup.
+mariadb_db="$(value_of MARIADB_DATABASE)"
+mariadb_checksum=""
+mariadb_id="$("${compose[@]}" ps -q mariadb 2>/dev/null || true)"
+if [ -n "$mariadb_id" ] \
+    && [ "$(docker inspect --format '{{.State.Running}}' "$mariadb_id")" = "true" ]; then
+    echo "Backing up the MariaDB data store ($mariadb_db)"
+    "${compose[@]}" exec -T mariadb sh -c \
+        "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb-dump -u root \
+        --single-transaction --routines --triggers --events \
+        --databases \"\$MARIADB_DATABASE\"" > "$mariadb_partial"
+    if [ ! -s "$mariadb_partial" ]; then
+        echo "ERROR: MariaDB backup is empty" >&2
+        exit 1
+    fi
+    mv "$mariadb_partial" "$mariadb_backup"
+    mariadb_checksum="$(sha256sum "$mariadb_backup" | awk '{print $1}')"
+    chmod 0600 "$mariadb_backup"
+fi
+
 python3 - "$destination/manifest.json" "$project" "$timestamp" "$checksum" \
-    "$image_id" "$uploads_db" "$uploads_checksum" <<'PY'
+    "$image_id" "$uploads_db" "$uploads_checksum" "$mariadb_db" \
+    "$mariadb_checksum" <<'PY'
 import json
 import sys
 
 uploads_checksum = sys.argv[7]
+mariadb_checksum = sys.argv[9]
 manifest = {
-    'schema_version': 2,
+    'schema_version': 3,
     'instance': sys.argv[2],
     'created_at_utc': sys.argv[3],
     'metadata_backup': 'superset-metadata.dump',
@@ -79,6 +107,9 @@ manifest = {
     'uploads_database': sys.argv[6] if uploads_checksum else None,
     'uploads_backup': 'uploads.dump' if uploads_checksum else None,
     'uploads_sha256': uploads_checksum or None,
+    'mariadb_database': sys.argv[8] if mariadb_checksum else None,
+    'mariadb_backup': 'mariadb.dump' if mariadb_checksum else None,
+    'mariadb_sha256': mariadb_checksum or None,
 }
 with open(sys.argv[1], 'w', encoding='utf-8') as handle:
     json.dump(manifest, handle, indent=2)

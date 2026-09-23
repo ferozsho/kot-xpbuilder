@@ -26,10 +26,50 @@ volumes.
 | --- | --- |
 | `XPBUILDER_METADATA_VOLUME` | Superset PostgreSQL metadata |
 | `XPBUILDER_REDIS_VOLUME` | Redis cache, Celery broker, and beat schedule |
+| `XPBUILDER_MARIADB_VOLUME` | Bundled MariaDB data (site data + phpMyAdmin) |
 | `XPBUILDER_VOLUMES_EXTERNAL` | `true` only when adopting pre-existing volumes |
 
 Set `XPBUILDER_VOLUMES_EXTERNAL=true` together with the exact existing volume
-names to adopt volumes from an earlier deployment.
+names to adopt volumes from an earlier deployment. The bundled MariaDB volume is
+always Compose-managed, so enabling the database on a legacy stack cannot fail
+on a missing external volume.
+
+## Bundled MariaDB and phpMyAdmin
+
+Every stack starts a MariaDB (`mariadb:11.4`) plus a phpMyAdmin front end. The
+MariaDB never listens on a host port; only the stack's own containers can reach
+it, and phpMyAdmin is published on the loopback interface for a TLS reverse
+proxy (see [deployment.md](deployment.md)).
+
+| Variable | Purpose |
+| --- | --- |
+| `MARIADB_DATABASE` | Database created on first start (letters, digits, underscore) |
+| `MARIADB_USER` | Unprivileged account with full rights on that database |
+| `MARIADB_PASSWORD` | Password of `MARIADB_USER` — also the phpMyAdmin login password |
+| `MARIADB_ROOT_PASSWORD` | Container-local root secret (provider-only, in backups) |
+| `XPBUILDER_PHPMYADMIN_HOST_PORT` | Loopback port mapped to phpMyAdmin (`127.0.0.1` only) |
+| `XPBUILDER_PHPMYADMIN_URL` | Public phpMyAdmin URL with trailing `/` when a proxy fronts it (empty = auto-detect) |
+
+`MARIADB_USER` / `MARIADB_PASSWORD` are human-facing credentials: they only have
+to clear an 8-character floor, while `MARIADB_ROOT_PASSWORD` must reach 16.
+phpMyAdmin uses cookie authentication, so no credentials are baked into the
+container and the sign-in form takes the database credentials.
+
+The database and user are created **on first start of an empty MariaDB volume**.
+Changing `MARIADB_DATABASE` / `MARIADB_USER` later does not create the new
+database or account — create them in phpMyAdmin (or with
+`docker exec <instance>_mariadb mariadb -u root -p`) instead.
+
+To analyze the bundled database in Superset, add a connection with the SQLAlchemy
+URI (the stack's internal network resolves the service name `mariadb`):
+
+```text
+mysql+pymysql://<MARIADB_USER>:<MARIADB_PASSWORD>@mariadb:3306/<MARIADB_DATABASE>
+```
+
+phpMyAdmin accepts large imports: the reverse proxy must allow at least the
+container's `UPLOAD_LIMIT` (`XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT`, default 512M)
+in `client_max_body_size`.
 
 ### Group-accessible `.env` files
 
@@ -87,14 +127,17 @@ The following values are secrets and must exist only in `.env`:
 - `GUEST_TOKEN_JWT_SECRET`
 - `SUPERSET_REDIS_PASSWORD`
 - `POSTGRES_PASSWORD`
+- `MARIADB_ROOT_PASSWORD`
 - `SUPERSET_ADMIN_PASSWORD`
+- `MARIADB_PASSWORD`
 
-The matching usernames, database name, administrator identity, and origins are
+The matching usernames, database names, administrator identity, and origins are
 also declared in `.env`. `bin/bootstrap-env.sh` generates all secrets; fresh
 stacks require at least 16 characters for the infrastructure secrets
 (`SUPERSET_SECRET_KEY`, `GUEST_TOKEN_JWT_SECRET`, `SUPERSET_REDIS_PASSWORD`,
-`POSTGRES_PASSWORD`) and at least 8 for `SUPERSET_ADMIN_PASSWORD`, which is a
-site-chosen, human-facing credential.
+`POSTGRES_PASSWORD`, `MARIADB_ROOT_PASSWORD`) and at least 8 for the
+site-chosen, human-facing credentials (`SUPERSET_ADMIN_PASSWORD`,
+`MARIADB_PASSWORD`).
 
 Changing `SUPERSET_ADMIN_USERNAME` / `SUPERSET_ADMIN_PASSWORD` in `.env` only
 affects future initializations — it never rewrites an existing account. To
@@ -132,5 +175,7 @@ Keep all three set to `no` during normal operation.
 This runtime is Moodle-free: no database is registered during initialization.
 Add data sources after startup through **Settings → Database Connections** in
 the Superset UI (or `superset set-database-uri` inside the `superset`
-container). Credentials for those external databases stay in Superset's
-encrypted metadata — never in `.env`.
+container) — including the bundled MariaDB, which is reachable inside the stack
+at `mariadb:3306` but is not registered automatically. Credentials for those
+databases stay in Superset's encrypted metadata — never in `.env`, except for
+the bundled MariaDB credentials that phpMyAdmin signs in with.

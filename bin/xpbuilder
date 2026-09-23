@@ -72,7 +72,10 @@ case "$command_name" in
         "${compose[@]}" ps -a
         ;;
     health)
-        services=(superset superset-worker superset-beat superset-db superset-redis)
+        services=(
+            superset superset-worker superset-beat superset-db superset-redis
+            mariadb phpmyadmin
+        )
         failed=0
         for service in "${services[@]}"; do
             container_id="$("${compose[@]}" ps -q "$service")"
@@ -91,6 +94,21 @@ case "$command_name" in
         [ "$failed" -eq 0 ] || exit 1
         "${compose[@]}" exec -T superset /app/.venv/bin/python -c \
             "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=5).status == 200"
+        # The bundled MariaDB must accept the site credentials, and phpMyAdmin
+        # must answer on the loopback port a reverse proxy forwards to.
+        "${compose[@]}" exec -T mariadb sh -c \
+            "exec env MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb -u \"\$MARIADB_USER\" \
+            -e \"SELECT 1\"" >/dev/null
+        phpmyadmin_port="$(value_of XPBUILDER_PHPMYADMIN_HOST_PORT)"
+        phpmyadmin_code="$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:${phpmyadmin_port}/" || true)"
+        case "$phpmyadmin_code" in
+            2??|3??) ;;
+            *)
+                echo "ERROR: phpMyAdmin did not answer on 127.0.0.1:${phpmyadmin_port} (HTTP ${phpmyadmin_code:-none})" >&2
+                exit 1
+                ;;
+        esac
         echo "XPBuilder health verification passed"
         ;;
     logs)

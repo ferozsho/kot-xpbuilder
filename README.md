@@ -3,10 +3,10 @@
 Standalone Apache Superset runtime for Kot Advanced BI dashboards.
 
 This is the XPBuilder runtime **without Moodle integration**: no connector
-plugin, no external Moodle network, and no read-only MariaDB replica. Superset,
-its PostgreSQL metadata store, and Redis are the whole stack; data sources are
-attached through Superset's own "Connect a database" flow, so any reachable SQL
-database can be analyzed without touching Moodle.
+plugin and no external Moodle network. Superset, its PostgreSQL metadata store,
+Redis, a bundled MariaDB, and a phpMyAdmin front end are the whole stack; other
+data sources are attached through Superset's own "Connect a database" flow, so
+any reachable SQL database can be analyzed without touching Moodle.
 
 The runtime is built from the vendored Apache Superset 6.1.0 source tree in
 `superset/` together with the fork features (Report Designer, branding,
@@ -58,12 +58,13 @@ Only files whose basename is exactly `.env` are accepted.
 
 | Path | Purpose |
 | --- | --- |
-| `compose.yml` | Superset web, Celery worker/beat, PostgreSQL metadata, Redis |
+| `compose.yml` | Superset web, Celery worker/beat, PostgreSQL metadata, Redis, MariaDB, phpMyAdmin |
 | `config/superset_config.py` | Baked runtime configuration (env-driven only) |
 | `customizations/` | Branding images + tail-JS (logo link, "Clear all" fix) |
 | `docker/initialize.sh` | First-run metadata schema, admin, role sync |
 | `docker/ensure_uploads_db.py` | Idempotent provisioning of the built-in file-upload database |
 | `ops/kot5` | Privileged ops wrapper handed to a hosted client (see `ops/README.md`) |
+| `ops/nginx/` | Example TLS vhosts for the hosted deployment (Superset, phpMyAdmin) |
 | `docker/patches/` | Export/verify vendored-source edits as patches |
 | `bin/xpbuilder` | CLI wrapper around `docker compose` |
 | `instances/<site>/.env` | One protected configuration per site (never committed) |
@@ -91,10 +92,29 @@ and server deployment in [docs/deployment.md](docs/deployment.md).
 ## Connecting your own data
 
 A new stack is initialized with one ready-to-use connection so files can be
-uploaded immediately. Add any other reachable SQL database from **Settings →
-Database Connections** (or `superset set-database-uri`), then build datasets,
-charts, and dashboards in the usual Superset way. The Report Designer reads the
-same datasets.
+uploaded immediately, plus a bundled MariaDB for site data. Add any other
+reachable SQL database from **Settings → Database Connections** (or
+`superset set-database-uri`), then build datasets, charts, and dashboards in the
+usual Superset way. The Report Designer reads the same datasets.
+
+### Bundled MariaDB and phpMyAdmin
+
+`compose.yml` starts a MariaDB (`mariadb:11.4`) with the database and account
+from `.env` (`MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`) and a
+phpMyAdmin that signs in with those same credentials. Neither listens on a host
+port: Superset reaches the server at `mariadb:3306` inside the stack, and
+phpMyAdmin is published on `127.0.0.1` for a TLS reverse proxy.
+
+Register the bundled database in Superset with:
+
+```text
+mysql+pymysql://<MARIADB_USER>:<MARIADB_PASSWORD>@mariadb:3306/<MARIADB_DATABASE>
+```
+
+Expose phpMyAdmin publicly at a hostname of your choice — see
+[docs/deployment.md](docs/deployment.md) and the example vhost in `ops/nginx/`.
+Its data lives in the `XPBUILDER_MARIADB_VOLUME` volume and is part of the
+backup set (`mariadb.dump`), so `bin/xpbuilder backup` / `restore` keeps it.
 
 ### Uploading files (CSV, Excel, Parquet)
 
@@ -139,9 +159,11 @@ Security** section has the **Allow file uploads to database** checkbox).
 Uploaded tables live in that database, so `bin/xpbuilder backup` dumps it
 alongside the Superset metadata (`uploads.dump` + `uploads_sha256` in the
 manifest) and `bin/xpbuilder restore` loads it back — otherwise a restore would
-silently drop the client's uploaded data. Backups taken by the hosted-client
-wrapper (`ops/kot5 backup`) contain the same two dumps, and a restore picks up
-any sibling `*uploads*.dump`, so both sources restore with one command.
+silently drop the client's uploaded data. The bundled MariaDB is part of the
+same backup set (`mariadb.dump` + `mariadb_sha256`, manifest schema 3). Backups
+taken by the hosted-client wrapper (`ops/kot5 backup`) contain the same dumps,
+and a restore picks up any sibling `*uploads*.dump` / `*mariadb*.dump`, so both
+sources restore with one command.
 
 ## Compatibility
 

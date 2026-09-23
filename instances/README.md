@@ -18,8 +18,10 @@ The local site binds host port **9010** (mapped to the container's internal
 ## Additional sites
 
 Keep extra deployments as `instances/<site>/.env` files and pass them
-explicitly. Each site needs a unique `XPBUILDER_INSTANCE`, host port, network,
-and volume names:
+explicitly. Each site needs a unique `XPBUILDER_INSTANCE`, host port,
+phpMyAdmin port (`XPBUILDER_PHPMYADMIN_HOST_PORT`, published on `127.0.0.1`
+only), network, and volume names (`XPBUILDER_METADATA_VOLUME`,
+`XPBUILDER_REDIS_VOLUME`, `XPBUILDER_MARIADB_VOLUME`):
 
 ```bash
 bin/xpbuilder --env-file instances/other/.env up

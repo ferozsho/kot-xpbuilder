@@ -58,7 +58,8 @@ fi
 "${compose[@]}" up -d superset-db superset-redis
 "${compose[@]}" --profile tools run --rm initialize \
     /opt/xpbuilder/bin/initialize.sh new
-"${compose[@]}" up -d superset superset-worker superset-beat
+# Bring up the whole stack, including the bundled MariaDB and phpMyAdmin.
+"${compose[@]}" up -d
 
 for attempt in $(seq 1 60); do
     if curl --fail --silent --max-time 5 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
@@ -83,7 +84,10 @@ python3 tests/contract/runtime_contract.py \
     --username "$(value_of SUPERSET_ADMIN_USERNAME)" \
     --password "$(value_of SUPERSET_ADMIN_PASSWORD)"
 
-services=(superset superset-worker superset-beat superset-db superset-redis)
+services=(
+    superset superset-worker superset-beat superset-db superset-redis
+    mariadb phpmyadmin
+)
 for attempt in $(seq 1 40); do
     all_healthy=1
     for service in "${services[@]}"; do
@@ -197,6 +201,27 @@ if [ "$empty_table" != "t" ]; then
     exit 1
 fi
 
+mariadb_query() {
+    "${compose[@]}" exec -T mariadb sh -c \
+        "exec env MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb -u \"\$MARIADB_USER\" \"\$MARIADB_DATABASE\" -e \"\$1\"" \
+        sh "$1"
+}
+
+mariadb_rows() {
+    "${compose[@]}" exec -T mariadb sh -c \
+        "exec env MYSQL_PWD=\"\$MARIADB_PASSWORD\" mariadb -u \"\$MARIADB_USER\" \"\$MARIADB_DATABASE\" -N -B -e \"\$1\"" \
+        sh "$1"
+}
+
+echo "Checking that the bundled MariaDB accepts the site credentials"
+mariadb_query 'CREATE TABLE integration_marker (id INT PRIMARY KEY, note VARCHAR(32));
+INSERT INTO integration_marker VALUES (1, "backup-marker")'
+marker_rows="$(mariadb_rows 'SELECT count(*) FROM integration_marker')"
+if [ "$marker_rows" != "1" ]; then
+    echo "ERROR: bundled MariaDB returned '$marker_rows' marker rows, expected 1" >&2
+    exit 1
+fi
+
 echo "Backing up metadata plus uploaded data"
 backup_root="$temporary/backups"
 backup_dir="$(bin/backup.sh "$env_file" "$instance" "$backup_root" \
@@ -206,11 +231,21 @@ if [ ! -s "$backup_dir/uploads.dump" ]; then
     ls -l "$backup_dir"
     exit 1
 fi
+if [ ! -s "$backup_dir/mariadb.dump" ]; then
+    echo "ERROR: backup did not include the bundled MariaDB ($backup_dir)" >&2
+    ls -l "$backup_dir"
+    exit 1
+fi
+if ! grep -q integration_marker "$backup_dir/mariadb.dump"; then
+    echo "ERROR: MariaDB dump does not contain the marker table" >&2
+    exit 1
+fi
 
-echo "Simulating loss of the upload store and restoring it"
+echo "Simulating loss of the upload store and the MariaDB table, then restoring"
 "${compose[@]}" exec -T superset-db \
     psql -U "$(value_of POSTGRES_USER)" -d postgres \
     -c 'DROP DATABASE xpbuilder_uploads WITH (FORCE)' >/dev/null
+mariadb_query 'DROP TABLE integration_marker'
 
 sed -i 's/^XPBUILDER_ALLOW_RESTORE=no$/XPBUILDER_ALLOW_RESTORE=yes/' "$env_file"
 bin/restore.sh "$env_file" "$instance" \
@@ -235,6 +270,12 @@ fi
 restored_connections="$(metadata_psql 'SELECT count(*) FROM dbs WHERE allow_file_upload')"
 if [ "$restored_connections" != "1" ]; then
     echo "ERROR: restore left '$restored_connections' upload-capable connections" >&2
+    exit 1
+fi
+
+restored_marker="$(mariadb_rows 'SELECT count(*) FROM integration_marker')"
+if [ "$restored_marker" != "1" ]; then
+    echo "ERROR: restore produced '$restored_marker' MariaDB marker rows, expected 1" >&2
     exit 1
 fi
 

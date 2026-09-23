@@ -58,6 +58,9 @@ required_keys=(
     SUPERSET_SECRET_KEY GUEST_TOKEN_JWT_SECRET GUEST_TOKEN_JWT_AUDIENCE
     SUPERSET_ADMIN_USERNAME SUPERSET_ADMIN_PASSWORD SUPERSET_ADMIN_FIRSTNAME
     SUPERSET_ADMIN_LASTNAME SUPERSET_ADMIN_EMAIL
+    # Bundled MariaDB + phpMyAdmin (see docs/configuration.md)
+    XPBUILDER_MARIADB_VOLUME XPBUILDER_PHPMYADMIN_HOST_PORT
+    MARIADB_DATABASE MARIADB_USER MARIADB_PASSWORD MARIADB_ROOT_PASSWORD
 )
 
 missing=()
@@ -95,29 +98,66 @@ if [[ "$origins" == *'*'* ]]; then
     exit 1
 fi
 
+# MariaDB + phpMyAdmin: the database and user names end up in SQL identifiers,
+# and the phpMyAdmin port must be dedicated to this stack.
+mariadb_database="$(value_of MARIADB_DATABASE)"
+mariadb_user="$(value_of MARIADB_USER)"
+pma_host_port="$(value_of XPBUILDER_PHPMYADMIN_HOST_PORT)"
+pma_url="$(value_of XPBUILDER_PHPMYADMIN_URL)"
+
+[[ "$mariadb_database" =~ ^[A-Za-z0-9_]+$ ]] || {
+    echo "ERROR: MARIADB_DATABASE must contain only letters, digits, and underscores" >&2
+    exit 1
+}
+[[ "$mariadb_user" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+    echo "ERROR: MARIADB_USER must contain only letters, digits, dot, dash, and underscore" >&2
+    exit 1
+}
+[[ "$pma_host_port" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: XPBUILDER_PHPMYADMIN_HOST_PORT must be numeric" >&2
+    exit 1
+}
+if [ "$pma_host_port" -lt 1 ] || [ "$pma_host_port" -gt 65535 ]; then
+    echo "ERROR: XPBUILDER_PHPMYADMIN_HOST_PORT is outside 1-65535" >&2
+    exit 1
+fi
+if [ "$pma_host_port" = "$host_port" ]; then
+    echo "ERROR: XPBUILDER_PHPMYADMIN_HOST_PORT must differ from XPBUILDER_HOST_PORT" >&2
+    exit 1
+fi
+# phpMyAdmin's PMA_ABSOLUTE_URI needs an absolute, trailing-slash URL; leaving
+# it empty lets phpMyAdmin auto-detect the address.
+if [ -n "$pma_url" ]; then
+    if [[ ! "$pma_url" =~ ^https?://[^[:space:]]*/$ ]]; then
+        echo "ERROR: XPBUILDER_PHPMYADMIN_URL must be an http(s) URL ending in /" >&2
+        exit 1
+    fi
+fi
+
 secret_keys=(
     POSTGRES_PASSWORD SUPERSET_REDIS_PASSWORD SUPERSET_SECRET_KEY
-    GUEST_TOKEN_JWT_SECRET SUPERSET_ADMIN_PASSWORD
+    GUEST_TOKEN_JWT_SECRET MARIADB_ROOT_PASSWORD
 )
-# Greenfield floor is 16 characters for the infrastructure secrets. The
-# administrator password is a human-facing credential that is often fixed by a
-# site requirement, so it only has to clear a basic 8-character floor. A stack
+# Human-facing credentials are typed by people (and are often fixed by a site
+# requirement), so they only have to clear a basic 8-character floor.
+human_secret_keys=(
+    SUPERSET_ADMIN_PASSWORD MARIADB_PASSWORD
+)
+# Greenfield floor is 16 characters for the infrastructure secrets. A stack
 # adopting pre-existing volumes (XPBUILDER_VOLUMES_EXTERNAL=true) keeps the
 # EXISTING credentials verbatim so the adopted volumes keep working — those
 # values may legitimately be shorter (e.g. postgres 'superset'), so only
 # require them to be present and warn when they are below the normal floor.
 if [ "$external" = "true" ]; then
     infra_min_len=1
-    admin_min_len=1
+    human_min_len=1
 else
     infra_min_len=16
-    admin_min_len=8
+    human_min_len=8
 fi
-for key in "${secret_keys[@]}"; do
-    floor="$infra_min_len"
-    if [ "$key" = "SUPERSET_ADMIN_PASSWORD" ]; then
-        floor="$admin_min_len"
-    fi
+
+check_secret_min_length() {
+    local key="$1" floor="$2" value
     value="$(value_of "$key")"
     if [ "${#value}" -lt "$floor" ]; then
         echo "ERROR: $key must contain at least $floor characters" >&2
@@ -126,7 +166,19 @@ for key in "${secret_keys[@]}"; do
     if [ "$external" = "true" ] && [ "${#value}" -lt 16 ]; then
         echo "WARNING: $key is shorter than 16 characters (preserved legacy credential)" >&2
     fi
+}
+
+for key in "${secret_keys[@]}"; do
+    check_secret_min_length "$key" "$infra_min_len"
 done
+for key in "${human_secret_keys[@]}"; do
+    check_secret_min_length "$key" "$human_min_len"
+done
+
+if [ "$(value_of MARIADB_PASSWORD)" = "$(value_of MARIADB_ROOT_PASSWORD)" ]; then
+    echo "ERROR: MARIADB_PASSWORD and MARIADB_ROOT_PASSWORD must be different" >&2
+    exit 1
+fi
 
 if [ "$(value_of SUPERSET_SECRET_KEY)" = "$(value_of GUEST_TOKEN_JWT_SECRET)" ]; then
     echo "ERROR: SUPERSET_SECRET_KEY and GUEST_TOKEN_JWT_SECRET must be different" >&2

@@ -69,6 +69,10 @@ Copy the shape of the repo-root `.env` (chmod 600) and set:
   when adopting volumes; a new key cannot decrypt passwords already stored in
   the Superset metadata, and `.env` does not change an existing admin password.
 - PostgreSQL role/password, Superset admin user/password.
+- Bundled MariaDB: `MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD` (the
+  credentials people sign in to phpMyAdmin with), `MARIADB_ROOT_PASSWORD`
+  (provider-only), `XPBUILDER_MARIADB_VOLUME`, and
+  `XPBUILDER_PHPMYADMIN_HOST_PORT` (loopback port for the reverse proxy).
 - `XPBUILDER_VOLUMES_EXTERNAL=true` when adopting existing volumes.
 
 ## Provision the data
@@ -117,6 +121,33 @@ bin/xpbuilder --env-file /path/to/site/.env health
 python3 tests/contract/runtime_contract.py --base-url http://localhost:<port> \
     --username <admin> --password <password>
 ```
+
+## Expose phpMyAdmin through a reverse proxy
+
+The bundled phpMyAdmin is published on `127.0.0.1` only, so TLS termination at
+the proxy is what makes it reachable from a browser. A ready-made vhost (with
+the ACME challenge location) lives in `ops/nginx/`:
+
+```bash
+install -m 0644 ops/nginx/kot5phpmyadmin.openxpertz.com \
+    /etc/nginx/sites-available/kot5phpmyadmin.openxpertz.com
+ln -sf ../sites-available/kot5phpmyadmin.openxpertz.com \
+    /etc/nginx/sites-enabled/kot5phpmyadmin.openxpertz.com
+nginx -t && systemctl reload nginx
+
+certbot certonly --webroot -w /var/www/letsencrypt \
+    -d kot5phpmyadmin.openxpertz.com
+certbot --nginx -d kot5phpmyadmin.openxpertz.com --redirect
+```
+
+Keep the vhost's `proxy_pass` port in step with
+`XPBUILDER_PHPMYADMIN_HOST_PORT`, set
+`XPBUILDER_PHPMYADMIN_URL=https://<host>/` (trailing slash required) so
+phpMyAdmin builds correct asset URLs, and give the vhost a
+`client_max_body_size` at least as large as the container's `UPLOAD_LIMIT`
+(`XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT`, default 512M) or large `.sql` imports fail
+with HTTP 413. Apply `.env` changes with `bin/xpbuilder up` — Compose recreates
+the phpMyAdmin container when its environment or port changes.
 
 ## Notes
 
