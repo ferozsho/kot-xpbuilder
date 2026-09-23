@@ -167,9 +167,35 @@ The matching usernames, database names, administrator identity, and origins are
 also declared in `.env`. `bin/bootstrap-env.sh` generates all secrets; fresh
 stacks require at least 16 characters for the infrastructure secrets
 (`SUPERSET_SECRET_KEY`, `GUEST_TOKEN_JWT_SECRET`, `SUPERSET_REDIS_PASSWORD`,
-`POSTGRES_PASSWORD`, `MARIADB_ROOT_PASSWORD`) and at least 8 for the
+`POSTGRES_PASSWORD`, `PHPMYADMIN_CONTROL_PASSWORD`) and at least 8 for the
 site-chosen, human-facing credentials (`SUPERSET_ADMIN_PASSWORD`,
-`MARIADB_PASSWORD`).
+`MARIADB_PASSWORD`, `MARIADB_ROOT_PASSWORD`) — the site owner signs in to
+phpMyAdmin with the MariaDB root credential as well, and settings it equal to
+`MARIADB_PASSWORD` only raises a warning, because the root account is not
+scoped to a single database.
+
+### Rotating the MariaDB root password
+
+The MariaDB image only reads `MARIADB_ROOT_PASSWORD` when it creates an empty
+volume, so an existing stack needs the account changed as well (both hosts are
+needed: `localhost` for container-local clients such as `mariadb-dump`, `%` for
+phpMyAdmin):
+
+```bash
+cd /var/www/kot-xpbuilder
+old="$(sed -n 's/^MARIADB_ROOT_PASSWORD=//p' .env)"
+docker exec <instance>_mariadb sh -c \
+    'exec env MYSQL_PWD="$1" mariadb -u root' sh "$old" <<'SQL'
+ALTER USER 'root'@'localhost' IDENTIFIED BY 'NEW-PASSWORD';
+ALTER USER 'root'@'%' IDENTIFIED BY 'NEW-PASSWORD';
+FLUSH PRIVILEGES;
+SQL
+# then replace MARIADB_ROOT_PASSWORD in .env (and in the provider's pinned.env)
+```
+
+`bin/xpbuilder backup`, `bin/xpbuilder pmadb`, and `ops/kot5 backup` all read
+`MARIADB_ROOT_PASSWORD` from `.env`, so keep it in step or those commands fail
+to authenticate.
 
 Changing `SUPERSET_ADMIN_USERNAME` / `SUPERSET_ADMIN_PASSWORD` in `.env` only
 affects future initializations — it never rewrites an existing account. To

@@ -152,12 +152,14 @@ fi
 
 secret_keys=(
     POSTGRES_PASSWORD SUPERSET_REDIS_PASSWORD SUPERSET_SECRET_KEY
-    GUEST_TOKEN_JWT_SECRET MARIADB_ROOT_PASSWORD PHPMYADMIN_CONTROL_PASSWORD
+    GUEST_TOKEN_JWT_SECRET PHPMYADMIN_CONTROL_PASSWORD
 )
 # Human-facing credentials are typed by people (and are often fixed by a site
-# requirement), so they only have to clear a basic 8-character floor.
+# requirement), so they only have to clear a basic 8-character floor. The
+# MariaDB root credential belongs here because the site owner signs in with it
+# at phpMyAdmin.
 human_secret_keys=(
-    SUPERSET_ADMIN_PASSWORD MARIADB_PASSWORD
+    SUPERSET_ADMIN_PASSWORD MARIADB_PASSWORD MARIADB_ROOT_PASSWORD
 )
 # Greenfield floor is 16 characters for the infrastructure secrets. A stack
 # adopting pre-existing volumes (XPBUILDER_VOLUMES_EXTERNAL=true) keeps the
@@ -192,8 +194,8 @@ for key in "${human_secret_keys[@]}"; do
 done
 
 if [ "$(value_of MARIADB_PASSWORD)" = "$(value_of MARIADB_ROOT_PASSWORD)" ]; then
-    echo "ERROR: MARIADB_PASSWORD and MARIADB_ROOT_PASSWORD must be different" >&2
-    exit 1
+    echo "WARNING: MARIADB_ROOT_PASSWORD equals MARIADB_PASSWORD; the root account" >&2
+    echo "         is not scoped to a single database (see docs/configuration.md)" >&2
 fi
 if [ "$(value_of PHPMYADMIN_CONTROL_PASSWORD)" = "$(value_of MARIADB_ROOT_PASSWORD)" ] \
     || [ "$(value_of PHPMYADMIN_CONTROL_PASSWORD)" = "$(value_of MARIADB_PASSWORD)" ]; then
