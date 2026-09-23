@@ -7,7 +7,7 @@ env_file="$root/.env"
 
 usage() {
     echo "Usage: xpbuilder [--env-file /path/.env] [--allow-group-env]" >&2
-    echo "                 config|build|init|upgrade|up|down|ps|health|logs|backup|restore|patch [args]" >&2
+    echo "                 config|build|init|upgrade|up|down|ps|health|logs|backup|restore|pmadb|patch [args]" >&2
     exit 2
 }
 
@@ -52,15 +52,22 @@ case "$command_name" in
         "${compose[@]}" build
         ;;
     init)
-        "${compose[@]}" up -d superset-db superset-redis
+        # The bundled MariaDB and phpMyAdmin come up first so their storage
+        # database can be provisioned once the metadata schema is in place.
+        "${compose[@]}" up -d superset-db superset-redis mariadb phpmyadmin
         "${compose[@]}" --profile tools run --rm initialize \
             /opt/xpbuilder/bin/initialize.sh new
+        "$root/bin/provision-pmadb.sh" "$env_file" "$project"
         ;;
     upgrade)
         "$root/bin/backup.sh" "$env_file" "$project"
-        "${compose[@]}" up -d superset-db superset-redis
+        "${compose[@]}" up -d superset-db superset-redis mariadb phpmyadmin
         "${compose[@]}" --profile tools run --rm initialize \
             /opt/xpbuilder/bin/initialize.sh upgrade
+        "$root/bin/provision-pmadb.sh" "$env_file" "$project"
+        ;;
+    pmadb)
+        "$root/bin/provision-pmadb.sh" "$env_file" "$project"
         ;;
     up)
         "${compose[@]}" up -d

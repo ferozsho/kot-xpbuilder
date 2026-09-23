@@ -213,12 +213,33 @@ mariadb_rows() {
         sh "$1"
 }
 
+mariadb_root_rows() {
+    "${compose[@]}" exec -T mariadb sh -c \
+        "exec env MYSQL_PWD=\"\$MARIADB_ROOT_PASSWORD\" mariadb -u root --skip-column-names --batch -e \"\$1\"" \
+        sh "$1"
+}
+
 echo "Checking that the bundled MariaDB accepts the site credentials"
 mariadb_query 'CREATE TABLE integration_marker (id INT PRIMARY KEY, note VARCHAR(32));
 INSERT INTO integration_marker VALUES (1, "backup-marker")'
 marker_rows="$(mariadb_rows 'SELECT count(*) FROM integration_marker')"
 if [ "$marker_rows" != "1" ]; then
     echo "ERROR: bundled MariaDB returned '$marker_rows' marker rows, expected 1" >&2
+    exit 1
+fi
+
+echo "Provisioning the phpMyAdmin configuration storage"
+bin/provision-pmadb.sh "$env_file" "$instance" >/dev/null
+control_db="$(value_of PHPMYADMIN_CONTROL_DATABASE)"
+control_user="$(value_of PHPMYADMIN_CONTROL_USER)"
+storage_tables="$(mariadb_root_rows "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${control_db}' AND table_name LIKE 'pma%'")"
+if [ "${storage_tables:-0}" -lt 15 ]; then
+    echo "ERROR: the phpMyAdmin storage database only holds '${storage_tables:-0}' tables" >&2
+    exit 1
+fi
+storage_grants="$(mariadb_root_rows "SELECT COUNT(*) FROM mysql.db WHERE Db = '${control_db}' AND User = '${control_user}'")"
+if [ "$storage_grants" != "1" ]; then
+    echo "ERROR: the phpMyAdmin control account has no grant on the storage database" >&2
     exit 1
 fi
 

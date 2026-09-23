@@ -17,7 +17,7 @@ Supporting files it depends on (server side):
 | Path | Purpose |
 | --- | --- |
 | `/etc/kot5/compose.yml` | Provider-approved copy of `compose.yml` (keep in sync with this repo) |
-| `/etc/kot5/pinned.env` | Pins instance/port/network/volume/image (plus the MariaDB root password, volume, and phpMyAdmin port/URL) so client `.env` edits cannot redirect the stack |
+| `/etc/kot5/pinned.env` | Pins instance/port/network/volume/image (plus the MariaDB root password, the phpMyAdmin storage credentials, volume, and phpMyAdmin port/URL) so client `.env` edits cannot redirect the stack |
 | `/etc/sudoers.d/kotbuilder` | `kotbuilder ALL=(root) NOPASSWD: /usr/local/bin/kot5 *` |
 | `/var/www/kot-xpbuilder/.env` | Client-visible site configuration (mode `660`, group `kotbuilder`) |
 | `/etc/nginx/sites-available/kot5phpmyadmin.openxpertz.com` | Public TLS vhost for phpMyAdmin (source of truth: `ops/nginx/`) |
@@ -50,8 +50,12 @@ install -o root -g root -m 0644 compose.yml /etc/kot5/compose.yml
 # add to /etc/kot5/pinned.env (chmod 600):
 #   XPBUILDER_MARIADB_VOLUME=<instance>_xpbuilder_mariadb
 #   MARIADB_ROOT_PASSWORD=<generated 24-hex secret>
+#   PHPMYADMIN_CONTROL_PASSWORD=<generated 24-hex secret>
 #   XPBUILDER_PHPMYADMIN_HOST_PORT=<free loopback port>
 #   XPBUILDER_PHPMYADMIN_URL=https://<pma-host>/
+
+# 2. provision phpMyAdmin's configuration storage (bookmarks/relations/history)
+bin/xpbuilder --allow-group-env --env-file /var/www/kot-xpbuilder/.env pmadb
 
 # 2. publish phpMyAdmin through nginx + TLS
 install -m 0644 ops/nginx/kot5phpmyadmin.openxpertz.com \

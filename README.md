@@ -83,6 +83,7 @@ Only files whose basename is exactly `.env` are accepted.
 | `down` | Stop containers without deleting volumes |
 | `ps` | Show the actual Compose services, state, and ports |
 | `health` | Verify container health and the Superset health endpoint |
+| `pmadb` | Provision phpMyAdmin's configuration storage (idempotent) |
 | `backup` | Create a metadata + uploaded-data backup and manifest |
 | `restore` | Restore a selected backup with explicit confirmation |
 
@@ -115,6 +116,10 @@ Expose phpMyAdmin publicly at a hostname of your choice — see
 [docs/deployment.md](docs/deployment.md) and the example vhost in `ops/nginx/`.
 Its data lives in the `XPBUILDER_MARIADB_VOLUME` volume and is part of the
 backup set (`mariadb.dump`), so `bin/xpbuilder backup` / `restore` keeps it.
+`bin/xpbuilder init`/`upgrade` also provision phpMyAdmin's *configuration
+storage* (bookmarks, relations, query history) in its own `phpmyadmin` database,
+which the site's database account deliberately cannot create — re-run it any
+time with `bin/xpbuilder pmadb`.
 
 ### Uploading files (CSV, Excel, Parquet)
 

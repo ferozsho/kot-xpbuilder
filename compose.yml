@@ -221,6 +221,17 @@ services:
       UPLOAD_LIMIT: ${XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT:-512M}
       MAX_EXECUTION_TIME: ${XPBUILDER_PHPMYADMIN_MAX_EXECUTION_TIME:-600}
       MEMORY_LIMIT: ${XPBUILDER_PHPMYADMIN_MEMORY_LIMIT:-256m}
+      # Configuration storage (bookmarks, table relations, query history,
+      # central columns). `bin/xpbuilder pmadb` creates the storage database
+      # from phpMyAdmin's own create_tables.sql plus the pma control account it
+      # is reached with; the site's database account has no rights on it.
+      PMA_CONTROLHOST: mariadb
+      PMA_CONTROLPORT: "3306"
+      PMA_CONTROLUSER: ${PHPMYADMIN_CONTROL_USER:?PHPMYADMIN_CONTROL_USER is required}
+      PMA_CONTROLPASS: ${PHPMYADMIN_CONTROL_PASSWORD:?PHPMYADMIN_CONTROL_PASSWORD is required}
+      PMA_PMADB: ${PHPMYADMIN_CONTROL_DATABASE:?PHPMYADMIN_CONTROL_DATABASE is required}
+      # Keep the query history in that database instead of the browser session.
+      PMA_QUERYHISTORYDB: "1"
     ports:
       - "127.0.0.1:${XPBUILDER_PHPMYADMIN_HOST_PORT:?XPBUILDER_PHPMYADMIN_HOST_PORT is required}:80"
     depends_on:

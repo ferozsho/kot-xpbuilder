@@ -61,6 +61,8 @@ required_keys=(
     # Bundled MariaDB + phpMyAdmin (see docs/configuration.md)
     XPBUILDER_MARIADB_VOLUME XPBUILDER_PHPMYADMIN_HOST_PORT
     MARIADB_DATABASE MARIADB_USER MARIADB_PASSWORD MARIADB_ROOT_PASSWORD
+    PHPMYADMIN_CONTROL_DATABASE PHPMYADMIN_CONTROL_USER
+    PHPMYADMIN_CONTROL_PASSWORD
 )
 
 missing=()
@@ -104,6 +106,8 @@ mariadb_database="$(value_of MARIADB_DATABASE)"
 mariadb_user="$(value_of MARIADB_USER)"
 pma_host_port="$(value_of XPBUILDER_PHPMYADMIN_HOST_PORT)"
 pma_url="$(value_of XPBUILDER_PHPMYADMIN_URL)"
+control_database="$(value_of PHPMYADMIN_CONTROL_DATABASE)"
+control_user="$(value_of PHPMYADMIN_CONTROL_USER)"
 
 [[ "$mariadb_database" =~ ^[A-Za-z0-9_]+$ ]] || {
     echo "ERROR: MARIADB_DATABASE must contain only letters, digits, and underscores" >&2
@@ -113,6 +117,18 @@ pma_url="$(value_of XPBUILDER_PHPMYADMIN_URL)"
     echo "ERROR: MARIADB_USER must contain only letters, digits, dot, dash, and underscore" >&2
     exit 1
 }
+[[ "$control_database" =~ ^[A-Za-z0-9_]+$ ]] || {
+    echo "ERROR: PHPMYADMIN_CONTROL_DATABASE must contain only letters, digits, and underscores" >&2
+    exit 1
+}
+[[ "$control_user" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+    echo "ERROR: PHPMYADMIN_CONTROL_USER must contain only letters, digits, dot, dash, and underscore" >&2
+    exit 1
+}
+if [ "$control_database" = "$mariadb_database" ]; then
+    echo "ERROR: PHPMYADMIN_CONTROL_DATABASE must differ from MARIADB_DATABASE" >&2
+    exit 1
+fi
 [[ "$pma_host_port" =~ ^[0-9]+$ ]] || {
     echo "ERROR: XPBUILDER_PHPMYADMIN_HOST_PORT must be numeric" >&2
     exit 1
@@ -136,7 +152,7 @@ fi
 
 secret_keys=(
     POSTGRES_PASSWORD SUPERSET_REDIS_PASSWORD SUPERSET_SECRET_KEY
-    GUEST_TOKEN_JWT_SECRET MARIADB_ROOT_PASSWORD
+    GUEST_TOKEN_JWT_SECRET MARIADB_ROOT_PASSWORD PHPMYADMIN_CONTROL_PASSWORD
 )
 # Human-facing credentials are typed by people (and are often fixed by a site
 # requirement), so they only have to clear a basic 8-character floor.
@@ -177,6 +193,11 @@ done
 
 if [ "$(value_of MARIADB_PASSWORD)" = "$(value_of MARIADB_ROOT_PASSWORD)" ]; then
     echo "ERROR: MARIADB_PASSWORD and MARIADB_ROOT_PASSWORD must be different" >&2
+    exit 1
+fi
+if [ "$(value_of PHPMYADMIN_CONTROL_PASSWORD)" = "$(value_of MARIADB_ROOT_PASSWORD)" ] \
+    || [ "$(value_of PHPMYADMIN_CONTROL_PASSWORD)" = "$(value_of MARIADB_PASSWORD)" ]; then
+    echo "ERROR: PHPMYADMIN_CONTROL_PASSWORD must differ from the MariaDB passwords" >&2
     exit 1
 fi
 

@@ -111,6 +111,21 @@ Then reload the Databases page: the upload menu is enabled once the API reports
 at least one upload-capable connection. The script is idempotent and leaves
 previously uploaded tables alone.
 
+## Enable phpMyAdmin configuration storage on an existing stack
+
+phpMyAdmin's bookmarks, table relations, and query history need a configuration
+storage database that the site's database account cannot create. `bin/xpbuilder
+init` and `upgrade` provision it automatically; on an older stack (or after the
+MariaDB volume was replaced) converge it in place — no rebuild, no downtime:
+
+```bash
+cd /var/www/kot-xpbuilder
+bin/xpbuilder --allow-group-env --env-file /path/to/site/.env pmadb
+```
+
+The script is idempotent, reads the schema from the running phpMyAdmin image,
+and only creates what is missing.
+
 ## Bring it up
 
 ```bash

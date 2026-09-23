@@ -52,6 +52,9 @@ proxy (see [deployment.md](deployment.md)).
 | `XPBUILDER_MARIADB_MEMORY_LIMIT` | Container memory cap for MariaDB (default `768m`) |
 | `XPBUILDER_PHPMYADMIN_MEMORY_LIMIT` | Container memory cap and PHP `memory_limit` for phpMyAdmin (default `256m`) |
 | `XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT` | Maximum size of a `.sql` import (default `512M`) |
+| `PHPMYADMIN_CONTROL_DATABASE` | Database holding phpMyAdmin's own metadata (default `phpmyadmin`) |
+| `PHPMYADMIN_CONTROL_USER` | Control account phpMyAdmin uses for that database (default `pma`) |
+| `PHPMYADMIN_CONTROL_PASSWORD` | Password of the control account (provider-only, 16-character floor) |
 
 `MARIADB_USER` / `MARIADB_PASSWORD` are human-facing credentials: they only have
 to clear an 8-character floor, while `MARIADB_ROOT_PASSWORD` must reach 16.
@@ -73,6 +76,31 @@ mysql+pymysql://<MARIADB_USER>:<MARIADB_PASSWORD>@mariadb:3306/<MARIADB_DATABASE
 phpMyAdmin accepts large imports: the reverse proxy must allow at least the
 container's `UPLOAD_LIMIT` (`XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT`, default 512M)
 in `client_max_body_size`.
+
+### Configuration storage
+
+phpMyAdmin keeps bookmarks, table relations, query history, and central columns
+in its own database (the *configuration storage*, or pmadb) that it reaches with
+a separate control account. The site's database account only has rights on its
+own database, so `bin/xpbuilder init` and `upgrade` run
+`bin/provision-pmadb.sh`, which
+
+- creates `PHPMYADMIN_CONTROL_DATABASE` from phpMyAdmin's own
+  `create_tables.sql` (so the table layout always matches the running
+  phpMyAdmin version),
+- creates `PHPMYADMIN_CONTROL_USER` with rights on that database only,
+- and is idempotent, so it can be re-run on a live stack:
+
+```bash
+bin/xpbuilder --allow-group-env --env-file /path/to/site/.env pmadb
+```
+
+Without it phpMyAdmin still browses, edits, imports, and exports data, but shows
+*"You do not have necessary privileges to create a database named 'phpmyadmin'"*
+and the bookmark/relation/history features stay unavailable. The control account
+never sees the site's data database, the site account never sees the storage
+database, and the storage database is not part of the backup set (it is
+re-provisioned on demand).
 
 ### Group-accessible `.env` files
 
@@ -131,6 +159,7 @@ The following values are secrets and must exist only in `.env`:
 - `SUPERSET_REDIS_PASSWORD`
 - `POSTGRES_PASSWORD`
 - `MARIADB_ROOT_PASSWORD`
+- `PHPMYADMIN_CONTROL_PASSWORD`
 - `SUPERSET_ADMIN_PASSWORD`
 - `MARIADB_PASSWORD`
 

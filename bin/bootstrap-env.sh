@@ -80,6 +80,7 @@ guest_secret="$(secret 32)"
 admin_password="$(secret 18)"
 mariadb_password="$(secret 18)"
 mariadb_root_password="$(secret 24)"
+control_password="$(secret 24)"
 version="$(cat "$root/VERSION")"
 
 {
@@ -109,6 +110,12 @@ version="$(cat "$root/VERSION")"
     printf 'MARIADB_USER=xpbuilder\n'
     printf 'MARIADB_PASSWORD=%s\n' "$mariadb_password"
     printf 'MARIADB_ROOT_PASSWORD=%s\n' "$mariadb_root_password"
+    # phpMyAdmin's own configuration-storage database + control account
+    # (provisioned by `bin/xpbuilder pmadb`); the site's MariaDB account never
+    # gets access to it.
+    printf 'PHPMYADMIN_CONTROL_DATABASE=phpmyadmin\n'
+    printf 'PHPMYADMIN_CONTROL_USER=pma\n'
+    printf 'PHPMYADMIN_CONTROL_PASSWORD=%s\n' "$control_password"
     # phpMyAdmin is published on 127.0.0.1 only; the public entry point is the
     # TLS reverse proxy named by XPBUILDER_PHPMYADMIN_URL (empty = auto-detect).
     printf 'XPBUILDER_PHPMYADMIN_HOST_PORT=%s\n' "$phpmyadmin_port"
@@ -129,7 +136,7 @@ version="$(cat "$root/VERSION")"
 } > "$env_file"
 
 unset postgres_password redis_password superset_secret guest_secret admin_password
-unset mariadb_password mariadb_root_password
+unset mariadb_password mariadb_root_password control_password
 
 chmod 0600 "$env_file"
 echo "Created protected deployment configuration: $env_file"

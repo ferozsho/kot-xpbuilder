@@ -64,6 +64,17 @@ sed -i 's/^MARIADB_PASSWORD=.*/MARIADB_PASSWORD=restored-site-password/' \
     "$temporary/.env"
 bin/validate-env.sh "$temporary/.env" >/dev/null
 
+# The phpMyAdmin storage database must never be the site's own database.
+sed -i 's/^PHPMYADMIN_CONTROL_DATABASE=.*/PHPMYADMIN_CONTROL_DATABASE=xpbuilder/' \
+    "$temporary/.env"
+if bin/validate-env.sh "$temporary/.env" >/dev/null 2>&1; then
+    echo "ERROR: a phpMyAdmin storage database equal to MARIADB_DATABASE was accepted" >&2
+    exit 1
+fi
+sed -i 's/^PHPMYADMIN_CONTROL_DATABASE=.*/PHPMYADMIN_CONTROL_DATABASE=phpmyadmin/' \
+    "$temporary/.env"
+bin/validate-env.sh "$temporary/.env" >/dev/null
+
 # Secret hygiene: a group-accessible .env is rejected unless the site opts in
 # (hosted client workspaces share it with a restricted group), while access by
 # other users is never tolerated.
