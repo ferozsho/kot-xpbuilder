@@ -49,6 +49,9 @@ proxy (see [deployment.md](deployment.md)).
 | `MARIADB_ROOT_PASSWORD` | Container-local root secret (provider-only, in backups) |
 | `XPBUILDER_PHPMYADMIN_HOST_PORT` | Loopback port mapped to phpMyAdmin (`127.0.0.1` only) |
 | `XPBUILDER_PHPMYADMIN_URL` | Public phpMyAdmin URL with trailing `/` when a proxy fronts it (empty = auto-detect) |
+| `XPBUILDER_MARIADB_MEMORY_LIMIT` | Container memory cap for MariaDB (default `768m`) |
+| `XPBUILDER_PHPMYADMIN_MEMORY_LIMIT` | Container memory cap and PHP `memory_limit` for phpMyAdmin (default `256m`) |
+| `XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT` | Maximum size of a `.sql` import (default `512M`) |
 
 `MARIADB_USER` / `MARIADB_PASSWORD` are human-facing credentials: they only have
 to clear an 8-character floor, while `MARIADB_ROOT_PASSWORD` must reach 16.

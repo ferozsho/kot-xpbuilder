@@ -175,10 +175,14 @@ services:
     image: mariadb:11.4
     container_name: ${XPBUILDER_INSTANCE}_mariadb
     restart: unless-stopped
-    # utf8mb4 throughout: the default for Moodle-style content and emoji.
+    # utf8mb4 throughout: the default for Moodle-style content and emoji. The
+    # small buffer pool and disabled performance schema keep the bundled
+    # database friendly to the memory of a shared host.
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --innodb-buffer-pool-size=128M
+      - --performance-schema=OFF
     environment:
       MARIADB_DATABASE: ${MARIADB_DATABASE:?MARIADB_DATABASE is required}
       MARIADB_USER: ${MARIADB_USER:?MARIADB_USER is required}
@@ -194,6 +198,8 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+    # Hard cap: the bundled database must never starve Superset or a neighbour.
+    mem_limit: ${XPBUILDER_MARIADB_MEMORY_LIMIT:-768m}
     networks:
       - xpbuilder-internal
 
@@ -214,11 +220,14 @@ services:
       # Large .sql imports through the browser.
       UPLOAD_LIMIT: ${XPBUILDER_PHPMYADMIN_UPLOAD_LIMIT:-512M}
       MAX_EXECUTION_TIME: ${XPBUILDER_PHPMYADMIN_MAX_EXECUTION_TIME:-600}
+      MEMORY_LIMIT: ${XPBUILDER_PHPMYADMIN_MEMORY_LIMIT:-256m}
     ports:
       - "127.0.0.1:${XPBUILDER_PHPMYADMIN_HOST_PORT:?XPBUILDER_PHPMYADMIN_HOST_PORT is required}:80"
     depends_on:
       mariadb:
         condition: service_healthy
+    # phpMyAdmin is a convenience front end, not a workload: keep it small.
+    mem_limit: ${XPBUILDER_PHPMYADMIN_MEMORY_LIMIT:-256m}
     healthcheck:
       # php is always present in this image; bash may not be.
       test: ["CMD", "php", "-r", "exit(@fsockopen('127.0.0.1', 80) ? 0 : 1);"]
