@@ -175,6 +175,10 @@ The database URI then uses `<gateway>:3307`. Such a tunnel lives outside
 Compose, so it has to be supervised separately (systemd unit with
 `Restart=always`), and the connection is only as available as the tunnel.
 
+[troubleshooting.md](troubleshooting.md) works through that symptom in detail,
+together with the other traps that ship with access tickets listing SSH and
+database details side by side.
+
 ## File uploads
 
 | Variable | Purpose |
