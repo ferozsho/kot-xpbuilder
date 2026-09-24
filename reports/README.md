@@ -173,23 +173,31 @@ changes and no live capability was lost. It reads the `kefuat` tables below and
 carries the *Micro Assessment* concept chart, which stays empty until assessors
 record results.
 
-That concept chart unions the two places this platform can hold a concept-wise
-micro-assessment score, both scored on a 0-100 scale:
+That concept chart unions the two places a trainer can record a concept-wise
+result in this LMS, both scored on a 0-100 scale:
 
 | Store | Grain | Notes |
 | --- | --- | --- |
-| `mdl_grade_grades` + `mdl_grade_items` | teacher x class x student x concept | graded activity in a course whose name contains *Micro Assessment* |
-| `mdl_local_classroom_test_score` | teacher x class x concept | the classroom module's own test-score table (`classroomid`, `courseid`, `testid`, `totalmarks`, `score`); concept = the course fullname, has no student id |
+| `mdl_grade_grades` + `mdl_grade_items` | teacher x class x student x concept | grading a concept item of a course whose name contains *micro*; concept = the item name, falling back to `mdl_assign.name` when the item is unnamed |
+| `mdl_local_classroom_test_score` | teacher x class x concept | the classroom module's Test Score feature (`classroomid`, `courseid`, `testid`, `totalmarks`, `score`); concept = the course name, no student id |
 
-Both are **empty in `kefuat`** (`mdl_local_classroom_test_score` holds 0 rows and
-the *Micro Assessment* courses hold 3 ungraded submissions), which is why the
-tile renders its empty state there. The client's reference export is a
-purpose-made mock-up rather than an extract of this database: its 700 rows carry
-700 *distinct* student names and every teacher has exactly 4 or 5 of them, its 60
-school names and 150 teacher names match none of the 106 `mdl_local_classroom_trainers`
-trainers, and the sheet's bottom rows hold the ad-hoc averages that produced the
-screenshot. Wiring the tile to the client's production Moodle - added as a second
-connection exactly like `kefuat` - is what would fill it with real numbers.
+The course filter is `%micro%` (not `%micro assessment%`) because the pilot
+course is named `TRTI26-27MicroAssessmentPilot`, without a space - the narrower
+pattern silently excluded it.
+
+Nothing has been recorded in `kefuat` yet, which is why the tile renders its
+empty state there: the ten micro-assessment courses hold **173 concept items and
+not one grade** (95 `mdl_grade_grades` rows exist for them, all with a NULL
+`finalgrade`; the only `mdl_assign_grades` rows carry `grade = -1`, i.e. "no
+grade"), `mdl_local_classroom_test_score` holds 0 rows, and the grade *history*
+tables confirm no score was ever entered and deleted. Register the client's
+production Moodle - a second connection exactly like `kefuat` - or let a trainer
+grade one concept item, and the tile fills by itself with no further change.
+
+The client's reference export, by contrast, is a purpose-made mock-up rather
+than an extract of this database: its 700 rows carry 700 *distinct* student names
+and every teacher has exactly 4 or 5 of them, and its 60 school names and 150
+teacher names match none of the 106 `mdl_local_classroom_trainers` trainers.
 
 
 Not one of the export's 150 teacher names matches the 106

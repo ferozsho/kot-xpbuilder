@@ -329,20 +329,16 @@ LEFT JOIN artefacts ar ON ar.teacher_id = a.teacher_id
 """
 
 # One row per (teacher x class x concept) for the micro-assessment / concept-wise
-# chart, with an optional student grain. Two sources are unioned because the
-# micro-assessment data can legitimately live in either place on this platform:
+# chart. A trainer can record a result in two places, so both are unioned and
+# both are scored on a 0-100 scale:
 #
-#   * ``mdl_grade_grades`` - the gradebook of a "Micro Assessment" course, one
-#     row per student, used while the assessment is a graded course activity.
-#   * ``mdl_local_classroom_test_score`` - the classroom module's own test-score
-#     table (classroomid / courseid / testid / totalmarks / score), one row per
-#     classroom test, which is where the module records paper test results. It
-#     carries no student id, so those rows have a NULL student.
+#   * ``mdl_grade_grades`` - grading a concept item of a course whose name
+#     contains "micro" (concept = the item name, falling back to the assignment
+#     name when the trainer left the item unnamed); one row per student.
+#   * ``mdl_local_classroom_test_score`` - the classroom module's own Test Score
+#     feature (concept = the course name); classroom-level, so no student id.
 #
-# Both branches are scored on a 0-100 scale, so the chart's average mixes them
-# consistently. A database that populates neither (a site where the trainers
-# have not entered any micro-assessment result yet) renders the chart's normal
-# empty state.
+# A site where nothing has been recorded yet renders the chart's empty state.
 CONCEPT_SQL = """
 WITH teacher_classes AS (
     SELECT DISTINCT t.trainerid AS teacher_id, t.classroomid AS class_id
@@ -356,12 +352,11 @@ class_students AS (
 micro_courses AS (
     SELECT c.id AS course_id
     FROM mdl_course c
-    WHERE LOWER(c.fullname) LIKE '%micro assessment%'
-       OR LOWER(c.fullname) LIKE '%micro-assessment%'
+    WHERE LOWER(c.fullname) LIKE '%micro%'
 ),
 gradebook_scores AS (
     SELECT cs.teacher_id, cs.class_id, cs.student_id,
-           gi.itemname AS concept_name,
+           COALESCE(NULLIF(gi.itemname, ''), NULLIF(a.name, '')) AS concept_name,
            AVG(gg.finalgrade / gi.grademax * 100) AS concept_score,
            COUNT(*) AS assessments_recorded,
            MAX(DATE(FROM_UNIXTIME(gg.timemodified))) AS concept_on
@@ -369,10 +364,13 @@ gradebook_scores AS (
     JOIN mdl_grade_grades gg ON gg.userid = cs.student_id
     JOIN mdl_grade_items gi ON gi.id = gg.itemid
     JOIN micro_courses mc ON mc.course_id = gi.courseid
+    LEFT JOIN mdl_assign a
+        ON gi.itemmodule = 'assign' AND a.id = gi.iteminstance
     WHERE gg.finalgrade IS NOT NULL
       AND gi.grademax > 0
-      AND gi.itemname IS NOT NULL
-    GROUP BY cs.teacher_id, cs.class_id, cs.student_id, gi.itemname
+      AND COALESCE(NULLIF(gi.itemname, ''), NULLIF(a.name, '')) IS NOT NULL
+    GROUP BY cs.teacher_id, cs.class_id, cs.student_id,
+             COALESCE(NULLIF(gi.itemname, ''), NULLIF(a.name, ''))
 ),
 classroom_tests AS (
     SELECT ts.classroomid AS class_id, ts.courseid AS course_id,
