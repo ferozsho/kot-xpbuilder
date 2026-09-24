@@ -171,7 +171,25 @@ concepts at **5.0 / 5.0 / 5.0**, and the per-student chart at
 The same report approximated from `kefuat`, so it keeps updating as the LMS
 changes and no live capability was lost. It reads the `kefuat` tables below and
 carries the *Micro Assessment* concept chart, which stays empty until assessors
-grade those activities.
+record results.
+
+That concept chart unions the two places this platform can hold a concept-wise
+micro-assessment score, both scored on a 0-100 scale:
+
+| Store | Grain | Notes |
+| --- | --- | --- |
+| `mdl_grade_grades` + `mdl_grade_items` | teacher x class x student x concept | graded activity in a course whose name contains *Micro Assessment* |
+| `mdl_local_classroom_test_score` | teacher x class x concept | the classroom module's own test-score table (`classroomid`, `courseid`, `testid`, `totalmarks`, `score`); concept = the course fullname, has no student id |
+
+Both are **empty in `kefuat`** (`mdl_local_classroom_test_score` holds 0 rows and
+the *Micro Assessment* courses hold 3 ungraded submissions), which is why the
+tile renders its empty state there. The client's reference export is a
+purpose-made mock-up rather than an extract of this database: its 700 rows carry
+700 *distinct* student names and every teacher has exactly 4 or 5 of them, its 60
+school names and 150 teacher names match none of the 106 `mdl_local_classroom_trainers`
+trainers, and the sheet's bottom rows hold the ad-hoc averages that produced the
+screenshot. Wiring the tile to the client's production Moodle - added as a second
+connection exactly like `kefuat` - is what would fill it with real numbers.
 
 
 Not one of the export's 150 teacher names matches the 106

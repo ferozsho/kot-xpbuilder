@@ -328,9 +328,21 @@ LEFT JOIN mdl_course_categories cc2 ON cc2.id = c.category
 LEFT JOIN artefacts ar ON ar.teacher_id = a.teacher_id
 """
 
-# One row per (teacher x class x student x concept) for the micro-assessment /
-# concept-wise chart. The score is the student's average for that concept, so
-# the chart's average weights every student equally.
+# One row per (teacher x class x concept) for the micro-assessment / concept-wise
+# chart, with an optional student grain. Two sources are unioned because the
+# micro-assessment data can legitimately live in either place on this platform:
+#
+#   * ``mdl_grade_grades`` - the gradebook of a "Micro Assessment" course, one
+#     row per student, used while the assessment is a graded course activity.
+#   * ``mdl_local_classroom_test_score`` - the classroom module's own test-score
+#     table (classroomid / courseid / testid / totalmarks / score), one row per
+#     classroom test, which is where the module records paper test results. It
+#     carries no student id, so those rows have a NULL student.
+#
+# Both branches are scored on a 0-100 scale, so the chart's average mixes them
+# consistently. A database that populates neither (a site where the trainers
+# have not entered any micro-assessment result yet) renders the chart's normal
+# empty state.
 CONCEPT_SQL = """
 WITH teacher_classes AS (
     SELECT DISTINCT t.trainerid AS teacher_id, t.classroomid AS class_id
@@ -347,7 +359,7 @@ micro_courses AS (
     WHERE LOWER(c.fullname) LIKE '%micro assessment%'
        OR LOWER(c.fullname) LIKE '%micro-assessment%'
 ),
-concept_scores AS (
+gradebook_scores AS (
     SELECT cs.teacher_id, cs.class_id, cs.student_id,
            gi.itemname AS concept_name,
            AVG(gg.finalgrade / gi.grademax * 100) AS concept_score,
@@ -361,6 +373,34 @@ concept_scores AS (
       AND gi.grademax > 0
       AND gi.itemname IS NOT NULL
     GROUP BY cs.teacher_id, cs.class_id, cs.student_id, gi.itemname
+),
+classroom_tests AS (
+    SELECT ts.classroomid AS class_id, ts.courseid AS course_id,
+           ts.testid, ts.testdate,
+           CAST(ts.score AS DECIMAL(12, 4)) AS score,
+           CAST(ts.totalmarks AS DECIMAL(12, 4)) AS totalmarks
+    FROM mdl_local_classroom_test_score ts
+    WHERE ts.score REGEXP '^[0-9]+([.][0-9]+)?$'
+      AND ts.totalmarks REGEXP '^[0-9]+([.][0-9]+)?$'
+      AND CAST(ts.totalmarks AS DECIMAL(12, 4)) > 0
+),
+test_scores AS (
+    SELECT tc.teacher_id, ct.class_id, NULL AS student_id,
+           COALESCE(NULLIF(c.fullname, ''), NULLIF(ct.testid, ''), 'Test')
+               AS concept_name,
+           AVG(ct.score / ct.totalmarks * 100) AS concept_score,
+           COUNT(*) AS assessments_recorded,
+           MAX(DATE(FROM_UNIXTIME(ct.testdate))) AS concept_on
+    FROM classroom_tests ct
+    JOIN teacher_classes tc ON tc.class_id = ct.class_id
+    LEFT JOIN mdl_course c ON c.id = ct.course_id
+    GROUP BY tc.teacher_id, ct.class_id,
+             COALESCE(NULLIF(c.fullname, ''), NULLIF(ct.testid, ''), 'Test')
+),
+concept_scores AS (
+    SELECT * FROM gradebook_scores
+    UNION ALL
+    SELECT * FROM test_scores
 )
 SELECT
     t.teacher_id,
@@ -381,7 +421,7 @@ SELECT
 FROM concept_scores t
 JOIN mdl_local_classroom cls ON cls.id = t.class_id
 JOIN mdl_user tu ON tu.id = t.teacher_id
-JOIN mdl_user su ON su.id = t.student_id
+LEFT JOIN mdl_user su ON su.id = t.student_id
 """
 
 PERCENT_2 = ".2%"
