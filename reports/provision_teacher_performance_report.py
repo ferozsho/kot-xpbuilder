@@ -1191,7 +1191,9 @@ def live_filters(datasets: dict[str, int]) -> list[dict[str, Any]]:
     ]
 
 
-def layout(chart_rows: list[list[dict[str, Any]]]) -> dict[str, Any]:
+def layout(
+    chart_rows: list[list[dict[str, Any]]]
+) -> dict[str, Any]:
     """Build the dashboard grid, one row per supplied row of charts."""
     result: dict[str, Any] = {
         "DASHBOARD_VERSION_KEY": "v2",
@@ -1430,19 +1432,32 @@ def main() -> int:
     )
 
     # The client's Program Data export, uploaded into the writable connection.
+    # The table is a static snapshot, so a re-run without the source file reuses
+    # whatever was uploaded last time instead of failing.
     export_source = args.program_data
-    if not export_source.exists():
-        raise SystemExit(f"Program Data export not found: {export_source}")
     upload = resolve_connection(api, args.upload_connection)
     upload = Connection(id=upload.id, schema=ensure_upload_schema(api, upload.id))
-    normalised = Path(tempfile.gettempdir()) / f"{PROGRAM_DATA_TABLE}.csv"
-    row_count = normalise_program_data(export_source, normalised)
-    upload_program_data(api, upload, normalised, PROGRAM_DATA_TABLE)
-    print(
-        f"Uploaded {row_count} Program Data rows into "
-        f"{upload.schema}.{PROGRAM_DATA_TABLE} (connection {upload.id})"
-    )
+    if export_source.exists():
+        normalised = Path(tempfile.gettempdir()) / f"{PROGRAM_DATA_TABLE}.csv"
+        row_count = normalise_program_data(export_source, normalised)
+        upload_program_data(api, upload, normalised, PROGRAM_DATA_TABLE)
+        print(
+            f"Uploaded {row_count} Program Data rows into "
+            f"{upload.schema}.{PROGRAM_DATA_TABLE} (connection {upload.id})"
+        )
+    else:
+        print(
+            f"{export_source} not found - reusing the {PROGRAM_DATA_TABLE} table "
+            f"already present in {upload.schema} (pass --program-data to refresh)"
+        )
     export_dataset = resolve_uploaded_dataset(api, upload, PROGRAM_DATA_TABLE)
+    if not export_source.exists() and not (
+        api.get(f"/api/v1/dataset/{export_dataset}")["result"].get("columns")
+    ):
+        raise SystemExit(
+            f"{export_source} not found and no previously uploaded "
+            f"{PROGRAM_DATA_TABLE} table to fall back on - pass --program-data"
+        )
 
     # Page 1 - the reference report, fed by the client's export.
     reference = {"export": export_dataset}
@@ -1468,7 +1483,12 @@ def main() -> int:
     }
     live_specs = live_charts(live)
     live_id = create_dashboard(
-        api, live_specs, live, LIVE_TITLE, LIVE_SLUG, live_filters(live)
+        api,
+        live_specs,
+        live,
+        LIVE_TITLE,
+        LIVE_SLUG,
+        live_filters(live),
     )
     print(
         f"Created {len(live_specs)} charts on {LIVE_TITLE} "

@@ -173,6 +173,12 @@ changes and no live capability was lost. It reads the `kefuat` tables below and
 carries the *Micro Assessment* concept chart, which stays empty until assessors
 grade those activities.
 
+It also carries a text block at the top of the page: **not one of the export's
+150 teacher names matches the 106 `mdl_local_classroom_trainers` trainers** (the
+one `Amit Jadhav` in `mdl_user` has no role and no classroom), so his name can
+never appear in this page's `Teacher Name` list. The note says so and links to
+page 1, which is where he is selectable.
+
 | Report element | Live source |
 | --- | --- |
 | Teacher | `mdl_local_classroom_trainers.trainerid` -> `mdl_user` |
