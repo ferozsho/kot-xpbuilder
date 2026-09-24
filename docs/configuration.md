@@ -116,6 +116,65 @@ bin/xpbuilder --allow-group-env --env-file /var/www/kot-xpbuilder/.env health
 `--allow-group-env` only relaxes the group bits; readable/writable by other
 users is still rejected. Without the flag nothing changes.
 
+## External databases
+
+External databases (for example a Moodle MySQL/MariaDB belonging to another
+hosting) are attached from **Databases → + Database** in the UI, or
+non-interactively from the provider shell:
+
+```bash
+docker exec <instance>_superset superset set-database-uri \
+    -d '<display name>' \
+    -u 'mysql+pymysql://<user>:<password>@<host>:<port>/<database>'
+```
+
+`set-database-uri` creates the connection when the display name does not exist
+yet and updates it in place otherwise, so it is safe to re-run. The password is
+moved out of the URI into the metadata database, encrypted with
+`SUPERSET_SECRET_KEY` (rotating that secret means re-saving the connection).
+
+Pass the URI in **single quotes**: a password containing `$` is otherwise
+expanded by the shell (`$@`, `$1`, …), the connection stores the mangled value,
+and the failure only shows up later as an authentication error. Confirm the
+stored secret has the expected length with `select length(password) from dbs`.
+
+### Access tickets that also list SSH access
+
+An external-access ticket usually prints the SSH details next to the database
+details. The SSH endpoint is **not** the database endpoint: Superset must be
+pointed at the database host and port (usually `3306`), never at the SSH port.
+A MySQL connection aimed at an SSH port fails with
+
+```text
+(pymysql.err.InternalError) Packet sequence number wrong - got 45 expected 0
+```
+
+which is pymysql reading the fourth byte of the SSH identification string
+`SSH-2.0-OpenSSH_…` (`-` is `45`) and mistaking it for a packet sequence
+number. Seeing this error means the database port was configured instead of an
+SSH port — it does not indicate a network or credential problem. Confirm the
+real endpoint before building anything:
+
+```bash
+docker exec <instance>_mariadb mariadb --connect-timeout=10 \
+    -h <host> -P 3306 -u <user> -p -e "select version(), current_user()" <database>
+```
+
+Only build an SSH tunnel when the database really listens on the remote's
+loopback interface. Run the tunnel on the host and bind it to the stack's
+**Docker bridge gateway**, because `127.0.0.1` inside a container is the
+container itself, not the host:
+
+```bash
+docker network inspect <XPBUILDER_INTERNAL_NETWORK> \
+    --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}'
+ssh -N -L <gateway>:3307:127.0.0.1:3306 <ssh-user>@<ssh-host>
+```
+
+The database URI then uses `<gateway>:3307`. Such a tunnel lives outside
+Compose, so it has to be supervised separately (systemd unit with
+`Restart=always`), and the connection is only as available as the tunnel.
+
 ## File uploads
 
 | Variable | Purpose |
