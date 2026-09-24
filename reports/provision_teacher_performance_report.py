@@ -80,6 +80,15 @@ import requests
 MARKER = "XPBuilder teacher performance report"
 SLUG = "teacher-performance-report"
 TITLE = "Teacher Performance Report"
+# The reference report is powered by the client's flat Program Data export, and
+# that export describes a different population from the LMS (none of its 60
+# schools and only two of its 150 teacher names exist in ``kefuat``). Superset's
+# select filter reads its option list from a single dataset and applies the
+# chosen column to every chart left in scope, so the two sources cannot share a
+# control: the reference report gets the primary slug and the live Moodle view
+# moves to its own page.
+LIVE_SLUG = "teacher-performance-report-live"
+LIVE_TITLE = "Teacher Performance Report (Live Moodle)"
 DEFAULT_CONNECTION = "kefuat"
 STUDENT_DATASET = "Teacher Student Performance"
 COURSE_DATASET = "Teacher Course Report"
@@ -375,6 +384,7 @@ JOIN mdl_user tu ON tu.id = t.teacher_id
 JOIN mdl_user su ON su.id = t.student_id
 """
 
+PERCENT_2 = ".2%"
 PERCENT_1 = ".1%"
 NUMBER_1 = ",.1f"
 NUMBER_0 = ",.0f"
@@ -731,27 +741,168 @@ def area_chart(
     return form
 
 
-def concept_chart(dataset_id: int, source: str) -> dict[str, Any]:
-    """Return the concept-wise micro-assessment chart for the chosen source.
-
-    ``moodle`` reads the graded *Micro Assessment* items of the connected Moodle
-    database (empty until the assessors grade them); ``export`` reads the
-    client's Program Data export, where the score is recorded per teacher and
-    repeated on each of that teacher's student rows.
-    """
-    column = "concept_name" if source == "moodle" else "microassessment_concept"
-    return bar_chart(
-        dataset_id,
-        column,
-        [sql_metric("AVG(microassessment_score)", "Microassessment Score")],
-        number_format=NUMBER_1,
-        x_axis_label="Concept",
-        y_axis_label="",
+def concept_chart(dataset_id: int, column: str, title: str) -> ChartSpec:
+    """Return the concept-wise micro-assessment chart for one source."""
+    return ChartSpec(
+        "concept",
+        title,
+        "concept",
+        bar_chart(
+            dataset_id,
+            column,
+            [sql_metric("AVG(microassessment_score)", "Microassessment Score")],
+            number_format=NUMBER_1,
+            x_axis_label="Concept",
+            y_axis_label="",
+        ),
+        7,
+        44,
     )
 
 
-def charts(datasets: dict[str, int], concept_source: str) -> list[ChartSpec]:
-    """Return the report tiles, grouped by the dataset they read."""
+def export_charts(dataset_id: int) -> list[ChartSpec]:
+    """Return the reference report exactly as the client's export defines it.
+
+    The export is one row per teacher x student with the teacher-level figures
+    repeated, so every teacher-level metric is an average over that teacher's
+    students (exact once a teacher is selected) and every student metric is
+    computed from the student's own columns.
+    """
+    courses_pct = (
+        "AVG(courses_completed) / NULLIF(AVG(courses_assigned), 0)"
+    )
+    gain = "(SUM(ml_score_20) - SUM(bl_score_20)) / NULLIF(SUM(bl_score_20), 0)"
+    # Both sides must be aggregates: Superset puts the expression in the GROUP BY
+    # too, and Postgres rejects a bare ``ml_score_20 - bl_score_20`` next to a
+    # ``GROUP BY student_name``.
+    return [
+        ChartSpec(
+            "kpi_courses",
+            "Courses Enrolled Vs Completed",
+            "export",
+            kpi(
+                dataset_id,
+                sql_metric(courses_pct, "Courses Enrolled Vs Completed"),
+                "Courses Completed %",
+                PERCENT_1,
+            ),
+            3,
+            26,
+        ),
+        ChartSpec(
+            "kpi_students",
+            "Total Students",
+            "export",
+            kpi(
+                dataset_id,
+                simple("student_name", "COUNT_DISTINCT", "Total Students"),
+                "Total Students",
+            ),
+            3,
+            26,
+        ),
+        ChartSpec(
+            "kpi_gain",
+            "Student Gain %",
+            "export",
+            kpi(
+                dataset_id,
+                sql_metric(gain, "Student Gain %"),
+                "Student Gain %",
+                PERCENT_2,
+            ),
+            3,
+            26,
+        ),
+        ChartSpec(
+            "kpi_artefacts",
+            "Artefacts Submitted",
+            "export",
+            kpi(
+                dataset_id,
+                sql_metric("AVG(artefacts_submitted)", "Artefacts Submitted"),
+                "Artefacts Submitted",
+            ),
+            3,
+            26,
+        ),
+        ChartSpec(
+            "bl_ml",
+            "Avg. BL Score and Avg. ML Score out of 20",
+            "export",
+            bar_chart(
+                dataset_id,
+                "grade",
+                [
+                    sql_metric("AVG(bl_score_20)", "Avg. BL Score"),
+                    sql_metric("AVG(ml_score_20)", "Avg. ML Score"),
+                ],
+                number_format=NUMBER_1,
+                x_axis_label="Grade",
+                y_axis_label="",
+            ),
+            5,
+            44,
+        ),
+        ChartSpec(
+            "concept",
+            "Microassessment Score (Out of 10) Concept Wise",
+            "export",
+            bar_chart(
+                dataset_id,
+                "microassessment_concept",
+                [sql_metric("AVG(microassessment_score)",
+                            "Microassessment Score")],
+                number_format=NUMBER_1,
+                x_axis_label="Concept",
+                y_axis_label="",
+            ),
+            7,
+            44,
+        ),
+        ChartSpec(
+            "course_bar",
+            "Courses Enrolled vs Courses Completed",
+            "export",
+            bar_chart(
+                dataset_id,
+                "teacher_name",
+                [
+                    sql_metric("AVG(courses_assigned)", "Courses Assigned"),
+                    sql_metric("AVG(courses_completed)", "Courses Completed"),
+                ],
+                number_format=NUMBER_0,
+                orientation="horizontal",
+                sort_by_value=True,
+                x_axis_label="Teacher",
+                y_axis_label="Courses",
+                row_limit=12,
+            ),
+            6,
+            44,
+        ),
+        ChartSpec(
+            "gain_area",
+            "Student Gain %",
+            "export",
+            area_chart(
+                dataset_id,
+                "student_name",
+                sql_metric(
+                    "AVG(ml_score_20 - bl_score_20) / NULLIF(AVG(bl_score_20), 0)",
+                    "Student Gain %",
+                ),
+                x_axis_label="Student Name",
+                y_axis_label="Student Gain %",
+            ),
+            6,
+            44,
+        ),
+    ]
+
+
+def live_charts(datasets: dict[str, int]) -> list[ChartSpec]:
+    """Return the live Moodle tiles, grouped by the dataset they read."""
     student = datasets["student"]
     course = datasets["course"]
     concept = datasets["concept"]
@@ -839,13 +990,8 @@ def charts(datasets: dict[str, int], concept_source: str) -> list[ChartSpec]:
             5,
             44,
         ),
-        ChartSpec(
-            "concept",
-            "Microassessment Score (Out of 10) Concept Wise",
-            "concept",
-            concept_chart(concept, concept_source),
-            7,
-            44,
+        concept_chart(
+            concept, "concept_name", "Microassessment Score Concept Wise"
         ),
         ChartSpec(
             "course_bar",
@@ -943,51 +1089,82 @@ def time_filter(
     }
 
 
-def native_filters(
-    datasets: dict[str, int],
-    concept_source: str,
-    live_charts: tuple[str, ...],
-    export_charts: tuple[str, ...],
-) -> list[dict[str, Any]]:
-    """Return the dashboard filters.
+def export_filters(dataset_id: int) -> list[dict[str, Any]]:
+    """Return the reference report's controls, all reading the export.
 
-    The client's Program Data export describes a different population from the
-    Moodle data (none of its 60 schools and only a couple of its 150 teacher
-    names exist in the LMS), so the two sources get separate controls: the live
-    filters ignore the export tiles and the Program Data filters ignore the live
-    ones.
+    ``Teacher Name`` is the same control the reference screenshot shows in its
+    top row, and it lists the client's own 150 teachers (including *Amit
+    Jadhav*), because on this page every tile reads the export.
     """
+    return [
+        select_filter(
+            1, "Teacher Name", "teacher_name", [(dataset_id, "teacher_name")]
+        ),
+        select_filter(
+            2,
+            "Grade",
+            "grade",
+            [(dataset_id, "grade")],
+            cascade_from=("NATIVE_FILTER-1",),
+        ),
+        select_filter(
+            3,
+            "School",
+            "school_name",
+            [(dataset_id, "school_name")],
+            cascade_from=("NATIVE_FILTER-1",),
+        ),
+        select_filter(
+            4,
+            "Academic Year",
+            "academic_year",
+            [(dataset_id, "academic_year")],
+        ),
+        select_filter(
+            5,
+            "District",
+            "district",
+            [(dataset_id, "district")],
+            cascade_from=("NATIVE_FILTER-3",),
+        ),
+        select_filter(
+            6,
+            "Microassessment Concept",
+            "microassessment_concept",
+            [(dataset_id, "microassessment_concept")],
+        ),
+    ]
+
+
+def live_filters(datasets: dict[str, int]) -> list[dict[str, Any]]:
+    """Return the controls for the live Moodle page."""
     student = datasets["student"]
     course = datasets["course"]
-    live_targets = [(student, "teacher_name"), (course, "teacher_name")]
-    grade_targets = [(student, "grade_name")]
-    class_targets = [(student, "class_name")]
-    date_targets = [(student, "last_assessment_date")]
-    if concept_source == "moodle":
-        live_targets.append((datasets["concept"], "teacher_name"))
-        grade_targets.append((datasets["concept"], "grade_name"))
-        class_targets.append((datasets["concept"], "class_name"))
-        date_targets.append((datasets["concept"], "last_assessment_date"))
-
-    filters = [
+    concept = datasets["concept"]
+    return [
         select_filter(
-            1, "Teacher Name", "teacher_name", live_targets, exclude=export_charts
+            1,
+            "Teacher Name",
+            "teacher_name",
+            [
+                (student, "teacher_name"),
+                (concept, "teacher_name"),
+                (course, "teacher_name"),
+            ],
         ),
         select_filter(
             2,
             "Grade",
             "grade_name",
-            grade_targets,
+            [(student, "grade_name"), (concept, "grade_name")],
             cascade_from=("NATIVE_FILTER-1",),
-            exclude=export_charts,
         ),
         select_filter(
             3,
             "Class / Section",
             "class_name",
-            class_targets,
+            [(student, "class_name"), (concept, "class_name")],
             cascade_from=("NATIVE_FILTER-1", "NATIVE_FILTER-2"),
-            exclude=export_charts,
         ),
         select_filter(
             4,
@@ -995,7 +1172,6 @@ def native_filters(
             "school_name",
             [(student, "school_name")],
             cascade_from=("NATIVE_FILTER-1",),
-            exclude=export_charts,
         ),
         select_filter(
             5,
@@ -1003,32 +1179,16 @@ def native_filters(
             "course_name",
             [(course, "course_name")],
             cascade_from=("NATIVE_FILTER-1",),
-            exclude=export_charts,
         ),
-        time_filter(6, "Assessment Date", date_targets, exclude=export_charts),
+        time_filter(
+            6,
+            "Assessment Date",
+            [
+                (student, "last_assessment_date"),
+                (concept, "last_assessment_date"),
+            ],
+        ),
     ]
-    if concept_source == "export":
-        export = datasets["concept"]
-        filters.append(
-            select_filter(
-                7,
-                "Program Data Teacher",
-                "teacher_name",
-                [(export, "teacher_name")],
-                exclude=live_charts,
-            )
-        )
-        filters.append(
-            select_filter(
-                8,
-                "Academic Year",
-                "academic_year",
-                [(export, "academic_year")],
-                cascade_from=("NATIVE_FILTER-7",),
-                exclude=live_charts,
-            )
-        )
-    return filters
 
 
 def layout(chart_rows: list[list[dict[str, Any]]]) -> dict[str, Any]:
@@ -1098,9 +1258,9 @@ DASHBOARD_CSS = """
 def cleanup(api: SupersetApi) -> None:
     """Remove only the artifacts this script owns."""
     for dashboard in api.list_all("dashboard"):
-        if dashboard.get("slug") == SLUG:
+        if dashboard.get("slug") in (SLUG, LIVE_SLUG):
             api.delete(f"/api/v1/dashboard/{dashboard['id']}")
-            print(f"Removed dashboard {SLUG}")
+            print(f"Removed dashboard {dashboard['slug']}")
     for chart in api.list_all("chart"):
         if MARKER in (chart.get("description") or ""):
             api.delete(f"/api/v1/chart/{chart['id']}")
@@ -1164,17 +1324,19 @@ def create_dashboard(
     api: SupersetApi,
     specs: list[ChartSpec],
     datasets: dict[str, int],
-    concept_source: str,
+    title: str,
+    slug: str,
+    filters: list[dict[str, Any]],
 ) -> int:
-    """Create the dashboard with its charts, layout, filters and styling."""
+    """Create one dashboard page with its charts, layout, filters and styling."""
     result = api.post(
         "/api/v1/dashboard/",
         json={
-            "dashboard_title": TITLE,
+            "dashboard_title": title,
             "json_metadata": json.dumps({"timed_refresh_immune_slices": []}),
             "position_json": json.dumps({}),
             "published": True,
-            "slug": SLUG,
+            "slug": slug,
         },
     )
     dashboard_id = int(result["id"])
@@ -1192,23 +1354,13 @@ def create_dashboard(
         [created["bl_ml"], created["concept"]],
         [created["course_bar"], created["gain_area"]],
     ]
-    # ``scope.excluded`` holds chart ids (not layout keys), and it is the only
-    # thing that keeps the two filter groups apart: a native filter's payload
-    # carries a column name but no dataset, so every chart left in scope applies
-    # it to its own dataset.
-    live_charts = tuple(
-        chart["id"] for key, chart in created.items() if key != "concept"
-    )
-    export_charts = (created["concept"]["id"],)
     metadata = {
         "color_scheme": "supersetColors",
         "cross_filters_enabled": True,
         "default_filters": "{}",
         "expanded_slices": {},
         "filter_bar_orientation": "HORIZONTAL",
-        "native_filter_configuration": native_filters(
-            datasets, concept_source, live_charts, export_charts
-        ),
+        "native_filter_configuration": filters,
         "refresh_frequency": 0,
         "timed_refresh_immune_slices": [],
     }
@@ -1216,11 +1368,11 @@ def create_dashboard(
         f"/api/v1/dashboard/{dashboard_id}",
         {
             "css": DASHBOARD_CSS,
-            "dashboard_title": TITLE,
+            "dashboard_title": title,
             "json_metadata": json.dumps(metadata),
             "position_json": json.dumps(layout(rows)),
             "published": True,
-            "slug": SLUG,
+            "slug": slug,
         },
     )
     return dashboard_id
@@ -1236,15 +1388,6 @@ def main() -> int:
         "--connection",
         default=DEFAULT_CONNECTION,
         help="Superset connection holding the Moodle tables",
-    )
-    parser.add_argument(
-        "--concept-source",
-        choices=("export", "moodle"),
-        default="export",
-        help=(
-            "Where the micro-assessment concept chart reads from: the client's "
-            "Program Data export (default) or the Moodle micro-assessment items"
-        ),
     )
     parser.add_argument(
         "--program-data",
@@ -1274,45 +1417,74 @@ def main() -> int:
     api = SupersetApi(base_url, username, password)
     connection = resolve_connection(api, args.connection)
     cleanup(api)
-    datasets = {
-        "student": create_dataset(api, connection, STUDENT_DATASET, STUDENT_SQL),
-        "course": create_dataset(api, connection, COURSE_DATASET, COURSE_SQL),
+    # The live Moodle datasets.
+    datasets: dict[str, int] = {}
+    datasets["student"] = create_dataset(
+        api, connection, STUDENT_DATASET, STUDENT_SQL
+    )
+    datasets["course"] = create_dataset(
+        api, connection, COURSE_DATASET, COURSE_SQL
+    )
+    datasets["moodle_concept"] = create_dataset(
+        api, connection, CONCEPT_DATASET, CONCEPT_SQL
+    )
+
+    # The client's Program Data export, uploaded into the writable connection.
+    export_source = args.program_data
+    if not export_source.exists():
+        raise SystemExit(f"Program Data export not found: {export_source}")
+    upload = resolve_connection(api, args.upload_connection)
+    upload = Connection(id=upload.id, schema=ensure_upload_schema(api, upload.id))
+    normalised = Path(tempfile.gettempdir()) / f"{PROGRAM_DATA_TABLE}.csv"
+    row_count = normalise_program_data(export_source, normalised)
+    upload_program_data(api, upload, normalised, PROGRAM_DATA_TABLE)
+    print(
+        f"Uploaded {row_count} Program Data rows into "
+        f"{upload.schema}.{PROGRAM_DATA_TABLE} (connection {upload.id})"
+    )
+    export_dataset = resolve_uploaded_dataset(api, upload, PROGRAM_DATA_TABLE)
+
+    # Page 1 - the reference report, fed by the client's export.
+    reference = {"export": export_dataset}
+    reference_specs = export_charts(export_dataset)
+    reference_id = create_dashboard(
+        api,
+        reference_specs,
+        reference,
+        TITLE,
+        SLUG,
+        export_filters(export_dataset),
+    )
+    print(
+        f"Created {len(reference_specs)} charts on {TITLE} "
+        f"(id={reference_id}, source: Program Data export)"
+    )
+
+    # Page 2 - the same report approximated from the live Moodle database.
+    live = {
+        "student": datasets["student"],
+        "course": datasets["course"],
+        "concept": datasets["moodle_concept"],
     }
-    sources: dict[str, Any] = {"concept": args.concept_source}
-    if args.concept_source == "moodle":
-        datasets["concept"] = create_dataset(
-            api, connection, CONCEPT_DATASET, CONCEPT_SQL
-        )
-    else:
-        export_source = args.program_data
-        if not export_source.exists():
-            raise SystemExit(f"Program Data export not found: {export_source}")
-        upload = resolve_connection(api, args.upload_connection)
-        upload = Connection(
-            id=upload.id, schema=ensure_upload_schema(api, upload.id)
-        )
-        normalised = Path(tempfile.gettempdir()) / f"{PROGRAM_DATA_TABLE}.csv"
-        row_count = normalise_program_data(export_source, normalised)
-        upload_program_data(api, upload, normalised, PROGRAM_DATA_TABLE)
-        print(
-            f"Uploaded {row_count} Program Data rows into "
-            f"{upload.schema}.{PROGRAM_DATA_TABLE} (connection {upload.id})"
-        )
-        datasets["concept"] = resolve_uploaded_dataset(
-            api, upload, PROGRAM_DATA_TABLE
-        )
-        sources["concept_connection"] = upload.schema
-    specs = charts(datasets, args.concept_source)
-    dashboard_id = create_dashboard(api, specs, datasets, args.concept_source)
-    print(f"Created {len(specs)} charts on {TITLE} (id={dashboard_id})")
+    live_specs = live_charts(live)
+    live_id = create_dashboard(
+        api, live_specs, live, LIVE_TITLE, LIVE_SLUG, live_filters(live)
+    )
+    print(
+        f"Created {len(live_specs)} charts on {LIVE_TITLE} "
+        f"(id={live_id}, source: {args.connection})"
+    )
     print(
         json.dumps(
             {
                 "connection": args.connection,
-                "datasets": datasets,
-                "dashboard": f"{base_url}/superset/dashboard/{SLUG}/",
-                "schema": connection.schema,
-                **sources,
+                "upload_schema": upload.schema,
+                "datasets": {
+                    **datasets,
+                    "program_data_teacher_report": export_dataset,
+                },
+                "reference_dashboard": f"{base_url}/superset/dashboard/{SLUG}/",
+                "live_dashboard": f"{base_url}/superset/dashboard/{LIVE_SLUG}/",
             },
             indent=2,
         )
