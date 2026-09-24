@@ -113,3 +113,88 @@ The pages are also blocked from writing anything to the client database: the
 `kefuat` account is read-only (`CREATE`/`INSERT`/`DROP` denied), which is why
 the flat table is projected as SQL rather than loaded.
 
+## Teacher performance report (teacher x grade x student)
+
+`provision_teacher_performance_report.py` builds a fourth live page, the
+**Teacher Performance Report**, from the client's reference screenshot: a
+teacher selector with a cascading grade selector, a four-card KPI row, a
+grouped BL/ML score chart, a concept-wise micro-assessment chart and a
+per-student gain chart.
+
+```bash
+python3 reports/provision_teacher_performance_report.py \
+    --base-url https://kot5.example.com \
+    --username admin --password '<admin password>' \
+    --connection kefuat
+```
+
+Three read-only virtual datasets feed it, so a single dashboard can mix
+teacher-level, student-level and concept-level numbers without double counting:
+
+| Dataset | Grain | Feeds |
+| --- | --- | --- |
+| `Teacher Student Performance` | teacher x class x student | students, gain, artefacts, BL/ML |
+| `Teacher Course Report` | teacher x course | courses assigned/completed |
+| `Teacher Concept Assessment` | teacher x class x student x concept | micro-assessment concepts |
+
+### Live mapping
+
+The reference reads a flat *Program Data* export that the Moodle database does
+not contain, so each element is derived from the closest live equivalent:
+
+| Report element | Live source |
+| --- | --- |
+| Teacher | `mdl_local_classroom_trainers.trainerid` -> `mdl_user` |
+| Grade | `mdl_local_classroom.open_standard` -> `mdl_local_standard` |
+| Class / section | `mdl_local_classroom.name` |
+| School | `mdl_local_classroom.open_school` -> `mdl_local_school` |
+| Student | `mdl_local_classroom_users.userid` -> `mdl_user` |
+| Courses assigned | courses the teacher is enrolled in (union of `mdl_enrol`/`mdl_user_enrolments` and `mdl_course_completions`) |
+| Courses completed | `mdl_course_completions` for those courses |
+| Artefacts submitted | the teacher's submitted `mdl_assign_submission` rows |
+| BL score | the class students' graded *baseline* / *pre* items, as a percentage of each item's maximum |
+| ML score | the class students' graded *midline* / *endline* / *post* items, as a percentage of the maximum |
+| Student gain % | (ML − BL) / BL per student, averaged over students |
+| Micro-assessment concept | graded items of the *Micro Assessment* courses, grouped by assessment name |
+
+Every figure uses `COUNT(DISTINCT ...)`, `MAX(...)` or an average over the
+student grain, so the joined tables cannot inflate a KPI; the course counts use
+`COUNT(DISTINCT CASE WHEN completed_flag = 1 THEN course_id END)` so the
+completion rate can never exceed 100 %.
+
+### Verified against the live database (2026-09-24)
+
+The datasets are cross-checked by running the same SQL in SQL Lab:
+
+- 107 teachers, 2,898 students, 8 grades, 7,014 dataset rows
+- BL 66.1 % vs ML 80.5 %, student gain 8.4 % across all classes
+- courses 96.2 % complete (106 assigned courses, 102 completed)
+- filters verified in the browser: teacher-only (17 students / 21.1 % gain /
+  3 artefacts for *Amoolya Shenvi*), teacher + grade (40 students for *Harshada
+  Zode* + Grade 5), grade cascade (8 grades -> 2 after picking a teacher),
+  clear-all (both action buttons disable and every tile resets)
+
+### Known gaps (as of 2026-09-24, connection `kefuat`)
+
+- **micro-assessment scores** - the *FLN Micro Assessment ... Grade 1-4* and
+  *TRTI Micro Assessment* courses carry 91 + concept items, but not one of them
+  has a grade yet, so the concept chart renders an empty state instead of
+  values. The chart is wired to the live items and populates as soon as the
+  assessors start grading.
+- **no 20-point scale** - the reference reports BL/ML "out of 20"; the live
+  items have no common maximum (41, 20, 15, 10 …), so both scores are shown as a
+  percentage of each assessment's own maximum and the chart is titled
+  "Avg. BL Score and Avg. ML Score".
+- **sparse BL/ML coverage** - only 79 of the 2,898 students in a trainer-led
+  class have a graded baseline item and fewer still a post item, so student gain
+  is populated for a few teachers only (the KPI shows *No data* rather than a
+  misleading zero).
+- **no academic year** - the database has no academic-year column; the date
+  filter uses the last assessment date instead.
+- **single-value KPI card** - Superset's big-number tile holds one metric, so
+  card 1 shows the completion percentage and the "3 / 3" ratio is carried by the
+  "Courses Enrolled vs Courses Completed" chart.
+- **artefacts** - the site's artefact-named activities have no submissions from
+  classroom trainers, so "Artefacts Submitted" counts every assignment the
+  teacher has submitted.
+
