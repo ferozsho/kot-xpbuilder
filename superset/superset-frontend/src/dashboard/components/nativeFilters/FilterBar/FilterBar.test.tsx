@@ -471,7 +471,7 @@ test('FilterBar renders correctly when filter has complete extraFormData', async
   expect(screen.getByTestId(getTestId('filter-icon'))).toBeInTheDocument();
 });
 
-test('handleClearAll dispatches updateDataMask with value undefined for filter_select', async () => {
+test('handleClearAll dispatches a cleared null value for filter_select', async () => {
   const filterId = 'NATIVE_FILTER-clear-select';
   const updateDataMaskSpy = jest.spyOn(dataMaskActions, 'updateDataMask');
   const selectFilter = createFilter({
@@ -519,7 +519,7 @@ test('handleClearAll dispatches updateDataMask with value undefined for filter_s
   });
 
   expect(updateDataMaskSpy).toHaveBeenCalledWith(filterId, {
-    filterState: { value: undefined },
+    filterState: { value: null, label: undefined },
     extraFormData: {},
   });
   updateDataMaskSpy.mockRestore();
@@ -576,13 +576,13 @@ test('handleClearAll dispatches updateDataMask with [null, null] for filter_rang
   });
 
   expect(updateDataMaskSpy).toHaveBeenCalledWith(filterId, {
-    filterState: { value: [null, null] },
+    filterState: { value: [null, null], label: undefined },
     extraFormData: {},
   });
   updateDataMaskSpy.mockRestore();
 });
 
-test('handleClearAll only dispatches for filters present in dataMask', async () => {
+test('handleClearAll also clears filters with no value in dataMask', async () => {
   const idInMask = 'NATIVE_FILTER-has-value';
   const idNotInMask = 'NATIVE_FILTER-no-value';
   const updateDataMaskSpy = jest.spyOn(dataMaskActions, 'updateDataMask');
@@ -638,9 +638,13 @@ test('handleClearAll only dispatches for filters present in dataMask', async () 
     userEvent.click(clearBtn);
   });
 
-  expect(updateDataMaskSpy).toHaveBeenCalledTimes(1);
+  expect(updateDataMaskSpy).toHaveBeenCalledTimes(2);
   expect(updateDataMaskSpy).toHaveBeenCalledWith(idInMask, {
-    filterState: { value: undefined },
+    filterState: { value: null, label: undefined },
+    extraFormData: {},
+  });
+  expect(updateDataMaskSpy).toHaveBeenCalledWith(idNotInMask, {
+    filterState: { value: null, label: undefined },
     extraFormData: {},
   });
   updateDataMaskSpy.mockRestore();
@@ -784,7 +788,7 @@ test('FilterBar Clear All only clears in-scope filters, not out-of-scope ones', 
 
   // Verify the in-scope filter was cleared with the correct value
   expect(updateDataMaskSpy).toHaveBeenCalledWith(inScopeFilterId, {
-    filterState: { value: undefined },
+    filterState: { value: null, label: undefined },
     extraFormData: {},
   });
 

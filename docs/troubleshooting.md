@@ -117,3 +117,37 @@ host still depends on the client re-issuing it.
   gateway, never `127.0.0.1`).
 - [../reports/README.md](../reports/README.md) — the user report built on top of
   a connected Moodle database.
+
+## "Clear all" leaves the dashboard filters filled in
+
+### Symptom
+
+On a dashboard with native filters, picking a value in a filter and clicking
+**Clear all** *without* pressing **Apply** first does nothing: the control keeps
+showing the picked value and both buttons stay enabled. Picking a value, pressing
+**Apply**, and then clicking **Clear all** works, which is why it looks
+intermittent.
+
+### Cause
+
+Upstream Superset 6.1.0 stages `undefined` as the cleared value for every filter
+type except ranges (`FilterBar/index.tsx`, `handleClearAll`). The select filter
+plugin treats an `undefined` value as *not yet initialized*, so it never resets
+its own state and the widget keeps rendering the previous selection.
+
+### Fix
+
+`docker/patches/0001-fix-native-filter-clear-all.patch` backports the upstream
+fix: the cleared value is staged as an explicit `null` (still `[null, null]` for
+ranges), the staged mask is written even when the filter has no entry yet, and
+the clear-all trigger fires for every in-scope filter. The patch is applied to
+the vendored Superset tree during the image build, so it reaches a stack only
+after that stack's image is rebuilt:
+
+```bash
+bin/xpbuilder --env-file <env> build      # or: docker compose build superset
+```
+
+`superset-frontend/src/.../FilterBar/FilterBar.test.tsx` is updated in the same
+patch, so `npm test` in `superset-frontend` stays green.
+
