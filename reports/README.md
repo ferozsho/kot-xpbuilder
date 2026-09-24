@@ -125,17 +125,20 @@ per-student gain chart.
 python3 reports/provision_teacher_performance_report.py \
     --base-url https://kot5.example.com \
     --username admin --password '<admin password>' \
-    --connection kefuat
+    --connection kefuat \
+    --program-data 'Moodle Dashboard Data (1).xlsx - Program Data.csv'
 ```
 
-Three read-only virtual datasets feed it, so a single dashboard can mix
-teacher-level, student-level and concept-level numbers without double counting:
+Three live virtual datasets plus the client's flat export feed it, so a single
+dashboard can mix teacher-level, student-level and concept-level numbers
+without double counting:
 
-| Dataset | Grain | Feeds |
-| --- | --- | --- |
-| `Teacher Student Performance` | teacher x class x student | students, gain, artefacts, BL/ML |
-| `Teacher Course Report` | teacher x course | courses assigned/completed |
-| `Teacher Concept Assessment` | teacher x class x student x concept | micro-assessment concepts |
+| Dataset | Source | Grain | Feeds |
+| --- | --- | --- | --- |
+| `Teacher Student Performance` | `kefuat` (SQL) | teacher x class x student | students, gain, artefacts, BL/ML |
+| `Teacher Course Report` | `kefuat` (SQL) | teacher x course | courses assigned/completed |
+| `Teacher Concept Assessment` | `kefuat` (SQL) | teacher x class x student x concept | live micro-assessment concepts (`--concept-source moodle`) |
+| `program_data_teacher_report` | uploaded Program Data CSV | teacher x student | micro-assessment concept chart |
 
 ### Live mapping
 
@@ -154,43 +157,80 @@ not contain, so each element is derived from the closest live equivalent:
 | Artefacts submitted | the teacher's submitted `mdl_assign_submission` rows |
 | BL score | the class students' graded *baseline* / *pre* items, as a percentage of each item's maximum |
 | ML score | the class students' graded *midline* / *endline* / *post* items, as a percentage of the maximum |
-| Student gain % | (ML − BL) / BL per student, averaged over students |
-| Micro-assessment concept | graded items of the *Micro Assessment* courses, grouped by assessment name |
+| Student gain % | (sum ML − sum BL) / sum BL over the students holding both scores |
+| Micro-assessment concept | the client's Program Data export (see below) |
 
 Every figure uses `COUNT(DISTINCT ...)`, `MAX(...)` or an average over the
 student grain, so the joined tables cannot inflate a KPI; the course counts use
 `COUNT(DISTINCT CASE WHEN completed_flag = 1 THEN course_id END)` so the
-completion rate can never exceed 100 %.
+completion rate can never exceed 100 %. The gain card deliberately uses the
+reference's aggregate formula (matching set of students only), while the
+per-student chart uses each student's own ratio.
+
+### The Program Data export (why the concept chart reads a file)
+
+The micro-assessment scores exist **only** in the client's flat *Program Data*
+export, not in Moodle. In `kefuat` the ten micro-assessment courses
+(*TRTI Micro Assessment*, *FLN Micro Assessment Marathi/Gujarati Grade 1-4*,
+*TRTI 26-27 Micro Assessment Pilot*) hold 173 concept items with **zero graded
+records** and three ungraded submissions, and the tables that would normally
+hold such scores are all empty (`mdl_local_classroom_test_score`,
+`mdl_local_program_test_score`, `mdl_local_classroom_trainerfb`,
+`mdl_local_program_trainerfb`, `mdl_local_performance_overall`,
+`mdl_local_skillmatrix`). No column in the whole schema mentions a concept
+except `mdl_glossary_entries.concept`, and Report Builder holds only generic
+Moodle reports.
+
+The export describes a **different population** from the LMS - none of its 60
+schools exists in `kefuat` and only two of its 150 teacher names match - so it
+is uploaded as its own dataset (`700` rows) and given its own filter group:
+
+- live controls (Teacher Name, Grade, Class / Section, School, Course,
+  Assessment Date) exclude the export chart
+- *Program Data Teacher* and *Academic Year* exclude every live chart
+
+Without that separation a native filter would empty the other source entirely,
+because a filter's payload carries a column name but no dataset, so every chart
+left in scope applies it to its own data. (In the filter config `scope.excluded`
+takes chart **ids**, not `CHART-<id>` layout keys.)
+
+The upload needs the target schema allow-listed in the connection's
+`schemas_allowed_for_file_upload`; the API does not return `extra`, so the
+script re-writes that allowlist on every run.
 
 ### Verified against the live database (2026-09-24)
 
 The datasets are cross-checked by running the same SQL in SQL Lab:
 
 - 107 teachers, 2,898 students, 8 grades, 7,014 dataset rows
-- BL 66.1 % vs ML 80.5 %, student gain 8.4 % across all classes
+- BL 66.1 % vs ML 80.5 %, student gain 5.7 % (22 students hold both scores)
 - courses 96.2 % complete (106 assigned courses, 102 completed)
-- filters verified in the browser: teacher-only (17 students / 21.1 % gain /
+- micro-assessment concepts: 12, averaging 5.2-6.4 out of 10 from the export;
+  filtered to *Amit Jadhav* it returns exactly the reference screenshot's three
+  bars (*Addition & Subtraction*, *Place Value*, *Reading Comprehension*) at 5.0
+- filters verified in the browser: teacher-only (17 students / 16.0 % gain /
   3 artefacts for *Amoolya Shenvi*), teacher + grade (40 students for *Harshada
   Zode* + Grade 5), grade cascade (8 grades -> 2 after picking a teacher),
-  clear-all (both action buttons disable and every tile resets)
+  clear-all (both action buttons disable and every tile resets), and the two
+  filter groups leave each other's charts untouched
 
 ### Known gaps (as of 2026-09-24, connection `kefuat`)
 
-- **micro-assessment scores** - the *FLN Micro Assessment ... Grade 1-4* and
-  *TRTI Micro Assessment* courses carry 91 + concept items, but not one of them
-  has a grade yet, so the concept chart renders an empty state instead of
-  values. The chart is wired to the live items and populates as soon as the
-  assessors start grading.
+- **micro-assessment scores in the LMS** - the *FLN Micro Assessment ...
+  Grade 1-4* and *TRTI Micro Assessment* courses carry 173 concept items, but
+  not one has a grade, so the live variant of the concept chart
+  (`--concept-source moodle`) renders an empty state. The dashboard therefore
+  reads the client's export for that one tile; switch the flag once the
+  assessors start grading in Moodle.
 - **no 20-point scale** - the reference reports BL/ML "out of 20"; the live
   items have no common maximum (41, 20, 15, 10 …), so both scores are shown as a
   percentage of each assessment's own maximum and the chart is titled
-  "Avg. BL Score and Avg. ML Score".
-- **sparse BL/ML coverage** - only 79 of the 2,898 students in a trainer-led
-  class have a graded baseline item and fewer still a post item, so student gain
-  is populated for a few teachers only (the KPI shows *No data* rather than a
-  misleading zero).
-- **no academic year** - the database has no academic-year column; the date
-  filter uses the last assessment date instead.
+  "Avg. BL Score and Avg. ML Score" instead.
+- **sparse BL/ML coverage** - only 22 of the 2,898 students in a trainer-led
+  class hold both a baseline and a post score, so the gain card is populated for
+  a few teachers only (it shows *No data* rather than a misleading zero).
+- **no academic year in Moodle** - the live date filter uses the last assessment
+  date; *Academic Year* is available only through the export.
 - **single-value KPI card** - Superset's big-number tile holds one metric, so
   card 1 shows the completion percentage and the "3 / 3" ratio is carried by the
   "Courses Enrolled vs Courses Completed" chart.

@@ -38,24 +38,39 @@ micro-assessment activities exist but carry no grades yet, and the live items
 have no common 20-point scale, so BL/ML are normalised to the percentage of
 each assessment's maximum instead of being reported "out of 20".
 
+The reference report is actually powered by a flat *Program Data* export that
+the Moodle database does not produce: the micro-assessment score lives in that
+file only, and in ``kefuat`` the ten micro-assessment courses hold 173 concept
+items with **zero** graded records. Because the export describes a different
+population from the LMS (none of its 60 schools exists in the database, and only
+two of its 150 teacher names match), it is uploaded as its own dataset with its
+own filter group and only the tiles without a live equivalent read from it.
+``--concept-source moodle`` switches that chart back to the (currently empty)
+Moodle items.
+
 ```bash
 python3 reports/provision_teacher_performance_report.py \
     --base-url https://kot5.example.com \
     --username admin --password '<admin password>' \
-    --connection kefuat
+    --connection kefuat \
+    --program-data 'Moodle Dashboard Data (1).xlsx - Program Data.csv'
 ```
 
 Without ``--base-url`` the script reads ``XPBUILDER_HOST_PORT``,
 ``SUPERSET_ADMIN_USERNAME`` and ``SUPERSET_ADMIN_PASSWORD`` from ``--env-file``
 (default ``./.env``). The script is idempotent: only the datasets, charts and
-dashboard marked with ``SLUG``/``MARKER`` are replaced.
+dashboard marked with ``SLUG``/``MARKER`` are replaced, and the uploaded table is
+written with ``already_exists=replace``.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
+import csv
 import json
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -66,12 +81,57 @@ MARKER = "XPBuilder teacher performance report"
 SLUG = "teacher-performance-report"
 TITLE = "Teacher Performance Report"
 DEFAULT_CONNECTION = "kefuat"
-
 STUDENT_DATASET = "Teacher Student Performance"
 COURSE_DATASET = "Teacher Course Report"
 CONCEPT_DATASET = "Teacher Concept Assessment"
 
-DATASET_NAMES = (STUDENT_DATASET, COURSE_DATASET, CONCEPT_DATASET)
+# The client's flat *Program Data* export is the source of the reference report,
+# but it is not produced by the Moodle database: the micro-assessment scores it
+# carries have no counterpart in the LMS (the micro-assessment activities exist
+# there with zero graded records). The export is therefore uploaded, unchanged,
+# into the deployment's writable upload database and only the tiles that have no
+# live equivalent read from it.
+PROGRAM_DATA_DATASET = "Program Data Teacher Report"
+PROGRAM_DATA_TABLE = "program_data_teacher_report"
+DEFAULT_UPLOAD_CONNECTION = "File uploads"
+UPLOAD_SCHEMA = "public"
+DEFAULT_PROGRAM_DATA = Path("Moodle Dashboard Data (1).xlsx - Program Data.csv")
+
+# Export header -> dataset column. Order matters: it is the CSV column order.
+PROGRAM_DATA_COLUMNS = {
+    "Education Officer Name": "education_officer_name",
+    "Headmaster Name": "headmaster_name",
+    "School Name": "school_name",
+    "School Type": "school_type",
+    "District": "district",
+    "Taluka / Block": "taluka_block",
+    "Teacher Name": "teacher_name",
+    "Gender of Teacher": "teacher_gender",
+    "Courses Assigned": "courses_assigned",
+    "Courses Completed": "courses_completed",
+    "Artefacts Submitted": "artefacts_submitted",
+    "Average Artefact Grading Score": "average_artefact_grading_score",
+    "Microassessment Score": "microassessment_score",
+    "Classroom Observations Done": "classroom_observations_done",
+    "Avg BL Score (Teacher, /10)": "avg_bl_score_teacher_10",
+    "Avg ML Score (Teacher, /10)": "avg_ml_score_teacher_10",
+    "Student Name": "student_name",
+    "Student Gender": "student_gender",
+    "BL Score (/20)": "bl_score_20",
+    "ML Score (/20)": "ml_score_20",
+    "Student Gain": "student_gain_points",
+    "Month of Training": "month_of_training",
+    "Academic Year": "academic_year",
+    "Grade": "grade",
+    "Microassessment Concept": "microassessment_concept",
+}
+
+DATASET_NAMES = (
+    STUDENT_DATASET,
+    COURSE_DATASET,
+    CONCEPT_DATASET,
+    PROGRAM_DATA_DATASET,
+)
 
 # One row per (teacher x class x student). Every teacher-level figure (courses,
 # artefacts) is carried on the student rows so a single dataset feeds the whole
@@ -422,6 +482,128 @@ def resolve_connection(api: SupersetApi, name: str) -> Connection:
     raise RuntimeError(f"No Superset connection named {name!r}")
 
 
+def ensure_upload_schema(api: SupersetApi, connection_id: int) -> str:
+    """Allow-list the upload schema on a connection and return it.
+
+    Superset refuses a CSV upload unless the target schema appears in the
+    connection's ``schemas_allowed_for_file_upload`` list.
+    ``docker/ensure_uploads_db.py`` sets that to ``public`` for a fresh stack,
+    but editing the connection through the API can drop the whole ``extra``
+    blob, which silently breaks every upload - so converge it here.
+    """
+    detail = api.get(f"/api/v1/database/{connection_id}")["result"]
+    raw = detail.get("extra")
+    extra: dict[str, Any] = {}
+    if isinstance(raw, dict):
+        extra = dict(raw)
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            extra = json.loads(raw)
+        except json.JSONDecodeError:
+            extra = {}
+    allowed = extra.get("schemas_allowed_for_file_upload") or []
+    if isinstance(allowed, str):
+        allowed = list(ast.literal_eval(allowed))
+    if UPLOAD_SCHEMA in allowed:
+        return UPLOAD_SCHEMA
+    extra.setdefault("metadata_params", {})
+    extra.setdefault("engine_params", {})
+    extra.setdefault("metadata_cache_timeout", {})
+    extra["schemas_allowed_for_file_upload"] = sorted(
+        set(allowed) | {UPLOAD_SCHEMA}
+    )
+    api.put(f"/api/v1/database/{connection_id}", {"extra": json.dumps(extra)})
+    print(
+        f"Ensured schema {UPLOAD_SCHEMA!r} is allow-listed for CSV uploads on "
+        f"connection {connection_id} (the REST API does not expose the stored "
+        "allowlist, so this is written on every run)"
+    )
+    return UPLOAD_SCHEMA
+
+
+def normalise_program_data(source: Path, target: Path) -> int:
+    """Rewrite the client's Program Data export with clean column names.
+
+    The export ships the header ``Microassessment Concept ``, blank spacer rows
+    and human-facing names such as ``BL Score (/20)``; normalising them once here
+    keeps the dataset columns and the native filters predictable.
+    """
+    with source.open(newline="", encoding="utf-8-sig") as handle:
+        rows = []
+        for raw in csv.DictReader(handle):
+            row = {(key or "").strip(): (value or "").strip()
+                   for key, value in raw.items()}
+            if not row.get("Teacher Name"):
+                continue
+            rows.append(
+                {column: row.get(header, "")
+                 for header, column in PROGRAM_DATA_COLUMNS.items()}
+            )
+    with target.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=list(PROGRAM_DATA_COLUMNS.values())
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return len(rows)
+
+
+def upload_program_data(
+    api: SupersetApi, connection: Connection, csv_path: Path, table_name: str
+) -> None:
+    """Upload the normalised export into the deployment's upload database."""
+    with csv_path.open("rb") as handle:
+        response = api.session.post(
+            f"{api.base_url}/api/v1/database/{connection.id}/upload/",
+            data={
+                "type": "csv",
+                "table_name": table_name,
+                "already_exists": "replace",
+                "schema": connection.schema,
+            },
+            files={"file": (csv_path.name, handle, "text/csv")},
+            timeout=300,
+        )
+    api._check(response, "POST csv upload")
+
+
+def resolve_uploaded_dataset(
+    api: SupersetApi, connection: Connection, table_name: str
+) -> int:
+    """Return the dataset Superset created for an uploaded table.
+
+    ``UploadCommand`` already registers a dataset for the table it writes, so
+    creating another one for the same physical table is rejected as a duplicate.
+    """
+    dataset_id: int | None = None
+    for dataset in api.list_all("dataset"):
+        database = dataset.get("database") or {}
+        if (
+            dataset.get("table_name") == table_name
+            and int(database.get("id", 0)) == connection.id
+        ):
+            dataset_id = int(dataset["id"])
+            break
+    if dataset_id is None:
+        result = api.post(
+            "/api/v1/dataset/",
+            json={
+                "database": connection.id,
+                "schema": connection.schema,
+                "table_name": table_name,
+            },
+        )
+        dataset_id = int(result["id"])
+    api.put(f"/api/v1/dataset/{dataset_id}/refresh", {})
+    detail = api.get(f"/api/v1/dataset/{dataset_id}")
+    columns = detail["result"].get("columns") or []
+    print(
+        f"Dataset {table_name} (id={dataset_id}, {len(columns)} columns) "
+        f"on connection {connection.id}"
+    )
+    return dataset_id
+
+
 def simple(column: str, aggregate: str, label: str) -> dict[str, Any]:
     """Return a portable simple metric definition."""
     return {
@@ -549,7 +731,26 @@ def area_chart(
     return form
 
 
-def charts(datasets: dict[str, int]) -> list[ChartSpec]:
+def concept_chart(dataset_id: int, source: str) -> dict[str, Any]:
+    """Return the concept-wise micro-assessment chart for the chosen source.
+
+    ``moodle`` reads the graded *Micro Assessment* items of the connected Moodle
+    database (empty until the assessors grade them); ``export`` reads the
+    client's Program Data export, where the score is recorded per teacher and
+    repeated on each of that teacher's student rows.
+    """
+    column = "concept_name" if source == "moodle" else "microassessment_concept"
+    return bar_chart(
+        dataset_id,
+        column,
+        [sql_metric("AVG(microassessment_score)", "Microassessment Score")],
+        number_format=NUMBER_1,
+        x_axis_label="Concept",
+        y_axis_label="",
+    )
+
+
+def charts(datasets: dict[str, int], concept_source: str) -> list[ChartSpec]:
     """Return the report tiles, grouped by the dataset they read."""
     student = datasets["student"]
     course = datasets["course"]
@@ -560,7 +761,18 @@ def charts(datasets: dict[str, int]) -> list[ChartSpec]:
         "COUNT(DISTINCT CASE WHEN completed_flag = 1 THEN course_id END)"
     )
     completion_pct = f"{courses_completed} / NULLIF({courses_assigned}, 0)"
-    gain = "AVG(student_gain)"
+    # The reference report computes the card as (sum of ML - sum of BL) / sum of
+    # BL over the teacher's students, while the per-student chart uses each
+    # student's own ratio; the two are deliberately different metrics. Only
+    # students holding both scores take part, or a student with a baseline but
+    # no post score would inflate the denominator and push the card negative.
+    matched = "baseline_score IS NOT NULL AND mastery_score IS NOT NULL"
+    aggregate_gain = (
+        f"(SUM(CASE WHEN {matched} THEN mastery_score END)"
+        f" - SUM(CASE WHEN {matched} THEN baseline_score END))"
+        f" / NULLIF(SUM(CASE WHEN {matched} THEN baseline_score END), 0)"
+    )
+    per_student_gain = "AVG(student_gain)"
 
     return [
         ChartSpec(
@@ -592,7 +804,7 @@ def charts(datasets: dict[str, int]) -> list[ChartSpec]:
             "kpi_gain",
             "Student Gain %",
             "student",
-            kpi(student, sql_metric(gain, "Student Gain %"),
+            kpi(student, sql_metric(aggregate_gain, "Student Gain %"),
                 "Student Gain %", PERCENT_1),
             3,
             26,
@@ -629,16 +841,9 @@ def charts(datasets: dict[str, int]) -> list[ChartSpec]:
         ),
         ChartSpec(
             "concept",
-            "Microassessment Score Concept Wise",
+            "Microassessment Score (Out of 10) Concept Wise",
             "concept",
-            bar_chart(
-                concept,
-                "concept_name",
-                [sql_metric("AVG(microassessment_score)", "Microassessment Score")],
-                number_format=NUMBER_1,
-                x_axis_label="Concept",
-                y_axis_label="",
-            ),
+            concept_chart(concept, concept_source),
             7,
             44,
         ),
@@ -670,7 +875,7 @@ def charts(datasets: dict[str, int]) -> list[ChartSpec]:
             area_chart(
                 student,
                 "student_name",
-                sql_metric(gain, "Student Gain %"),
+                sql_metric(per_student_gain, "Student Gain %"),
                 x_axis_label="Student Name",
                 y_axis_label="Student Gain %",
                 filters=(not_null_filter("student_gain"),),
@@ -689,6 +894,7 @@ def select_filter(
     *,
     multi: bool = True,
     cascade_from: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return a dashboard-wide select filter for one or more datasets."""
     return {
@@ -705,7 +911,7 @@ def select_filter(
         "filterType": "filter_select",
         "id": f"NATIVE_FILTER-{index}",
         "name": name,
-        "scope": {"excluded": [], "rootPath": ["ROOT_ID"]},
+        "scope": {"excluded": list(exclude), "rootPath": ["ROOT_ID"]},
         "targets": [
             {"column": {"name": column}, "datasetId": dataset_id}
             for dataset_id, column in targets
@@ -714,7 +920,11 @@ def select_filter(
 
 
 def time_filter(
-    index: int, name: str, targets: list[tuple[int, str]]
+    index: int,
+    name: str,
+    targets: list[tuple[int, str]],
+    *,
+    exclude: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return a dashboard-wide date-range filter."""
     return {
@@ -725,7 +935,7 @@ def time_filter(
         "filterType": "filter_time",
         "id": f"NATIVE_FILTER-{index}",
         "name": name,
-        "scope": {"excluded": [], "rootPath": ["ROOT_ID"]},
+        "scope": {"excluded": list(exclude), "rootPath": ["ROOT_ID"]},
         "targets": [
             {"column": {"name": column}, "datasetId": dataset_id}
             for dataset_id, column in targets
@@ -733,32 +943,51 @@ def time_filter(
     }
 
 
-def native_filters(datasets: dict[str, int]) -> list[dict[str, Any]]:
-    """Return the dashboard filters, shared by the three datasets."""
+def native_filters(
+    datasets: dict[str, int],
+    concept_source: str,
+    live_charts: tuple[str, ...],
+    export_charts: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Return the dashboard filters.
+
+    The client's Program Data export describes a different population from the
+    Moodle data (none of its 60 schools and only a couple of its 150 teacher
+    names exist in the LMS), so the two sources get separate controls: the live
+    filters ignore the export tiles and the Program Data filters ignore the live
+    ones.
+    """
     student = datasets["student"]
     course = datasets["course"]
-    concept = datasets["concept"]
-    student_concept = [(student, "teacher_name"), (concept, "teacher_name")]
-    return [
+    live_targets = [(student, "teacher_name"), (course, "teacher_name")]
+    grade_targets = [(student, "grade_name")]
+    class_targets = [(student, "class_name")]
+    date_targets = [(student, "last_assessment_date")]
+    if concept_source == "moodle":
+        live_targets.append((datasets["concept"], "teacher_name"))
+        grade_targets.append((datasets["concept"], "grade_name"))
+        class_targets.append((datasets["concept"], "class_name"))
+        date_targets.append((datasets["concept"], "last_assessment_date"))
+
+    filters = [
         select_filter(
-            1,
-            "Teacher Name",
-            "teacher_name",
-            student_concept + [(course, "teacher_name")],
+            1, "Teacher Name", "teacher_name", live_targets, exclude=export_charts
         ),
         select_filter(
             2,
             "Grade",
             "grade_name",
-            [(student, "grade_name"), (concept, "grade_name")],
+            grade_targets,
             cascade_from=("NATIVE_FILTER-1",),
+            exclude=export_charts,
         ),
         select_filter(
             3,
             "Class / Section",
             "class_name",
-            [(student, "class_name"), (concept, "class_name")],
+            class_targets,
             cascade_from=("NATIVE_FILTER-1", "NATIVE_FILTER-2"),
+            exclude=export_charts,
         ),
         select_filter(
             4,
@@ -766,6 +995,7 @@ def native_filters(datasets: dict[str, int]) -> list[dict[str, Any]]:
             "school_name",
             [(student, "school_name")],
             cascade_from=("NATIVE_FILTER-1",),
+            exclude=export_charts,
         ),
         select_filter(
             5,
@@ -773,16 +1003,32 @@ def native_filters(datasets: dict[str, int]) -> list[dict[str, Any]]:
             "course_name",
             [(course, "course_name")],
             cascade_from=("NATIVE_FILTER-1",),
+            exclude=export_charts,
         ),
-        time_filter(
-            6,
-            "Assessment Date",
-            [
-                (student, "last_assessment_date"),
-                (concept, "last_assessment_date"),
-            ],
-        ),
+        time_filter(6, "Assessment Date", date_targets, exclude=export_charts),
     ]
+    if concept_source == "export":
+        export = datasets["concept"]
+        filters.append(
+            select_filter(
+                7,
+                "Program Data Teacher",
+                "teacher_name",
+                [(export, "teacher_name")],
+                exclude=live_charts,
+            )
+        )
+        filters.append(
+            select_filter(
+                8,
+                "Academic Year",
+                "academic_year",
+                [(export, "academic_year")],
+                cascade_from=("NATIVE_FILTER-7",),
+                exclude=live_charts,
+            )
+        )
+    return filters
 
 
 def layout(chart_rows: list[list[dict[str, Any]]]) -> dict[str, Any]:
@@ -860,7 +1106,7 @@ def cleanup(api: SupersetApi) -> None:
             api.delete(f"/api/v1/chart/{chart['id']}")
             print(f"Removed chart {chart.get('slice_name')}")
     for dataset in api.list_all("dataset"):
-        if dataset.get("table_name") in DATASET_NAMES:
+        if dataset.get("table_name") in DATASET_NAMES + (PROGRAM_DATA_TABLE,):
             api.delete(f"/api/v1/dataset/{dataset['id']}")
             print(f"Removed dataset {dataset['table_name']}")
 
@@ -915,7 +1161,10 @@ def create_chart(
 
 
 def create_dashboard(
-    api: SupersetApi, specs: list[ChartSpec], datasets: dict[str, int]
+    api: SupersetApi,
+    specs: list[ChartSpec],
+    datasets: dict[str, int],
+    concept_source: str,
 ) -> int:
     """Create the dashboard with its charts, layout, filters and styling."""
     result = api.post(
@@ -943,13 +1192,23 @@ def create_dashboard(
         [created["bl_ml"], created["concept"]],
         [created["course_bar"], created["gain_area"]],
     ]
+    # ``scope.excluded`` holds chart ids (not layout keys), and it is the only
+    # thing that keeps the two filter groups apart: a native filter's payload
+    # carries a column name but no dataset, so every chart left in scope applies
+    # it to its own dataset.
+    live_charts = tuple(
+        chart["id"] for key, chart in created.items() if key != "concept"
+    )
+    export_charts = (created["concept"]["id"],)
     metadata = {
         "color_scheme": "supersetColors",
         "cross_filters_enabled": True,
         "default_filters": "{}",
         "expanded_slices": {},
         "filter_bar_orientation": "HORIZONTAL",
-        "native_filter_configuration": native_filters(datasets),
+        "native_filter_configuration": native_filters(
+            datasets, concept_source, live_charts, export_charts
+        ),
         "refresh_frequency": 0,
         "timed_refresh_immune_slices": [],
     }
@@ -978,6 +1237,26 @@ def main() -> int:
         default=DEFAULT_CONNECTION,
         help="Superset connection holding the Moodle tables",
     )
+    parser.add_argument(
+        "--concept-source",
+        choices=("export", "moodle"),
+        default="export",
+        help=(
+            "Where the micro-assessment concept chart reads from: the client's "
+            "Program Data export (default) or the Moodle micro-assessment items"
+        ),
+    )
+    parser.add_argument(
+        "--program-data",
+        type=Path,
+        default=DEFAULT_PROGRAM_DATA,
+        help="The client's flat Program Data export (CSV)",
+    )
+    parser.add_argument(
+        "--upload-connection",
+        default=DEFAULT_UPLOAD_CONNECTION,
+        help="Writable Superset connection that receives the Program Data table",
+    )
     args = parser.parse_args()
 
     env: dict[str, str] = {}
@@ -998,10 +1277,33 @@ def main() -> int:
     datasets = {
         "student": create_dataset(api, connection, STUDENT_DATASET, STUDENT_SQL),
         "course": create_dataset(api, connection, COURSE_DATASET, COURSE_SQL),
-        "concept": create_dataset(api, connection, CONCEPT_DATASET, CONCEPT_SQL),
     }
-    specs = charts(datasets)
-    dashboard_id = create_dashboard(api, specs, datasets)
+    sources: dict[str, Any] = {"concept": args.concept_source}
+    if args.concept_source == "moodle":
+        datasets["concept"] = create_dataset(
+            api, connection, CONCEPT_DATASET, CONCEPT_SQL
+        )
+    else:
+        export_source = args.program_data
+        if not export_source.exists():
+            raise SystemExit(f"Program Data export not found: {export_source}")
+        upload = resolve_connection(api, args.upload_connection)
+        upload = Connection(
+            id=upload.id, schema=ensure_upload_schema(api, upload.id)
+        )
+        normalised = Path(tempfile.gettempdir()) / f"{PROGRAM_DATA_TABLE}.csv"
+        row_count = normalise_program_data(export_source, normalised)
+        upload_program_data(api, upload, normalised, PROGRAM_DATA_TABLE)
+        print(
+            f"Uploaded {row_count} Program Data rows into "
+            f"{upload.schema}.{PROGRAM_DATA_TABLE} (connection {upload.id})"
+        )
+        datasets["concept"] = resolve_uploaded_dataset(
+            api, upload, PROGRAM_DATA_TABLE
+        )
+        sources["concept_connection"] = upload.schema
+    specs = charts(datasets, args.concept_source)
+    dashboard_id = create_dashboard(api, specs, datasets, args.concept_source)
     print(f"Created {len(specs)} charts on {TITLE} (id={dashboard_id})")
     print(
         json.dumps(
@@ -1010,6 +1312,7 @@ def main() -> int:
                 "datasets": datasets,
                 "dashboard": f"{base_url}/superset/dashboard/{SLUG}/",
                 "schema": connection.schema,
+                **sources,
             },
             indent=2,
         )
