@@ -3,7 +3,18 @@
   "contract_version": "1.0",
   "xpbuilder_version": "0.1.0",
   "runtime": "standalone",
+  "runtime_modes": [
+    "standalone",
+    "linked"
+  ],
   "moodle_integration": false,
+  "optional_features": {
+    "moodle_integration": {
+      "flag": "XPBUILDER_MOODLE_INTEGRATION",
+      "default": false,
+      "description": "Report Designer 'Sync tables' API plus the 'Sync to Moodle' actions. A single built image serves both modes; off keeps the standalone runtime."
+    }
+  },
   "superset": {
     "version": "6.1.0",
     "build": "source",

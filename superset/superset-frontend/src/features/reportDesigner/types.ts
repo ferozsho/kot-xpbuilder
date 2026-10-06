@@ -113,10 +113,25 @@ export type DashboardOption = {
   dashboard_title: string;
 };
 
+export type DatabaseOption = {
+  id: number;
+  database_name: string;
+};
+
 export type VizTypeOption = {
   key: string;
   label: string;
   requires_dttm: boolean;
+};
+
+export type SyncTablesResult = {
+  database_id: number;
+  database_name: string;
+  total: number;
+  created: number;
+  skipped: number;
+  failed: Array<{ table: string; error: string }>;
+  tables: string[];
 };
 
 export type PublishResult = {

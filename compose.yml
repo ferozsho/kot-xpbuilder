@@ -1,9 +1,15 @@
-# Standalone (Moodle-free) Kot XPBuilder runtime.
+# Kot XPBuilder runtime — ONE image, TWO deployment modes.
 #
 # Superset, its PostgreSQL metadata store and Redis are the only services.
 # There is no Moodle network, connector, or read-only MariaDB replica: point
 # Superset at whatever external database you want to analyze through the
 # regular Superset "Connect a database" flow.
+#
+# The mode is chosen at RUNTIME by XPBUILDER_MOODLE_INTEGRATION:
+#   false (default) — standalone: no Moodle-only API or UI exists at all.
+#   true            — linked: the Report Designer additionally offers its
+#                     "Sync tables" API and the SPA shows "Sync to Moodle",
+#                     for use alongside an external Moodle/LMS stack.
 
 name: ${XPBUILDER_INSTANCE:?XPBUILDER_INSTANCE is required}
 
@@ -36,6 +42,12 @@ x-superset-environment: &x-superset-environment
   # re-runnable on an existing stack); set ENABLE=no to keep uploads off.
   XPBUILDER_ENABLE_FILE_UPLOADS: ${XPBUILDER_ENABLE_FILE_UPLOADS:-yes}
   XPBUILDER_UPLOAD_DB_NAME: ${XPBUILDER_UPLOAD_DB_NAME:-File uploads}
+  # Opt-in Moodle integration (see the header). Off keeps the standalone
+  # runtime; ON enables the Report Designer "Sync tables" API and the
+  # "Sync to Moodle" actions. Both modes ship in this one image.
+  XPBUILDER_MOODLE_INTEGRATION: ${XPBUILDER_MOODLE_INTEGRATION:-false}
+  # Fallback database name for the sync CLI when the caller sends no id.
+  XPBUILDER_REPORTING_DATABASE: "${XPBUILDER_REPORTING_DATABASE:-Moodle Reporting}"
 
 services:
   superset:
@@ -63,6 +75,7 @@ services:
       start_period: 90s
     networks:
       xpbuilder-internal: {}
+      xpbuilder-link: {}
 
   superset-worker:
     <<: *x-xpbuilder-image
@@ -87,6 +100,7 @@ services:
       start_period: 90s
     networks:
       - xpbuilder-internal
+      - xpbuilder-link
 
   superset-beat:
     <<: *x-xpbuilder-image
@@ -107,6 +121,7 @@ services:
       start_period: 60s
     networks:
       - xpbuilder-internal
+      - xpbuilder-link
 
   initialize:
     <<: *x-xpbuilder-image
@@ -266,3 +281,10 @@ volumes:
 networks:
   xpbuilder-internal:
     name: ${XPBUILDER_INTERNAL_NETWORK:?XPBUILDER_INTERNAL_NETWORK is required}
+  # Optional "link" network. A Moodle (or other host) stack joins THIS network
+  # and never the internal one, so a linked stack can reach only the Superset
+  # web/worker/beat services — not the metadata DB, Redis or MariaDB.
+  # Compose-managed (NOT external) so `up` creates it when missing; host stacks
+  # reference it as external using this fixed name.
+  xpbuilder-link:
+    name: ${XPBUILDER_LINK_NETWORK:-xpbuilder_link}

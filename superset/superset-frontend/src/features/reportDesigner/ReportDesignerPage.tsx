@@ -35,6 +35,7 @@ import {
 import { Icons } from '@superset-ui/core/components/Icons';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import SubMenu from 'src/features/home/SubMenu';
+import { isMoodleIntegrationEnabled } from 'src/utils/moodleSync';
 import {
   createReport,
   fetchDatabases,
@@ -44,6 +45,7 @@ import {
   fetchVizTypes,
   previewReport,
   publishReport,
+  syncTables,
   unpublishReport,
   updateReport,
   exportPdfUrl,
@@ -263,6 +265,7 @@ export default function ReportDesignerPage() {
   const [publishing, setPublishing] = useState(false);
   const [unpublishing, setUnpublishing] = useState(false);
   const [publishResult, setPublishResult] = useState<PublishResult | null>(null);
+  const [syncingTables, setSyncingTables] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
 
   // ---- Data Modeler (Excel upload) -------------------------------------
@@ -432,6 +435,24 @@ export default function ReportDesignerPage() {
       .finally(() => setSaving(false));
   };
 
+  // ---- sync database tables ---------------------------------------------
+  // Only reachable when the deployment enables the Moodle integration; the
+  // DatasetPanel hides the action otherwise.
+  const handleSyncTables = (databaseId?: number) => {
+    setSyncingTables(true);
+    syncTables(databaseId)
+      .then(result => {
+        addSuccessToast(
+          `${t('Synced')} ${result.created} ${t('new')}, ` +
+            `${result.skipped} ${t('existing')}`,
+        );
+        return fetchDatasets();
+      })
+      .then(list => setDatasets(list))
+      .catch(() => addDangerToast(t('Failed to sync tables')))
+      .finally(() => setSyncingTables(false));
+  };
+
   // ---- publish / unpublish ------------------------------------------------
   const handlePublish = () => {
     if (!reportId) {
@@ -567,8 +588,11 @@ export default function ReportDesignerPage() {
         <StyledLeft>
           <DatasetPanel
             datasets={datasets}
+            databases={databases}
             selectedDatasetIds={definition.datasets.map(ds => ds.id)}
             onSelectDataset={handleSelectDataset}
+            onSyncTables={handleSyncTables}
+            syncing={syncingTables}
           />
         </StyledLeft>
 
@@ -982,17 +1006,39 @@ export default function ReportDesignerPage() {
                               </Button>
                               {(publishResult?.dashboard_url ||
                                 report?.dashboard_id) && (
-                                <Button
-                                  size="small"
-                                  href={
-                                    publishResult?.dashboard_url ||
-                                    `/superset/dashboard/${report?.dashboard_id}/`
-                                  }
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {t('Open dashboard')}
-                                </Button>
+                                <>
+                                  <Button
+                                    size="small"
+                                    href={
+                                      publishResult?.dashboard_url ||
+                                      `/superset/dashboard/${report?.dashboard_id}/`
+                                    }
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {t('Open dashboard')}
+                                  </Button>
+                                  {isMoodleIntegrationEnabled() && (
+                                    <Button
+                                      size="small"
+                                      type="primary"
+                                      ghost
+                                      href={`/local/xpromptsuperset/import.php?superset_dashboard_id=${
+                                        publishResult?.dashboard_id ||
+                                        report?.dashboard_id
+                                      }&name=${encodeURIComponent(
+                                        publishResult?.chart_name ||
+                                          report?.chart_name ||
+                                          '',
+                                      )}&redirect=${encodeURIComponent(
+                                        publishResult?.dashboard_url ||
+                                          `/superset/dashboard/${report?.dashboard_id}/`,
+                                      )}`}
+                                    >
+                                      {t('Sync to Moodle')}
+                                    </Button>
+                                  )}
+                                </>
                               )}
                             </Space>
                           </StyledPublishedRow>

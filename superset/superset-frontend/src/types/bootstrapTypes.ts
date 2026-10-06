@@ -169,6 +169,14 @@ export interface CommonBootstrapData {
   d3_format: Partial<FormatLocaleDefinition>;
   d3_time_format: Partial<TimeLocaleDefinition>;
   pdf_compression_level: 'NONE' | 'FAST' | 'MEDIUM' | 'SLOW';
+  /**
+   * Runtime feature flags contributed by the deployment's superset_config.py
+   * through COMMON_BOOTSTRAP_OVERRIDES_FUNC. Absent on stock Superset.
+   */
+  xpbuilder?: {
+    /** True when the deployment runs with XPBUILDER_MOODLE_INTEGRATION on. */
+    moodle_integration?: boolean;
+  };
 }
 
 export interface BootstrapData {

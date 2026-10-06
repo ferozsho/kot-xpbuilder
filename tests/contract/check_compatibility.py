@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import re
 import shlex
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+MOODLE_FLAG = 'XPBUILDER_MOODLE_INTEGRATION'
+MOODLE_FLAG_TRUTHY = ('1', 'true', 'yes', 'on')
+
+
+def moodle_integration_enabled() -> bool:
+    """Whether this run exercises the optional Moodle integration mode.
+
+    One image serves both modes, so the contract is evaluated for the mode the
+    caller asked for instead of assuming the standalone default.
+    """
+    value = os.environ.get(MOODLE_FLAG, 'false').strip().lower()
+    return value in MOODLE_FLAG_TRUTHY
 
 
 def _relative(path: str) -> str:
@@ -109,6 +123,20 @@ def main():
     if compatibility.get('moodle_integration') is not False:
         raise AssertionError('moodle_integration must be false for this runtime')
 
+    # Moodle integration is an OPT-IN mode of the same runtime: the manifest
+    # still declares the standalone default, plus the optional feature that
+    # turns the linked mode on.
+    optional = compatibility.get('optional_features', {})
+    moodle = optional.get('moodle_integration')
+    if not isinstance(moodle, dict):
+        raise AssertionError(
+            'moodle_integration must be declared under optional_features'
+        )
+    if moodle.get('flag') != MOODLE_FLAG:
+        raise AssertionError('unexpected Moodle integration flag name')
+    if moodle.get('default') is not False:
+        raise AssertionError('Moodle integration must default to off')
+
     superset = compatibility['superset']
     if superset['build'] != 'source':
         raise AssertionError('superset build must be "source"')
@@ -129,14 +157,34 @@ def main():
     if 'superset-src' not in dockerfile:
         raise AssertionError('Dockerfile is missing the source prep stage')
 
-    # This runtime is Moodle-free: no Moodle wiring may leak back into the
-    # scaffolding (the vendored Superset source is checked separately).
-    forbidden = ('MOODLE_', 'moodle_network', 'local_xpromptsuperset', 'mariadb-replica')
-    for relative in ('compose.yml', 'config/superset_config.py', 'docker/initialize.sh'):
+    # The scaffolding must not wire Moodle CONNECTIVITY (a replica network, a
+    # read-only replica, or the Moodle plugin bridge) in either mode — the
+    # integration only adds the opt-in Sync-tables API. MOODLE_FLAG itself is
+    # allowed, since it is the mode switch rather than a connection.
+    forbidden = (
+        'moodle_network',
+        'MARIADB_SERVER_ID',
+        'MOODLE_DB_HOST',
+        'MOODLE_DB_PORT',
+        'MOODLE_DB_NAME',
+        'MOODLE_REPORTING_USER',
+        'MOODLE_REPORTING_PASSWORD',
+        'local_xpromptsuperset',
+        'mariadb-replica',
+    )
+    scanned = ('compose.yml', 'config/superset_config.py', 'docker/initialize.sh')
+    for relative in scanned:
         content = (ROOT / relative).read_text(encoding='utf-8')
         for token in forbidden:
             if token in content:
                 raise AssertionError(f'Moodle wiring "{token}" found in {relative}')
+
+    # When the linked mode is requested the flag must actually reach the
+    # container, otherwise the mode would silently fall back to standalone.
+    if moodle_integration_enabled():
+        compose = (ROOT / 'compose.yml').read_text(encoding='utf-8')
+        if MOODLE_FLAG not in compose:
+            raise AssertionError(f'{MOODLE_FLAG} must be passed through by compose.yml')
 
     check_build_inputs(dockerfile)
 

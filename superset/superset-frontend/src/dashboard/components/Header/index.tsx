@@ -64,6 +64,12 @@ import { useUnsavedChangesPrompt } from 'src/hooks/useUnsavedChangesPrompt';
 import DashboardEmbedModal from '../EmbeddedModal';
 import OverwriteConfirm from '../OverwriteConfirm';
 import {
+  isMoodleEmbeddedView,
+  isMoodleIntegrationEnabled,
+  isDashboardSyncedToMoodle,
+  moodleSyncUrl,
+} from 'src/utils/moodleSync';
+import {
   addDangerToast,
   addSuccessToast,
   addWarningToast,
@@ -232,9 +238,30 @@ const Header = (): JSX.Element => {
   const [showingReportModal, setShowingReportModal] = useState(false);
   const [currentReportDeleting, setCurrentReportDeleting] =
     useState<AlertObject | null>(null);
+  // A single built image serves both modes: Moodle actions stay hidden unless
+  // the deployment enables the integration at runtime.
+  const moodleEnabled = isMoodleIntegrationEnabled();
+  const [syncedToMoodle, setSyncedToMoodle] = useState<boolean | null>(null);
   const dashboardInfo = useSelector(
     (state: HeaderRootState) => state.dashboardInfo,
   );
+
+  // Only surface "Sync to Moodle" when the dashboard is NOT already linked
+  // into the Moodle XP dashboard list. Queried from the same-origin Moodle
+  // plugin; the button stays hidden while the state is unknown.
+  useEffect(() => {
+    let cancelled = false;
+    if (!moodleEnabled || !dashboardInfo?.id) {
+      setSyncedToMoodle(null);
+      return undefined;
+    }
+    isDashboardSyncedToMoodle(dashboardInfo.id).then(synced => {
+      if (!cancelled) setSyncedToMoodle(synced);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboardInfo?.id, moodleEnabled]);
   const layout = useSelector(
     (state: HeaderRootState) => state.dashboardLayout.present,
   );
@@ -749,6 +776,25 @@ const Header = (): JSX.Element => {
         ) : (
           <div css={actionButtonsStyle}>
             {NavExtension && <NavExtension />}
+            {moodleEnabled &&
+              dashboardInfo?.id &&
+              !isMoodleEmbeddedView() &&
+              syncedToMoodle === false && (
+                <Button
+                  buttonStyle="secondary"
+                  className="action-button"
+                  aria-label={t('Sync to Moodle')}
+                  href={moodleSyncUrl(
+                    dashboardInfo.id,
+                    dashboardInfo.dashboard_title || '',
+                    dashboardInfo.url ||
+                      `/superset/dashboard/${dashboardInfo.id}/`,
+                  )}
+                >
+                  <Icons.SyncOutlined iconSize="m" />
+                  {t('Sync to Moodle')}
+                </Button>
+              )}
             {userCanEdit && (
               <Button
                 buttonStyle="secondary"

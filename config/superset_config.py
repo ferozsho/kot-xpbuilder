@@ -1,9 +1,13 @@
-# Superset configuration for the standalone Kot XPBuilder runtime.
+# Superset configuration for the XPBuilder runtime.
 # Baked into the XPBuilder image at /app/xpbuilder/superset_config.py.
 #
-# Moodle-free: there is no reporting replica and no pre-registered data
-# source. External databases are connected through Superset's own
-# "Connect a database" flow once the stack is running.
+# ONE image serves TWO deployment modes, selected at runtime:
+#   standalone (default) — no reporting replica, no pre-registered data source;
+#     external databases are connected through Superset's own "Connect a
+#     database" flow once the stack is running.
+#   linked — an external Moodle/LMS stack shares a database, so the Report
+#     Designer additionally offers its "Sync tables" API. Opt in with
+#     XPBUILDER_MOODLE_INTEGRATION=true (see the bottom of this file).
 
 import os
 from urllib.parse import quote_plus
@@ -284,3 +288,36 @@ APP_ICON = "/static/assets/images/advance-bi-logo.png"
 # points the navbar brand logo at this URL instead of "/". Default "/" keeps
 # Superset's own home page.
 XPBUILDER_BRAND_URL = os.environ.get('XPBUILDER_BRAND_URL', '/')
+
+# ── Optional Moodle integration (dual-mode runtime) ──────
+# Enables the Report Designer "Sync tables" API and unhides the Moodle sync
+# actions in the SPA. Default false keeps the standalone runtime byte-for-byte
+# behaviourally identical.
+XPBUILDER_MOODLE_INTEGRATION = os.environ.get(
+    'XPBUILDER_MOODLE_INTEGRATION', 'false'
+).strip().lower() in ('1', 'true', 'yes', 'on')
+
+# Name of the database `superset sync-moodle-tables` falls back to when the
+# caller does not send an explicit database id.
+XPBUILDER_REPORTING_DATABASE = os.environ.get(
+    'XPBUILDER_REPORTING_DATABASE', 'Moodle Reporting'
+)
+
+
+def _xpbuilder_bootstrap_overrides(bootstrap_data):
+    """Expose runtime feature flags to the SPA.
+
+    COMMON_BOOTSTRAP_OVERRIDES_FUNC is merged into bootstrap_data.common
+    (superset/views/base.py) which the frontend reads from the
+    #app[data-bootstrap] payload, so a single built image can serve both modes
+    without any extra request.
+    """
+    del bootstrap_data  # fixed upstream signature; payload is not needed here
+    return {
+        'xpbuilder': {
+            'moodle_integration': XPBUILDER_MOODLE_INTEGRATION,
+        }
+    }
+
+
+COMMON_BOOTSTRAP_OVERRIDES_FUNC = _xpbuilder_bootstrap_overrides

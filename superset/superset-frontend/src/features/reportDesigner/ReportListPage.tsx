@@ -25,6 +25,10 @@ import { Icons } from '@superset-ui/core/components/Icons';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import SubMenu from 'src/features/home/SubMenu';
 import {
+  isMoodleIntegrationEnabled,
+  moodleSyncUrl,
+} from 'src/utils/moodleSync';
+import {
   deleteReport,
   fetchReports,
   exportPdfUrl,
@@ -142,13 +146,26 @@ export default function ReportListPage() {
                 </a>
               )}
               {report.dashboard_id != null && (
-                <a
-                  href={`/superset/dashboard/${report.dashboard_id}/`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {t('Dashboard')} #{report.dashboard_id}
-                </a>
+                <>
+                  <a
+                    href={`/superset/dashboard/${report.dashboard_id}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {t('Dashboard')} #{report.dashboard_id}
+                  </a>
+                  {isMoodleIntegrationEnabled() && (
+                    <a
+                      href={moodleSyncUrl(
+                        report.dashboard_id,
+                        report.chart_name || report.name || '',
+                        `/superset/dashboard/${report.dashboard_id}/`,
+                      )}
+                    >
+                      {t('Moodle')}
+                    </a>
+                  )}
+                </>
               )}
             </Space>
           );

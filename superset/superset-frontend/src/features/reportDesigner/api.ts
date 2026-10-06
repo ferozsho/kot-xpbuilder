@@ -19,12 +19,14 @@
 import { SupersetClient } from '@superset-ui/core';
 import {
   DashboardOption,
+  DatabaseOption,
   DatasetOption,
   PreviewResult,
   PublishPayload,
   PublishResult,
   Report,
   ReportDefinition,
+  SyncTablesResult,
   VizTypeOption,
 } from './types';
 
@@ -84,6 +86,23 @@ export async function previewReport(
   return json;
 }
 
+/**
+ * Register the tables of a reporting database as physical datasets.
+ *
+ * Backed by POST /reportdesigner/api/sync-tables/, which only exists when the
+ * deployment runs with XPBUILDER_MOODLE_INTEGRATION=true; callers must check
+ * isMoodleIntegrationEnabled() before offering the action.
+ */
+export async function syncTables(
+  databaseId?: number,
+): Promise<SyncTablesResult> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/sync-tables/`,
+    jsonPayload: databaseId ? { database_id: databaseId } : {},
+  });
+  return json;
+}
+
 /** List dashboards for the publish picker. */
 export async function fetchDashboards(): Promise<DashboardOption[]> {
   const { json } = await SupersetClient.get({ endpoint: `${BASE}/dashboards/` });
@@ -133,11 +152,6 @@ export type UploadResult = {
   table_name: string;
   rows: number;
   columns: string[];
-};
-
-export type DatabaseOption = {
-  id: number;
-  database_name: string;
 };
 
 export async function fetchDatabases(): Promise<DatabaseOption[]> {

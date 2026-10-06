@@ -24,7 +24,7 @@ import {
 } from '@superset-ui/core';
 import { styled } from '@apache-superset/core/theme';
 import { useSelector } from 'react-redux';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import rison from 'rison';
 import {
@@ -57,6 +57,11 @@ import {
   type ListViewFilters,
 } from 'src/components';
 import handleResourceExport from 'src/utils/export';
+import {
+  isDashboardSyncedToMoodle,
+  isMoodleIntegrationEnabled,
+  moodleSyncUrl,
+} from 'src/utils/moodleSync';
 import SubMenu, { SubMenuProps } from 'src/features/home/SubMenu';
 import { dangerouslyGetItemDoNotUse } from 'src/utils/localStorageHelpers';
 import Owner from 'src/types/Owner';
@@ -119,6 +124,53 @@ export interface Dashboard {
 const Actions = styled.div`
   color: ${({ theme }) => theme.colorIcon};
 `;
+
+/**
+ * "Sync to Moodle" row action — only rendered while the dashboard is NOT
+ * already linked into the Moodle XP dashboard list, and only when the runtime
+ * enables the integration (standalone deployments have no such endpoint).
+ */
+function MoodleSyncAction({
+  dashboard,
+}: {
+  dashboard: { id: number; dashboard_title?: string };
+}) {
+  const [synced, setSynced] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    isDashboardSyncedToMoodle(dashboard.id).then(next => {
+      if (!cancelled) setSynced(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboard.id]);
+
+  if (synced !== false) return null;
+
+  return (
+    <Tooltip
+      id="moodle-sync-action-tooltip"
+      title={t('Sync to Moodle')}
+      placement="bottom"
+    >
+      <a
+        role="button"
+        tabIndex={0}
+        className="action-button"
+        href={moodleSyncUrl(
+          dashboard.id,
+          dashboard.dashboard_title || '',
+          `/superset/dashboard/${dashboard.id}/`,
+        )}
+        data-test="dashboard-list-moodle-sync-icon"
+      >
+        <Icons.SyncOutlined iconSize="l" />
+      </a>
+    </Tooltip>
+  );
+}
 
 const DASHBOARD_COLUMNS_TO_FETCH = [
   'id',
@@ -440,6 +492,9 @@ function DashboardList(props: DashboardListProps) {
 
           return (
             <Actions className="actions">
+              {isMoodleIntegrationEnabled() && (
+                <MoodleSyncAction dashboard={original} />
+              )}
               {canEdit && (
                 <Tooltip
                   id="edit-action-tooltip"

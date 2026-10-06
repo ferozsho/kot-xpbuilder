@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import re
 from datetime import datetime
 from io import StringIO
@@ -54,6 +55,26 @@ from .sql_builder import (
     execute_report,
     ReportDesignerError,
 )
+
+# ── Optional Moodle integration ───────────────────────────────────────────
+# ONE image serves BOTH deployment modes:
+#   XPBUILDER_MOODLE_INTEGRATION=false (default) -> standalone / Moodle-free;
+#       the "Sync tables" API is not registered at all.
+#   XPBUILDER_MOODLE_INTEGRATION=true            -> the Report Designer gains
+#       POST /reportdesigner/api/sync-tables/.
+# Read from the environment rather than app config because this module is
+# imported before the Flask application exists.
+MOODLE_INTEGRATION_ENABLED = os.environ.get(
+    "XPBUILDER_MOODLE_INTEGRATION", "false"
+).strip().lower() in ("1", "true", "yes", "on")
+
+if MOODLE_INTEGRATION_ENABLED:
+    # pylint: disable=wrong-import-position
+    from .table_sync import (
+        find_reporting_database,
+        sync_tables,
+        TableSyncError,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +156,38 @@ class ReportDesignerView(BaseSupersetView):
     @has_access_api
     def api_datasets(self) -> FlaskResponse:
         return self.json_response({"result": datasets_payload()})
+
+    if MOODLE_INTEGRATION_ENABLED:
+
+        @expose("/api/sync-tables/", methods=("POST",))
+        @has_access_api
+        def api_sync_tables(self) -> FlaskResponse:
+            """Register a reporting database's tables as datasets.
+
+            Only defined when XPBUILDER_MOODLE_INTEGRATION is enabled, so a
+            standalone deployment has no such route and no orphan
+            ``can_sync_tables`` permission. The Report Designer's "Sync
+            tables" action posts the selected database id here.
+            """
+            try:
+                payload = request.get_json(force=True, silent=True) or {}
+                database_id = int(payload.get("database_id") or 0)
+                if not database_id:
+                    database = find_reporting_database()
+                    database_id = database.id if database else 0
+                if not database_id:
+                    return json_error_response(
+                        _("No reporting database configured"), 400
+                    )
+                return self.json_response(sync_tables(database_id))
+            except TableSyncError as ex:
+                return json_error_response(str(ex), 400)
+            except Exception as ex:  # pylint: disable=broad-except
+                db.session.rollback()
+                logger.exception("Failed to sync tables")
+                return json_error_response(
+                    utils.error_msg_from_exception(ex), 400
+                )
 
     @expose("/api/viz-types/", methods=("GET",))
     @has_access_api

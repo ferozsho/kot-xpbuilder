@@ -20,6 +20,7 @@ import { useMemo, useState } from 'react';
 import { t } from '@apache-superset/core/translation';
 import { styled } from '@apache-superset/core/theme';
 import {
+  Button,
   Select,
   Tag,
   Tooltip,
@@ -29,7 +30,8 @@ import {
   Typography,
 } from '@superset-ui/core/components';
 import { Icons } from '@superset-ui/core/components/Icons';
-import { DatasetOption } from '../types';
+import { isMoodleIntegrationEnabled } from 'src/utils/moodleSync';
+import { DatabaseOption, DatasetOption } from '../types';
 
 export type DragPayload = {
   dataset: number;
@@ -91,21 +93,65 @@ const StyledHint = styled.div`
 
 type Props = {
   datasets: DatasetOption[];
+  /** All Superset database connections the user can reach. */
+  databases: DatabaseOption[];
   selectedDatasetIds: number[];
   onSelectDataset: (id: number) => void;
+  /**
+   * Register the tables of a database (the selected one, else the default).
+   * Only supplied by Moodle-integrated deployments; standalone builds omit it
+   * and the action is never rendered.
+   */
+  onSyncTables?: (databaseId?: number) => void;
+  syncing?: boolean;
 };
 
 export default function DatasetPanel({
   datasets,
+  databases,
   selectedDatasetIds,
   onSelectDataset,
+  onSyncTables,
+  syncing,
 }: Props) {
   const [databaseFilter, setDatabaseFilter] = useState<string | undefined>();
+  // One image serves both modes: hide the Moodle-only actions when the runtime
+  // flag is off, because the /api/sync-tables/ route does not exist then.
+  const moodleEnabled = isMoodleIntegrationEnabled();
 
-  const databaseNames = useMemo(
-    () => Array.from(new Set(datasets.map(ds => ds.database_name))),
+  // Count registered datasets per database name.
+  const datasetCounts = useMemo(
+    () =>
+      datasets.reduce<Record<string, number>>((acc, ds) => {
+        acc[ds.database_name] = (acc[ds.database_name] ?? 0) + 1;
+        return acc;
+      }, {}),
     [datasets],
   );
+
+  // Every Superset database is listed, so a connection with no datasets yet
+  // (e.g. an external client DB) is still selectable and can be synced.
+  const databaseOptions = useMemo(() => {
+    const names = Array.from(
+      new Set([
+        ...databases.map(item => item.database_name),
+        ...Object.keys(datasetCounts),
+      ]),
+    ).sort((a, b) => a.localeCompare(b));
+    return names.map(name => ({
+      label: `${name} (${datasetCounts[name] ?? 0})`,
+      value: name,
+    }));
+  }, [databases, datasetCounts]);
+
+  const selectedDatabase = useMemo(
+    () => databases.find(item => item.database_name === databaseFilter),
+    [databases, databaseFilter],
+  );
+
+  const syncTooltip = selectedDatabase
+    ? `${t('Register the tables of')} ${selectedDatabase.database_name}`
+    : t('Register all Moodle (read-only) tables as datasets');
 
   const filteredDatasets = useMemo(
     () =>
@@ -150,16 +196,35 @@ export default function DatasetPanel({
         <Select
           className="db-filter"
           placeholder={t('All databases')}
-          options={databaseNames.map(name => ({
-            label: name,
-            value: name,
-          }))}
+          options={databaseOptions}
           allowClear
           showSearch
+          optionFilterProp="value"
           value={databaseFilter ?? null}
           onChange={value => setDatabaseFilter(value ?? undefined)}
         />
+        {moodleEnabled && (
+          <Tooltip title={syncTooltip}>
+            <Button
+              icon={<Icons.ReloadOutlined />}
+              loading={syncing}
+              onClick={() => onSyncTables?.(selectedDatabase?.id)}
+            >
+              {t('Sync tables')}
+            </Button>
+          </Tooltip>
+        )}
       </StyledFilterRow>
+      {selectedDatabase && filteredDatasets.length === 0 && (
+        <StyledHint>
+          {moodleEnabled
+            ? `${t('No datasets registered for')} ` +
+              `${selectedDatabase.database_name} ${t('yet.')} ` +
+              `${t('Click "Sync tables" to register its tables.')}`
+            : `${t('No datasets registered for')} ` +
+              `${selectedDatabase.database_name} ${t('yet.')}`}
+        </StyledHint>
+      )}
       <Select
         className="dataset-select"
         placeholder={t('Select a dataset…')}
