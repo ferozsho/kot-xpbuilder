@@ -11,21 +11,47 @@
     one go.
 #}
 {#
-    Brand logo link fixer: when XPBUILDER_BRAND_URL is configured, clicking the
-    navbar brand logo goes to that URL instead of the Superset home page. The
-    logo is a React-rendered anchor, so re-apply on an interval in case the app
-    re-renders the navbar.
+    Brand logo link fixer: clicking the navbar brand logo returns to the linked
+    Moodle site instead of the Superset home page.
+
+      * A per-launch `?xp_return=<moodle url>` wins — the Moodle connector's
+        sso.php appends it when it opens the console, so leaving Superset lands
+        back on the exact Moodle page that launched it (the dashboard the user
+        was viewing).
+      * XPBUILDER_BRAND_URL is the configured fallback (point it at the Moodle
+        dashboard list) for arrivals that carry no launcher context.
+
+    `xp_return` is honoured only when it points at XPBUILDER_MOODLE_URL, so the
+    logo cannot be turned into an open redirect. The logo is a React-rendered
+    anchor, so re-apply on an interval in case the app re-renders the navbar.
 #}
 <script nonce="{{ macros.get_nonce() }}">
 (function () {
-  var brandUrl = {{ config.get('XPBUILDER_BRAND_URL', '/') | tojson }};
-  if (!brandUrl || brandUrl === '/' || brandUrl === '') { return; }
+  var configured = {{ config.get('XPBUILDER_BRAND_URL', '/') | tojson }} || '/';
+  var moodleBase = {{ config.get('XPBUILDER_MOODLE_URL', '') | tojson }} || '';
+  if (!moodleBase && (!configured || configured === '/')) { return; }
+
+  function brandTarget() {
+    if (moodleBase) {
+      var returned = null;
+      try {
+        returned = new URLSearchParams(window.location.search).get('xp_return');
+      } catch (e) {
+        returned = null;
+      }
+      if (returned && returned.indexOf(moodleBase) === 0) { return returned; }
+    }
+    return configured;
+  }
+
   function fixBrand() {
+    var target = brandTarget();
+    if (!target || target === '/') { return; }
     var img = document.querySelector('img[src*="advance-bi-logo.png"]');
     if (!img) { return; }
     var anchor = img.closest('a');
-    if (anchor && anchor.getAttribute('href') !== brandUrl) {
-      anchor.setAttribute('href', brandUrl);
+    if (anchor && anchor.getAttribute('href') !== target) {
+      anchor.setAttribute('href', target);
     }
   }
   fixBrand();

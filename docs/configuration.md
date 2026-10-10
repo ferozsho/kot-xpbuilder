@@ -14,11 +14,25 @@ missing, weak, or wildcard configuration before Docker Compose runs.
 | `XPBUILDER_ALLOWED_ORIGINS` | Comma-separated explicit origins allowed by CORS |
 | `GUEST_TOKEN_JWT_AUDIENCE` | Public URL expected by embedded guest tokens |
 | `XPBUILDER_APP_NAME` | Brand name shown in the UI (default `Advance BI`) |
-| `XPBUILDER_BRAND_URL` | Optional URL the navbar brand logo links to (`/` = home) |
+| `XPBUILDER_BRAND_URL` | Where the navbar brand logo goes (`/` = Superset home). On a Moodle-linked deployment point it at the dashboard list — see *Leaving the console* |
 
 Each stack must have a unique instance name, host port, network, and volume
 names. Two stacks may use the same image version but must not share mutable
 volumes.
+
+## Leaving the console (brand logo)
+The navbar logo sends the user back to the linked Moodle site instead of
+Superset's home page:
+
+* `?xp_return=<moodle url>` wins when it points at `XPBUILDER_MOODLE_URL`. The
+  Moodle connector appends it whenever it opens the console, so the user lands
+  back on the dashboard they were viewing.
+* `XPBUILDER_BRAND_URL` is the fallback for arrivals with no launcher context
+  (typ that URL in, or a client-side route change dropped the parameter). Set it
+  to the Moodle dashboard list, e.g.
+  `https://moodle.example.com/local/xprompt/xp_prompt.php?subtab=dashboard`.
+
+With both unset the logo keeps Superset's default behaviour (home page).
 
 ## Persistent storage
 
