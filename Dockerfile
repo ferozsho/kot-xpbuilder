@@ -277,6 +277,8 @@ COPY customizations/images/advance-bi-logo.png /app/superset/static/assets/image
 COPY customizations/images/xp-builder-logo.png /app/superset/static/assets/images/xp-builder-logo.png
 COPY customizations/images/favicon.png /app/superset/static/assets/images/favicon.png
 COPY customizations/images/favicon64.png /app/superset/static/assets/images/favicon64.png
+COPY customizations/images/xp-favicon-32.png /app/superset/static/assets/images/xp-favicon-32.png
+COPY customizations/images/xp-favicon-64.png /app/superset/static/assets/images/xp-favicon-64.png
 
 RUN chmod 0555 /opt/xpbuilder/bin/initialize.sh \
         /opt/xpbuilder/bin/ensure_uploads_db.py \
@@ -287,7 +289,9 @@ RUN chmod 0555 /opt/xpbuilder/bin/initialize.sh \
         /app/superset/static/assets/images/advance-bi-logo.png \
         /app/superset/static/assets/images/xp-builder-logo.png \
         /app/superset/static/assets/images/favicon.png \
-        /app/superset/static/assets/images/favicon64.png
+        /app/superset/static/assets/images/favicon64.png \
+        /app/superset/static/assets/images/xp-favicon-32.png \
+        /app/superset/static/assets/images/xp-favicon-64.png
 
 ENV SUPERSET_CONFIG_PATH=/app/xpbuilder/superset_config.py
 

@@ -216,17 +216,13 @@ def _xpbuilder_runtime_patches(app):
 
     _orm.Session.add = _safe_add
 
-    # 2) Default spinner SVG is read from a frontend-source path that does not
-    #    exist in the image -> "Could not load default spinner SVG" warnings.
-    #    Replace with an inline CSS-spinning SVG (never touches the filesystem).
+    # 2) The stock default spinner is a "BI" monogram read from a frontend-source
+    #    path that does not exist in the image -> "Could not load default spinner
+    #    SVG" warnings. Serve the "XP" loader defined below instead (never touches
+    #    the filesystem) and publish it as brandSpinnerSvg (item 6) so every
+    #    loading state uses the same artwork.
     import superset.views.base as _base
-    _base.get_default_spinner_svg = lambda: (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" '
-        'height="24"><circle cx="12" cy="12" r="9" fill="none" stroke="#20a7c9" '
-        'stroke-width="3" stroke-linecap="round" stroke-dasharray="42 14">'
-        '<animateTransform attributeName="transform" type="rotate" from="0 12 12" '
-        'to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg>'
-    )
+    _base.get_default_spinner_svg = lambda: XP_LOADER_SVG
 
     # 3) The embedded frontend registers a service worker at /static/service-worker.js,
     #    which is absent from the image -> 404 console noise. Serve a no-op worker.
@@ -287,6 +283,11 @@ def _xpbuilder_runtime_patches(app):
     _superset_config.THEME_DEFAULT["token"]["brandLogoUrl"] = (
         "/static/assets/images/xp-builder-logo.png"
     )
+    # Loading artwork: brandSpinnerSvg wins over brandSpinnerUrl and over the
+    # bundled default (a "BI" monogram) in both consumers — spa.html for the
+    # initial page load and the React <Loading> component for charts/dashboards.
+    _superset_config.THEME_DEFAULT["token"]["brandSpinnerUrl"] = None
+    _superset_config.THEME_DEFAULT["token"]["brandSpinnerSvg"] = XP_LOADER_SVG
 
 
 FLASK_APP_MUTATOR = _xpbuilder_runtime_patches
@@ -300,6 +301,51 @@ APP_NAME = os.environ.get('XPBUILDER_APP_NAME', 'XP Builder')
 # Custom logo under a FRESH filename (xp-builder-logo.png) so the public URL is
 # never served a CDN-cached original. Baked in from customizations/images/.
 APP_ICON = "/static/assets/images/xp-builder-logo.png"
+
+# ── Loading spinner ──────────────────────────────────────
+# One artwork for every loading state: a ring plus an "XP" monogram drawn as glyph
+# OUTLINES (no <text>, so it renders identically when inlined and when embedded as
+# an <img data:image/svg+xml>), centred to the exact centre of the ring: the ink box
+# is 41.3 x 22 units with its centre at (35, 35) = the circle centre, so it stays
+# pixel-aligned at any rendered size (40 / 70 / 100 px). Animation is SMIL only, so
+# there is no CSS transform-origin to shift the artwork off-centre.
+# Ref: superset_config.py -> _xpbuilder_runtime_patches item 6 sets brandSpinnerSvg.
+XP_LOADER_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 70 70" width="70" height="70" r'
+    'ole="img" aria-label="Loading XP Builder"><defs><linearGradient id="xpLoaderArc" x1='
+    '"0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#20A7C9"/><stop offse'
+    't="100%" stop-color="#006699"/></linearGradient><linearGradient id="xpLoaderWord" x1'
+    '="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#20A7C9"/><stop offs'
+    'et="100%" stop-color="#1B365D"/></linearGradient></defs><circle cx="35" cy="35" r="2'
+    '6" fill="none" stroke="#E2E8F0" stroke-width="4" opacity="0.6"/><circle cx="35" cy="'
+    '35" r="26" fill="none" stroke="url(#xpLoaderArc)" stroke-width="4" stroke-linecap="r'
+    'ound" pathLength="100" stroke-dasharray="62 38"><animateTransform attributeName="tra'
+    'nsform" type="rotate" from="0 35 35" to="360 35 35" dur="1.2s" repeatCount="indefini'
+    'te"/></circle><g><path d="M30.27 46.00 24.75 37.24 19.22 46.00H14.35L21.97 34.43L14.'
+    '99 24.00H19.86L24.75 31.78L29.63 24.00H34.47L27.79 34.43L35.11 46.00ZM55.65 30.96Q55'
+    '.65 33.09 54.68 34.76Q53.72 36.43 51.91 37.34Q50.11 38.26 47.63 38.26H42.16V46.00H37'
+    '.56V24.00H47.44Q51.39 24.00 53.52 25.82Q55.65 27.64 55.65 30.96ZM51.02 31.04Q51.02 2'
+    '7.58 46.92 27.58H42.16V34.71H47.05Q48.95 34.71 49.98 33.77Q51.02 32.82 51.02 31.04Z"'
+    ' fill="url(#xpLoaderWord)"/><animate attributeName="opacity" values="0.88;1;0.88" du'
+    'r="2s" repeatCount="indefinite"/></g></svg>'
+)
+
+# Browser tab icon. Served under FRESH filenames: the legacy favicon.png URL is
+# already cached at the CDN edge, so a changed icon would keep showing the old
+# "BI" badge. The same artwork is also copied over favicon.png/favicon64.png so
+# every other reference converges once those caches expire.
+FAVICONS = [
+    {
+        "href": "/static/assets/images/xp-favicon-64.png",
+        "sizes": "64x64",
+        "type": "image/png",
+    },
+    {
+        "href": "/static/assets/images/xp-favicon-32.png",
+        "sizes": "32x32",
+        "type": "image/png",
+    },
+]
 
 # When set in the per-site .env (XPBUILDER_BRAND_URL), the tail-JS brand fixer
 # points the navbar brand logo at this URL instead of "/". Default "/" keeps
