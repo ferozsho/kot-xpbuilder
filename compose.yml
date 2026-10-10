@@ -32,7 +32,7 @@ x-superset-environment: &x-superset-environment
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
   POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
   XPBUILDER_ALLOWED_ORIGINS: ${XPBUILDER_ALLOWED_ORIGINS:?XPBUILDER_ALLOWED_ORIGINS is required}
-  XPBUILDER_APP_NAME: ${XPBUILDER_APP_NAME:-Advance BI}
+  XPBUILDER_APP_NAME: ${XPBUILDER_APP_NAME:-XP Builder}
   # Clicking the navbar brand logo goes here; "/" keeps the default Superset
   # home page.
   XPBUILDER_BRAND_URL: ${XPBUILDER_BRAND_URL:-/}

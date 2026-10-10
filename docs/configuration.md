@@ -13,7 +13,7 @@ missing, weak, or wildcard configuration before Docker Compose runs.
 | `XPBUILDER_INTERNAL_NETWORK` | Private network for web, worker, DB, and Redis |
 | `XPBUILDER_ALLOWED_ORIGINS` | Comma-separated explicit origins allowed by CORS |
 | `GUEST_TOKEN_JWT_AUDIENCE` | Public URL expected by embedded guest tokens |
-| `XPBUILDER_APP_NAME` | Brand name shown in the UI (default `Advance BI`) |
+| `XPBUILDER_APP_NAME` | Brand name shown in the UI (default `XP Builder`) |
 | `XPBUILDER_BRAND_URL` | Where the navbar brand logo goes (`/` = Superset home). On a Moodle-linked deployment point it at the dashboard list — see *Leaving the console* |
 
 Each stack must have a unique instance name, host port, network, and volume

@@ -94,7 +94,7 @@ version="$(cat "$root/VERSION")"
     printf 'XPBUILDER_MARIADB_VOLUME=%s_xpbuilder_mariadb\n' "$instance"
     printf 'XPBUILDER_VOLUMES_EXTERNAL=false\n'
     printf 'XPBUILDER_ALLOWED_ORIGINS=%s\n' "$allowed_origins"
-    printf 'XPBUILDER_APP_NAME=Advance BI\n'
+    printf 'XPBUILDER_APP_NAME=XP Builder\n'
     # Optional URL the navbar brand logo links to; empty keeps "/".
     printf 'XPBUILDER_BRAND_URL=\n'
     printf 'XPBUILDER_ALLOW_INITIALIZE=yes\n'

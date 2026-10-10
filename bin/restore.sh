@@ -124,4 +124,4 @@ fi
 
 echo "Restarting XPBuilder application services"
 "${compose[@]}" up -d superset superset-worker superset-beat
-echo "Restore completed; run bin/xpbuilder health before re-enabling Advanced BI"
+echo "Restore completed; run bin/xpbuilder health before re-enabling XP Builder"

@@ -272,7 +272,7 @@ def _xpbuilder_runtime_patches(app):
 
     _base.menu_data = _safe_menu_data
 
-    # 6) Branding: "Advance BI" (persistent). THEME_DEFAULT lives in the image's
+    # 6) Branding: "XP Builder" (persistent). THEME_DEFAULT lives in the image's
     #    config.py and is NOT visible in this module's namespace (superset_config
     #    is exec'd standalone), so mutate it here via superset.config — the same
     #    dict object the app serves to the frontend. APP_NAME / APP_ICON below
@@ -291,15 +291,15 @@ def _xpbuilder_runtime_patches(app):
 
 FLASK_APP_MUTATOR = _xpbuilder_runtime_patches
 
-# ── Branding: "Advance BI" (persistent — overrides the image's default
+# ── Branding: "XP Builder" (persistent — overrides the image's default
 #    config.py; survives container rebuilds because this file is baked into the
 #    XPBuilder image at build time).
 #    APP_NAME drives the page <title>, browser tab and appbuilder navbar brand.
 #    The navbar logo/alt theme tokens are set in _xpbuilder_runtime_patches() above.
-APP_NAME = os.environ.get('XPBUILDER_APP_NAME', 'Advance BI')
-# Custom logo under a FRESH filename (advance-bi-logo.png) so the public URL is
+APP_NAME = os.environ.get('XPBUILDER_APP_NAME', 'XP Builder')
+# Custom logo under a FRESH filename (xp-builder-logo.png) so the public URL is
 # never served a CDN-cached original. Baked in from customizations/images/.
-APP_ICON = "/static/assets/images/advance-bi-logo.png"
+APP_ICON = "/static/assets/images/xp-builder-logo.png"
 
 # When set in the per-site .env (XPBUILDER_BRAND_URL), the tail-JS brand fixer
 # points the navbar brand logo at this URL instead of "/". Default "/" keeps
