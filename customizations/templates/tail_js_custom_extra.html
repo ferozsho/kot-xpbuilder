@@ -47,7 +47,7 @@
   function fixBrand() {
     var target = brandTarget();
     if (!target || target === '/') { return; }
-    var img = document.querySelector('img[src*="advance-bi-logo.png"]');
+      var img = document.querySelector('img[src*="xp-builder-logo.png"], img[src*="advance-bi-logo.png"]');
     if (!img) { return; }
     var anchor = img.closest('a');
     if (anchor && anchor.getAttribute('href') !== target) {
@@ -186,5 +186,57 @@
   if (window.ResizeObserver && document.body) {
     try { new ResizeObserver(report).observe(document.body); } catch (e) { /* ignore */ }
   }
+})();
+</script>
+{#
+    Rebranding: the compiled frontend still ships upstream wording in menus,
+    tooltips and empty states. `APP_NAME` fixes the tab title and the navbar
+    brand; this walks the RENDERED TEXT and rewrites the remaining strings, so
+    nothing waits on a frontend rebuild. Text nodes and user-visible attributes
+    only — never inputs, code blocks or URLs.
+#}
+<script nonce="{{ macros.get_nonce() }}">
+(function () {
+  var MAP = [
+    [/\bAdvance BI\b/g, 'XP Builder'],
+    [/\bAdvanced BI\b/g, 'XP Builder'],
+    [/\bApache Superset\b/g, 'XP Builder'],
+    [/\bSuperset\b/g, 'XP Builder']
+  ];
+  var SKIP = {SCRIPT: 1, STYLE: 1, TEXTAREA: 1, INPUT: 1, SELECT: 1, OPTION: 1, CODE: 1, PRE: 1};
+  var ATTRS = ['title', 'aria-label', 'placeholder', 'alt'];
+
+  function swap(value) {
+    var out = value;
+    for (var i = 0; i < MAP.length; i++) { out = out.replace(MAP[i][0], MAP[i][1]); }
+    return out;
+  }
+
+  function fix(node) {
+    if (!node) { return; }
+    if (node.nodeType === 3) {
+      var swapped = swap(node.nodeValue);
+      if (swapped !== node.nodeValue) { node.nodeValue = swapped; }
+      return;
+    }
+    if (node.nodeType !== 1 || SKIP[node.tagName]) { return; }
+    for (var a = 0; a < ATTRS.length; a++) {
+      var v = node.getAttribute(ATTRS[a]);
+      if (!v) { continue; }
+      var nv = swap(v);
+      if (nv !== v) { node.setAttribute(ATTRS[a], nv); }
+    }
+    for (var c = node.firstChild; c; c = c.nextSibling) { fix(c); }
+  }
+
+  function run() {
+    if (document.body) { fix(document.body); }
+    var title = swap(document.title);
+    if (title !== document.title) { document.title = title; }
+  }
+
+  run();
+  document.addEventListener('DOMContentLoaded', run);
+  setInterval(run, 2000);
 })();
 </script>

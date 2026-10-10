@@ -274,6 +274,7 @@ COPY --chown=superset:superset docker/ensure_report_designer_permissions.py /opt
 COPY customizations/templates/tail_js_custom_extra.html /app/superset/templates/tail_js_custom_extra.html
 COPY customizations/images/superset-logo-horiz.png /app/superset/static/assets/images/superset-logo-horiz.png
 COPY customizations/images/advance-bi-logo.png /app/superset/static/assets/images/advance-bi-logo.png
+COPY customizations/images/xp-builder-logo.png /app/superset/static/assets/images/xp-builder-logo.png
 COPY customizations/images/favicon.png /app/superset/static/assets/images/favicon.png
 COPY customizations/images/favicon64.png /app/superset/static/assets/images/favicon64.png
 
@@ -284,6 +285,7 @@ RUN chmod 0555 /opt/xpbuilder/bin/initialize.sh \
         /app/superset/templates/tail_js_custom_extra.html \
         /app/superset/static/assets/images/superset-logo-horiz.png \
         /app/superset/static/assets/images/advance-bi-logo.png \
+        /app/superset/static/assets/images/xp-builder-logo.png \
         /app/superset/static/assets/images/favicon.png \
         /app/superset/static/assets/images/favicon64.png
 

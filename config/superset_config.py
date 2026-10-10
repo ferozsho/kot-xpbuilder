@@ -279,13 +279,13 @@ def _xpbuilder_runtime_patches(app):
     #    (module level) are copied back into config.py by `from superset_config
     #    import *` and drive the page <title> / browser tab / navbar brand.
     import superset.config as _superset_config
-    app_name = os.environ.get('XPBUILDER_APP_NAME', 'Advance BI')
+    app_name = os.environ.get('XPBUILDER_APP_NAME', 'XP Builder')
     _superset_config.THEME_DEFAULT["token"]["brandAppName"] = app_name
     _superset_config.THEME_DEFAULT["token"]["brandLogoAlt"] = app_name
-    # Fresh filename (advance-bi-logo.png) so a CDN cannot serve a cached
+    # Fresh filename (xp-builder-logo.png) so a CDN cannot serve a cached
     # original at the default superset-logo-horiz.png URL.
     _superset_config.THEME_DEFAULT["token"]["brandLogoUrl"] = (
-        "/static/assets/images/advance-bi-logo.png"
+        "/static/assets/images/xp-builder-logo.png"
     )
 
 
