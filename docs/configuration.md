@@ -314,3 +314,40 @@ container) — including the bundled MariaDB, which is reachable inside the stac
 at `mariadb:3306` but is not registered automatically. Credentials for those
 databases stay in Superset's encrypted metadata — never in `.env`, except for
 the bundled MariaDB credentials that phpMyAdmin signs in with.
+
+### Syncing the reporting database (Moodle tables → datasets)
+Superset queries data sources live; "syncing" means registering the tables of
+the reporting database as physical datasets so the Report Designer can drag
+columns straight in. Three entry points, all running the same code path
+(`superset/views/report_designer/table_sync.py`):
+
+* **Automatic** — with `XPBUILDER_MOODLE_INTEGRATION=true`, Celery beat runs
+  `xpbuilder.sync_moodle_tables` every six hours (`15 */6 * * *`), so a table
+  added in Moodle becomes a dataset without anybody pressing a button. The entry
+  is added to `XpBuilderCeleryConfig.beat_schedule` by `config/superset_config.py`
+  and the task lives in `superset/tasks/moodle_tables.py`. A reporting database
+  that cannot be reached (network blip, rotated credentials) is logged as a
+  warning and retried on the next run instead of failing the worker.
+* **Report Designer → "Sync Moodle tables"** (`POST /reportdesigner/api/sync-tables/`,
+  registered only when `XPBUILDER_MOODLE_INTEGRATION=true`). The button posts the
+  database selected in the Designer; without a selection the fallback is
+  `XPBUILDER_REPORTING_DATABASE`.
+* **CLI** — `docker exec <instance>_superset superset sync-moodle-tables`
+  (same code path, uses `XPBUILDER_REPORTING_DATABASE`).
+
+All three are idempotent: existing datasets are skipped, so re-running only picks
+up tables that appeared since the last run.
+
+**Permission gotcha (403 after an image update).** Both paths are guarded by FAB's
+`can_api_sync_tables` on `ReportDesigner`. Flask-AppBuilder only creates that
+permission-view-menu row when the permission sync runs, and never grants it to
+existing roles afterwards — so a deployment whose role rows predate the route
+answers `403 {"message":"Access is Denied"}` for every user, Admin included.
+Fix it in place (idempotent, no image rebuild, survives container recreation):
+
+```bash
+docker exec -i <instance>_superset /app/.venv/bin/python - \
+    < docker/ensure_report_designer_permissions.py
+```
+
+The script is baked into the image at `/opt/xpbuilder/bin/` for convenience.

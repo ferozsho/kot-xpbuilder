@@ -57,6 +57,13 @@ CACHE_CONFIG = {
 from datetime import timedelta  # noqa: E402
 from celery.schedules import crontab  # noqa: E402
 
+# When the Moodle integration is on, the reporting database's tables are
+# registered as datasets on a schedule as well (see the beat_schedule entry
+# below), so nobody has to press "Sync Moodle tables".
+_moodle_integration_enabled = os.environ.get(
+    'XPBUILDER_MOODLE_INTEGRATION', 'false'
+).strip().lower() in ('1', 'true', 'yes', 'on')
+
 
 class XpBuilderCeleryConfig:  # pylint: disable=too-few-public-methods
     broker_url = REDIS_URL
@@ -66,6 +73,7 @@ class XpBuilderCeleryConfig:  # pylint: disable=too-few-public-methods
         "superset.tasks.thumbnails",
         "superset.tasks.cache",
         "superset.tasks.slack",
+        "superset.tasks.moodle_tables",
     )
     result_backend = REDIS_URL
     worker_prefetch_multiplier = 1
@@ -89,6 +97,15 @@ class XpBuilderCeleryConfig:  # pylint: disable=too-few-public-methods
             "schedule": crontab(minute=0, hour=0),
         },
     }
+
+    if _moodle_integration_enabled:
+        # Register tables the reporting database gained since the last run in
+        # Moodle as datasets (idempotent: existing datasets are skipped).
+        beat_schedule["xpbuilder-sync-moodle-tables"] = {
+            "task": "xpbuilder.sync_moodle_tables",
+            "schedule": crontab(minute=15, hour="*/6"),
+            "options": {"expires": 1800},
+        }
 
 
 CELERY_CONFIG = XpBuilderCeleryConfig
