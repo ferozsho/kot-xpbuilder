@@ -303,6 +303,15 @@ XPBUILDER_REPORTING_DATABASE = os.environ.get(
     'XPBUILDER_REPORTING_DATABASE', 'Moodle Reporting'
 )
 
+# Base URL of the linked Moodle site. Empty (default) means Superset is served
+# same-origin behind Moodle's reverse proxy, so the SPA reaches the Moodle
+# connector plugin with relative URLs. Set it (e.g. https://lms.example.com)
+# when Superset runs on its own host: the SPA then points the Moodle sync
+# actions at that origin instead of its own.
+XPBUILDER_MOODLE_URL = os.environ.get(
+    'XPBUILDER_MOODLE_URL', ''
+).strip().rstrip('/')
+
 
 def _xpbuilder_bootstrap_overrides(bootstrap_data):
     """Expose runtime feature flags to the SPA.
@@ -316,6 +325,7 @@ def _xpbuilder_bootstrap_overrides(bootstrap_data):
     return {
         'xpbuilder': {
             'moodle_integration': XPBUILDER_MOODLE_INTEGRATION,
+            'moodle_url': XPBUILDER_MOODLE_URL,
         }
     }
 

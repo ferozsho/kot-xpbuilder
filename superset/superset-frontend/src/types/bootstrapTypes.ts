@@ -176,6 +176,11 @@ export interface CommonBootstrapData {
   xpbuilder?: {
     /** True when the deployment runs with XPBUILDER_MOODLE_INTEGRATION on. */
     moodle_integration?: boolean;
+    /**
+     * Base URL of the linked Moodle site (XPBUILDER_MOODLE_URL). Empty means
+     * Superset is served same-origin behind Moodle's reverse proxy.
+     */
+    moodle_url?: string;
   };
 }
 

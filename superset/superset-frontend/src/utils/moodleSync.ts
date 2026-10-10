@@ -53,6 +53,25 @@ export function isMoodleIntegrationEnabled(): boolean {
 }
 
 /**
+ * Base URL of the linked Moodle site, or '' when Superset is served
+ * same-origin behind Moodle's reverse proxy (the default).
+ *
+ * A deployment that runs Superset on its own host (e.g. kot) sets
+ * XPBUILDER_MOODLE_URL so the Moodle actions target the Moodle origin instead
+ * of the Superset one.
+ */
+export function moodleBaseUrl(): string {
+  try {
+    return (getBootstrapData().common?.xpbuilder?.moodle_url || '').replace(
+      /\/+$/,
+      '',
+    );
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Whether the given Superset dashboard is already linked into the Moodle XP
  * dashboard list (`local_xpromptsuperset_dash` mapping, status active).
  *
@@ -65,6 +84,13 @@ export function isMoodleIntegrationEnabled(): boolean {
 export async function isDashboardSyncedToMoodle(
   dashboardId: number,
 ): Promise<boolean> {
+  // Cross-origin deployments (XPBUILDER_MOODLE_URL set, e.g. kot on its own
+  // host) cannot query the Moodle plugin from the browser — the fetch would be
+  // rejected by CORS. Offer the action instead: import.php is idempotent, so an
+  // already-linked dashboard simply reports back that it is synced.
+  if (moodleBaseUrl() !== '') {
+    return false;
+  }
   try {
     const res = await fetch(
       `/local/xpromptsuperset/sync_status.php?superset_dashboard_id=${dashboardId}`,
@@ -90,14 +116,18 @@ export function moodleSyncUrl(
   title: string,
   redirect?: string,
 ): string {
+  const base = moodleBaseUrl();
   const params = new URLSearchParams({
     superset_dashboard_id: String(dashboardId),
     name: title || '',
   });
-  if (redirect) {
+  // `redirect` is a Superset-side path and only resolves when Superset is
+  // proxied behind the Moodle origin. Cross-origin keeps the plugin's own
+  // default target (the Moodle XP dashboard list).
+  if (!base && redirect) {
     params.set('redirect', redirect);
   }
-  return `/local/xpromptsuperset/import.php?${params.toString()}`;
+  return `${base}/local/xpromptsuperset/import.php?${params.toString()}`;
 }
 
 /**

@@ -48,6 +48,10 @@ x-superset-environment: &x-superset-environment
   XPBUILDER_MOODLE_INTEGRATION: ${XPBUILDER_MOODLE_INTEGRATION:-false}
   # Fallback database name for the sync CLI when the caller sends no id.
   XPBUILDER_REPORTING_DATABASE: "${XPBUILDER_REPORTING_DATABASE:-Moodle Reporting}"
+  # Origin of the linked Moodle site. Empty (default) means Superset is served
+  # same-origin behind Moodle's reverse proxy; set it when Superset runs on its
+  # own host so the SPA's Moodle sync actions target the Moodle origin.
+  XPBUILDER_MOODLE_URL: "${XPBUILDER_MOODLE_URL:-}"
 
 services:
   superset:
