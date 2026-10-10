@@ -143,3 +143,48 @@
   }
 })();
 </script>
+{#
+    Embedded-dashboard height reporter.
+
+    Inside the connector's embed.php the dashboard runs in a CROSS-ORIGIN
+    iframe, so the host page cannot measure it: the embed was pinned to
+    `calc(100vh - 150px)`, the dashboard's own content is usually taller, and
+    the user ended up with TWO scrollbars — the page's and the dashboard's.
+    The app therefore reports its own content height and embed.php sizes the
+    host iframe from it, so the dashboard is rendered at full height and the
+    only scrollbar is the page's.
+
+    Skipped when the app is not framed (an admin browsing Superset directly).
+    `scrollHeight` is read from both <html> and <body> because which one carries
+    the overflow depends on the theme; a 4px dead-band stops the growth from
+    oscillating while the dashboard re-lays out.
+#}
+<script nonce="{{ macros.get_nonce() }}">
+(function () {
+  if (window.parent === window || window.self === window.top) { return; }
+
+  var lastSent = 0;
+  function report() {
+    var doc = document.documentElement;
+    var body = document.body;
+    var h = Math.max(
+      doc ? doc.scrollHeight : 0,
+      body ? body.scrollHeight : 0,
+      body ? body.offsetHeight : 0
+    );
+    if (!h || h < 200) { return; }
+    if (Math.abs(h - lastSent) < 4) { return; }
+    lastSent = h;
+    try {
+      window.parent.postMessage({ type: 'xpbuilder:embed-height', height: h }, '*');
+    } catch (e) { /* parent vanished */ }
+  }
+
+  report();
+  setInterval(report, 1500);
+  window.addEventListener('resize', report);
+  if (window.ResizeObserver && document.body) {
+    try { new ResizeObserver(report).observe(document.body); } catch (e) { /* ignore */ }
+  }
+})();
+</script>
