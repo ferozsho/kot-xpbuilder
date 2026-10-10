@@ -38,7 +38,7 @@ export const InteractiveListViewCard: Story = {
   args: {
     title: 'Superset Card Title',
     loading: false,
-    url: '/superset/dashboard/births/',
+    url: '/xpbuilder/dashboard/births/',
     imgURL: 'https://picsum.photos/seed/superset/300/200',
     description: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit...',
     coverLeft: 'Left Section',
@@ -103,7 +103,7 @@ export const SupersetListViewCard: Story = {
   args: {
     title: 'Superset Card Title',
     loading: false,
-    url: '/superset/dashboard/births/',
+    url: '/xpbuilder/dashboard/births/',
     imgURL: 'https://picsum.photos/seed/superset2/300/200',
     description: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit...',
     coverLeft: 'Left Section',

@@ -224,7 +224,25 @@ def _xpbuilder_runtime_patches(app):
     import superset.views.base as _base
     _base.get_default_spinner_svg = lambda: XP_LOADER_SVG
 
-    # 3) The embedded frontend registers a service worker at /static/service-worker.js,
+    # 3) Branded URL prefix: the console is served under /xpbuilder (see
+    #    docker/patches/0002-xpbuilder-url-prefix.patch). Historical /superset/*
+    #    URLs must keep working — bookmarks, the Moodle connector's SSO `next=`
+    #    parameters and dashboard links stored in older emails all use them.
+    #    308 keeps the method, so client POSTs are redirected intact.
+    from flask import redirect as _flask_redirect
+    from flask import request as _flask_request
+
+    @app.before_request
+    def _redirect_legacy_superset_prefix():
+        path = _flask_request.path
+        if path != "/superset" and not path.startswith("/superset/"):
+            return None
+        target = "/xpbuilder" + path[len("/superset"):]
+        if _flask_request.query_string:
+            target += "?" + _flask_request.query_string.decode("utf-8", "replace")
+        return _flask_redirect(target, code=308)
+
+    # 4) The embedded frontend registers a service worker at /static/service-worker.js,
     #    which is absent from the image -> 404 console noise. Serve a no-op worker.
     @app.route('/static/service-worker.js')
     def _service_worker_noop():
@@ -234,7 +252,7 @@ def _xpbuilder_runtime_patches(app):
             "self.addEventListener('activate', function (e) { self.clients.claim(); });\n"
         ), 200, {'Content-Type': 'application/javascript', 'Cache-Control': 'no-cache'}
 
-    # 4) Defensive: dashboard layouts can carry "meta": [] (a list) on ROOT/GRID/TABS
+    # 5) Defensive: dashboard layouts can carry "meta": [] (a list) on ROOT/GRID/TABS
     #    components, which crashes set_dash_metadata with "'list' object has no
     #    attribute 'get'" on every Save. Normalize list metas to {} before saving.
     import superset.daos.dashboard as _dash_dao
@@ -250,7 +268,7 @@ def _xpbuilder_runtime_patches(app):
 
     _dash_dao.DashboardDAO.set_dash_metadata = staticmethod(_safe_sdm)
 
-    # 5) Hide the "SQL" menu (and its submenu: SQL Editor / Saved Queries / Query
+    # 6) Hide the "SQL" menu (and its submenu: SQL Editor / Saved Queries / Query
     #    Search) from the navbar. The menu entry's `name` is "SQL Lab" while the
     #    rendered label is "SQL"; match either so the whole group is dropped.
     import superset.views.base as _base
@@ -268,7 +286,7 @@ def _xpbuilder_runtime_patches(app):
 
     _base.menu_data = _safe_menu_data
 
-    # 6) Branding: "XP Builder" (persistent). THEME_DEFAULT lives in the image's
+    # 7) Branding: "XP Builder" (persistent). THEME_DEFAULT lives in the image's
     #    config.py and is NOT visible in this module's namespace (superset_config
     #    is exec'd standalone), so mutate it here via superset.config — the same
     #    dict object the app serves to the frontend. APP_NAME / APP_ICON below

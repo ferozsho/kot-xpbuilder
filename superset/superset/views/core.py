@@ -133,6 +133,11 @@ SqlResults = dict[str, Any]
 class Superset(BaseSupersetView):
     """The base views for Superset!"""
 
+    # Explicit route base: Flask-AppBuilder would otherwise derive it from the
+    # class name ("superset"). XPBuilder serves the whole console under
+    # /xpbuilder (config/superset_config.py redirects the old /superset/* URLs).
+    route_base = "/xpbuilder"
+
     logger = logging.getLogger(__name__)
 
     @has_access
@@ -386,7 +391,7 @@ class Superset(BaseSupersetView):
         the form_data param with a form_data_key by saving the original content
         to the cache layer.
         """
-        redirect_url = request.url.replace("/superset/explore", "/explore")
+        redirect_url = request.url.replace("/xpbuilder/explore", "/explore")
         form_data_key = None
         if request_form_data := request.args.get("form_data"):
             parsed_form_data = loads_request_json(request_form_data)

@@ -37,7 +37,7 @@ interface StreamingExportParams {
    *
    * URLs should be prefixed with the application root at the call site using
    * `makeUrl()` from 'src/utils/pathUtils'. This ensures proper handling for
-   * subdirectory deployments (e.g., /superset/api/v1/...).
+   * subdirectory deployments (e.g., /xpbuilder/api/v1/...).
    *
    * A defensive guard (`ensureUrlPrefix`) will apply the prefix if missing,
    * but callers should not rely on this fallback behavior.

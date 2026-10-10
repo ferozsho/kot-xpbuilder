@@ -309,7 +309,7 @@ class Slice(  # pylint: disable=too-many-public-methods
     @property
     def explore_json_url(self) -> str:
         """Defines the url to access the slice"""
-        return self.get_explore_url("/superset/explore_json")
+        return self.get_explore_url("/xpbuilder/explore_json")
 
     @property
     def edit_url(self) -> str:

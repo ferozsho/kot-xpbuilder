@@ -62,7 +62,7 @@ const DashboardLinksExternal = ({
         {dashboards.map((dashboard, index) => (
           <GenericLink
             key={dashboard.id}
-            to={`/superset/dashboard/${dashboard.id}/`}
+            to={`/xpbuilder/dashboard/${dashboard.id}/`}
             target="_blank"
           >
             {index === 0

@@ -148,7 +148,7 @@ export default function ReportListPage() {
               {report.dashboard_id != null && (
                 <>
                   <a
-                    href={`/superset/dashboard/${report.dashboard_id}/`}
+                    href={`/xpbuilder/dashboard/${report.dashboard_id}/`}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -159,7 +159,7 @@ export default function ReportListPage() {
                       href={moodleSyncUrl(
                         report.dashboard_id,
                         report.chart_name || report.name || '',
-                        `/superset/dashboard/${report.dashboard_id}/`,
+                        `/xpbuilder/dashboard/${report.dashboard_id}/`,
                       )}
                     >
                       {t('Moodle')}

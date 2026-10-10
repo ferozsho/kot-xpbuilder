@@ -163,7 +163,7 @@ export function getURIDirectory(
     'results',
     'samples',
   ].includes(endpointType)
-    ? '/superset/explore_json/'
+    ? '/xpbuilder/explore_json/'
     : '/explore/';
   return includeAppRoot ? ensureAppRoot(uri) : uri;
 }

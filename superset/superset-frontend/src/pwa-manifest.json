@@ -2,7 +2,7 @@
   "name": "Apache Superset",
   "short_name": "Superset",
   "description": "Modern data exploration and visualization platform",
-  "start_url": "/superset/welcome/",
+  "start_url": "/xpbuilder/welcome/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
@@ -51,7 +51,7 @@
   ],
   "file_handlers": [
     {
-      "action": "/superset/file-handler",
+      "action": "/xpbuilder/file-handler",
       "accept": {
         "text/csv": [".csv"],
         "application/vnd.ms-excel": [".xls"],

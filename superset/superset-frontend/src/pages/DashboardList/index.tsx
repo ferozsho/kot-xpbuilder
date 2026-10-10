@@ -162,7 +162,7 @@ function MoodleSyncAction({
         href={moodleSyncUrl(
           dashboard.id,
           dashboard.dashboard_title || '',
-          `/superset/dashboard/${dashboard.id}/`,
+          `/xpbuilder/dashboard/${dashboard.id}/`,
         )}
         data-test="dashboard-list-moodle-sync-icon"
       >

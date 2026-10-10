@@ -1,0 +1,604 @@
+--- a/superset/config.py
++++ b/superset/config.py
+@@ -358,8 +358,8 @@
+ APP_ICON = "/static/assets/images/superset-logo-horiz.png"
+ 
+ # Specify where clicking the logo would take the user'
+-# Default value of None will take you to '/superset/welcome'
+-# You can also specify a relative URL e.g. '/superset/welcome' or '/dashboards/list'
++# Default value of None will take you to '/xpbuilder/welcome'
++# You can also specify a relative URL e.g. '/xpbuilder/welcome' or '/dashboards/list'
+ # or you can specify a full URL e.g. 'https://foo.bar'
+ LOGO_TARGET_PATH = None
+ 
+--- a/superset/initialization/__init__.py
++++ b/superset/initialization/__init__.py
+@@ -294,7 +294,7 @@
+         appbuilder.add_link(
+             "Home",
+             label=_("Home"),
+-            href="/superset/welcome/",
++            href="/xpbuilder/welcome/",
+             cond=lambda: bool(current_app.config["LOGO_TARGET_PATH"]),
+         )
+ 
+--- a/superset/models/core.py
++++ b/superset/models/core.py
+@@ -1166,7 +1166,7 @@
+ 
+     @property
+     def sql_url(self) -> str:
+-        return f"/superset/sql/{self.id}/"
++        return f"/xpbuilder/sql/{self.id}/"
+ 
+     @hybrid_property
+     def perm(self) -> str:
+--- a/superset/models/dashboard.py
++++ b/superset/models/dashboard.py
+@@ -197,12 +197,12 @@
+ 
+     @property
+     def url(self) -> str:
+-        return f"/superset/dashboard/{self.slug or self.id}/"
++        return f"/xpbuilder/dashboard/{self.slug or self.id}/"
+ 
+     @staticmethod
+     def get_url(id_: int, slug: str | None = None) -> str:
+         # To be able to generate URL's without instantiating a Dashboard object
+-        return f"/superset/dashboard/{slug or id_}/"
++        return f"/xpbuilder/dashboard/{slug or id_}/"
+ 
+     @property
+     def datasources(self) -> set[BaseDatasource]:
+--- a/superset/models/slice.py
++++ b/superset/models/slice.py
+@@ -309,7 +309,7 @@
+     @property
+     def explore_json_url(self) -> str:
+         """Defines the url to access the slice"""
+-        return self.get_explore_url("/superset/explore_json")
++        return self.get_explore_url("/xpbuilder/explore_json")
+ 
+     @property
+     def edit_url(self) -> str:
+--- a/superset/tasks/async_queries.py
++++ b/superset/tasks/async_queries.py
+@@ -169,7 +169,7 @@
+             set_and_log_cache(
+                 cache_instance, cache_key, cache_value, cache_timeout=cache_timeout
+             )
+-            result_url = f"/superset/explore_json/data/{cache_key}"
++            result_url = f"/xpbuilder/explore_json/data/{cache_key}"
+             async_query_manager.update_job(
+                 job_metadata,
+                 async_query_manager.STATUS_DONE,
+--- a/superset/utils/core.py
++++ b/superset/utils/core.py
+@@ -2132,7 +2132,7 @@
+ def get_query_source_from_request() -> QuerySource | None:
+     if not request or not request.referrer:
+         return None
+-    if "/superset/dashboard/" in request.referrer:
++    if "/xpbuilder/dashboard/" in request.referrer:
+         return QuerySource.DASHBOARD
+     if "/explore/" in request.referrer:
+         return QuerySource.CHART
+--- a/superset/views/all_entities.py
++++ b/superset/views/all_entities.py
+@@ -31,7 +31,7 @@
+ 
+ 
+ class TaggedObjectsModelView(SupersetModelView):
+-    route_base = "/superset/all_entities"
++    route_base = "/xpbuilder/all_entities"
+     datamodel = SQLAInterface(Tag)
+     class_permission_name = "Tags"
+     include_route_methods = {RouteMethod.LIST}
+--- a/superset/views/core.py
++++ b/superset/views/core.py
+@@ -133,6 +133,11 @@
+ class Superset(BaseSupersetView):
+     """The base views for Superset!"""
+ 
++    # Explicit route base: Flask-AppBuilder would otherwise derive it from the
++    # class name ("superset"). XPBuilder serves the whole console under
++    # /xpbuilder (config/superset_config.py redirects the old /superset/* URLs).
++    route_base = "/xpbuilder"
++
+     logger = logging.getLogger(__name__)
+ 
+     @has_access
+@@ -386,7 +391,7 @@
+         the form_data param with a form_data_key by saving the original content
+         to the cache layer.
+         """
+-        redirect_url = request.url.replace("/superset/explore", "/explore")
++        redirect_url = request.url.replace("/xpbuilder/explore", "/explore")
+         form_data_key = None
+         if request_form_data := request.args.get("form_data"):
+             parsed_form_data = loads_request_json(request_form_data)
+--- a/superset/views/explore.py
++++ b/superset/views/explore.py
+@@ -37,7 +37,7 @@
+ 
+ 
+ class ExplorePermalinkView(BaseSupersetView):
+-    route_base = "/superset"
++    route_base = "/xpbuilder"
+     class_permission_name = "Explore"
+ 
+     @expose("/explore/p/<key>/")
+--- a/superset/views/report_designer/publish.py
++++ b/superset/views/report_designer/publish.py
+@@ -623,7 +623,7 @@
+         "dashboard_title": dashboard.dashboard_title if dashboard else None,
+         "explore_url": f"/explore/?slice_id={chart.id}",
+         "dashboard_url": (
+-            f"/superset/dashboard/{dashboard.id}/" if dashboard else None
++            f"/xpbuilder/dashboard/{dashboard.id}/" if dashboard else None
+         ),
+     }
+ 
+--- a/superset/views/tags.py
++++ b/superset/views/tags.py
+@@ -35,7 +35,7 @@
+ 
+ 
+ class TagModelView(SupersetModelView):
+-    route_base = "/superset/tags"
++    route_base = "/xpbuilder/tags"
+     datamodel = SQLAInterface(Tag)
+     class_permission_name = "Tags"
+     include_route_methods = {"list"}
+--- a/superset-frontend/packages/superset-ui-core/src/chart/clients/ChartClient.ts
++++ b/superset-frontend/packages/superset-ui-core/src/chart/clients/ChartClient.ts
+@@ -109,7 +109,7 @@
+         (await buildQueryRegistry.get(visType)) ?? (() => formData);
+       const requestConfig: RequestConfig = useLegacyApi
+         ? {
+-            endpoint: '/superset/explore_json/',
++            endpoint: '/xpbuilder/explore_json/',
+             postPayload: {
+               form_data: buildQuery(formData),
+             },
+@@ -139,7 +139,7 @@
+   ): Promise<Datasource> {
+     return this.client
+       .get({
+-        endpoint: `/superset/fetch_datasource_metadata?datasourceKey=${datasourceKey}`,
++        endpoint: `/xpbuilder/fetch_datasource_metadata?datasourceKey=${datasourceKey}`,
+         ...options,
+       } as RequestConfig)
+       .then(response => response.json as Datasource);
+--- a/superset-frontend/packages/superset-ui-core/src/chart/components/StatefulChart.tsx
++++ b/superset-frontend/packages/superset-ui-core/src/chart/components/StatefulChart.tsx
+@@ -263,7 +263,7 @@
+         queryContext = { queries: [queryContext] };
+       }
+       const endpoint = useLegacyApi
+-        ? '/superset/explore_json/'
++        ? '/xpbuilder/explore_json/'
+         : '/api/v1/chart/data';
+ 
+       const requestConfig: RequestConfig = {
+--- a/superset-frontend/packages/superset-ui-core/src/components/ListViewCard/ListViewCard.stories.tsx
++++ b/superset-frontend/packages/superset-ui-core/src/components/ListViewCard/ListViewCard.stories.tsx
+@@ -38,7 +38,7 @@
+   args: {
+     title: 'Superset Card Title',
+     loading: false,
+-    url: '/superset/dashboard/births/',
++    url: '/xpbuilder/dashboard/births/',
+     imgURL: 'https://picsum.photos/seed/superset/300/200',
+     description: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit...',
+     coverLeft: 'Left Section',
+@@ -103,7 +103,7 @@
+   args: {
+     title: 'Superset Card Title',
+     loading: false,
+-    url: '/superset/dashboard/births/',
++    url: '/xpbuilder/dashboard/births/',
+     imgURL: 'https://picsum.photos/seed/superset2/300/200',
+     description: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit...',
+     coverLeft: 'Left Section',
+--- a/superset-frontend/packages/superset-ui-core/src/query/api/legacy/getDatasourceMetadata.ts
++++ b/superset-frontend/packages/superset-ui-core/src/query/api/legacy/getDatasourceMetadata.ts
+@@ -32,7 +32,7 @@
+ }: Params) {
+   return client
+     .get({
+-      endpoint: `/superset/fetch_datasource_metadata?datasourceKey=${datasourceKey}`,
++      endpoint: `/xpbuilder/fetch_datasource_metadata?datasourceKey=${datasourceKey}`,
+       ...requestConfig,
+     })
+     .then(response => response.json as Datasource);
+--- a/superset-frontend/plugins/legacy-preset-chart-deckgl/src/utils/explore.ts
++++ b/superset-frontend/plugins/legacy-preset-chart-deckgl/src/utils/explore.ts
+@@ -26,7 +26,7 @@
+   // Building the directory part of the URI
+   let directory = '/explore/';
+   if (['json', 'csv', 'query', 'results', 'samples'].includes(endpointType)) {
+-    directory = '/superset/explore_json/';
++    directory = '/xpbuilder/explore_json/';
+   }
+ 
+   return directory;
+--- a/superset-frontend/plugins/legacy-preset-chart-nvd3/src/vendor/superset/exploreUtils.ts
++++ b/superset-frontend/plugins/legacy-preset-chart-nvd3/src/vendor/superset/exploreUtils.ts
+@@ -27,7 +27,7 @@
+   // Building the directory part of the URI
+   let directory = '/explore/';
+   if (['json', 'csv', 'query', 'results', 'samples'].includes(endpointType)) {
+-    directory = '/superset/explore_json/';
++    directory = '/xpbuilder/explore_json/';
+   }
+ 
+   return directory;
+--- a/superset-frontend/src/components/Datasource/components/DatasourceEditor/DatasourceEditor.tsx
++++ b/superset-frontend/src/components/Datasource/components/DatasourceEditor/DatasourceEditor.tsx
+@@ -1576,7 +1576,7 @@
+                 'Default URL to redirect to when accessing from the dataset list page. Accepts relative URLs such as',
+               )}{' '}
+               <Typography.Text code>
+-                /superset/dashboard/{'{id}'}/
++                /xpbuilder/dashboard/{'{id}'}/
+               </Typography.Text>
+             </>
+           }
+--- a/superset-frontend/src/components/Datasource/components/DatasourceEditor/components/DashboardLinksExternal/index.tsx
++++ b/superset-frontend/src/components/Datasource/components/DatasourceEditor/components/DashboardLinksExternal/index.tsx
+@@ -62,7 +62,7 @@
+         {dashboards.map((dashboard, index) => (
+           <GenericLink
+             key={dashboard.id}
+-            to={`/superset/dashboard/${dashboard.id}/`}
++            to={`/xpbuilder/dashboard/${dashboard.id}/`}
+             target="_blank"
+           >
+             {index === 0
+--- a/superset-frontend/src/components/ListView/CrossLinks.tsx
++++ b/superset-frontend/src/components/ListView/CrossLinks.tsx
+@@ -65,7 +65,7 @@
+ function CrossLinks({
+   crossLinks,
+   maxLinks = 20,
+-  linkPrefix = '/superset/dashboard/',
++  linkPrefix = '/xpbuilder/dashboard/',
+   external = false,
+ }: CrossLinksProps) {
+   const [crossLinksRef, plusRef, elementsTruncated, hasHiddenElements] =
+--- a/superset-frontend/src/components/StreamingExportModal/useStreamingExport.ts
++++ b/superset-frontend/src/components/StreamingExportModal/useStreamingExport.ts
+@@ -37,7 +37,7 @@
+    *
+    * URLs should be prefixed with the application root at the call site using
+    * `makeUrl()` from 'src/utils/pathUtils'. This ensures proper handling for
+-   * subdirectory deployments (e.g., /superset/api/v1/...).
++   * subdirectory deployments (e.g., /xpbuilder/api/v1/...).
+    *
+    * A defensive guard (`ensureUrlPrefix`) will apply the prefix if missing,
+    * but callers should not rely on this fallback behavior.
+--- a/superset-frontend/src/components/Tag/index.tsx
++++ b/superset-frontend/src/components/Tag/index.tsx
+@@ -82,7 +82,7 @@
+             {' '}
+             {id ? (
+               <Link
+-                to={`/superset/all_entities/?id=${id}`}
++                to={`/xpbuilder/all_entities/?id=${id}`}
+                 target="_blank"
+                 rel="noreferrer"
+               >
+--- a/superset-frontend/src/dashboard/actions/dashboardState.ts
++++ b/superset-frontend/src/dashboard/actions/dashboardState.ts
+@@ -539,7 +539,7 @@
+       );
+       dispatch(saveDashboardFinished());
+       navigateTo(
+-        `/superset/dashboard/${(response.json as JsonObject).result?.id}/`,
++        `/xpbuilder/dashboard/${(response.json as JsonObject).result?.id}/`,
+       );
+       dispatch(addSuccessToast(t('This dashboard was saved successfully.')));
+       return response;
+@@ -593,7 +593,7 @@
+       }
+       dispatch(saveDashboardFinished());
+       // redirect to the new slug or id
+-      navigateWithState(`/superset/dashboard/${slug || id}/`, {
++      navigateWithState(`/xpbuilder/dashboard/${slug || id}/`, {
+         event: 'dashboard_properties_changed',
+       });
+ 
+--- a/superset-frontend/src/dashboard/actions/datasources.ts
++++ b/superset-frontend/src/dashboard/actions/datasources.ts
+@@ -62,7 +62,7 @@
+     }
+ 
+     return SupersetClient.get({
+-      endpoint: `/superset/fetch_datasource_metadata?datasourceKey=${key}`,
++      endpoint: `/xpbuilder/fetch_datasource_metadata?datasourceKey=${key}`,
+     }).then(({ json }) => dispatch(setDatasource(json as Datasource, key)));
+   };
+ }
+--- a/superset-frontend/src/dashboard/components/Header/index.tsx
++++ b/superset-frontend/src/dashboard/components/Header/index.tsx
+@@ -788,7 +788,7 @@
+                     dashboardInfo.id,
+                     dashboardInfo.dashboard_title || '',
+                     dashboardInfo.url ||
+-                      `/superset/dashboard/${dashboardInfo.id}/`,
++                      `/xpbuilder/dashboard/${dashboardInfo.id}/`,
+                   )}
+                 >
+                   <Icons.SyncOutlined iconSize="m" />
+--- a/superset-frontend/src/dashboard/components/nativeFilters/FilterBar/index.tsx
++++ b/superset-frontend/src/dashboard/components/nativeFilters/FilterBar/index.tsx
+@@ -136,9 +136,9 @@
+ 
+     // pathname could be updated somewhere else through window.history
+     // keep react router history in sync with window history
+-    // replace params only when current page is /superset/dashboard
++    // replace params only when current page is /xpbuilder/dashboard
+     // this prevents a race condition between updating filters and navigating to Explore
+-    if (window.location.pathname.includes('/superset/dashboard')) {
++    if (window.location.pathname.includes('/xpbuilder/dashboard')) {
+       // The history API is part of React router and understands that a basename may exist.
+       // Internally it treats all paths as if they are relative to the root and appends
+       // it when necessary. We strip any prefix so that history.replace adds it back and doesn't
+--- a/superset-frontend/src/explore/components/useExploreAdditionalActionsMenu/DashboardsSubMenu.tsx
++++ b/superset-frontend/src/explore/components/useExploreAdditionalActionsMenu/DashboardsSubMenu.tsx
+@@ -72,7 +72,7 @@
+             <Link
+               target="_blank"
+               rel="noreferer noopener"
+-              to={`/superset/dashboard/${dashboard.id}${urlQueryString}`}
++              to={`/xpbuilder/dashboard/${dashboard.id}${urlQueryString}`}
+               css={css`
+                 display: flex;
+                 flex-direction: row;
+--- a/superset-frontend/src/explore/exploreUtils/index.ts
++++ b/superset-frontend/src/explore/exploreUtils/index.ts
+@@ -163,7 +163,7 @@
+     'results',
+     'samples',
+   ].includes(endpointType)
+-    ? '/superset/explore_json/'
++    ? '/xpbuilder/explore_json/'
+     : '/explore/';
+   return includeAppRoot ? ensureAppRoot(uri) : uri;
+ }
+--- a/superset-frontend/src/features/reportDesigner/ReportDesignerPage.tsx
++++ b/superset-frontend/src/features/reportDesigner/ReportDesignerPage.tsx
+@@ -1011,7 +1011,7 @@
+                                     size="small"
+                                     href={
+                                       publishResult?.dashboard_url ||
+-                                      `/superset/dashboard/${report?.dashboard_id}/`
++                                      `/xpbuilder/dashboard/${report?.dashboard_id}/`
+                                     }
+                                     target="_blank"
+                                     rel="noreferrer"
+@@ -1032,7 +1032,7 @@
+                                           '',
+                                       )}&redirect=${encodeURIComponent(
+                                         publishResult?.dashboard_url ||
+-                                          `/superset/dashboard/${report?.dashboard_id}/`,
++                                          `/xpbuilder/dashboard/${report?.dashboard_id}/`,
+                                       )}`}
+                                     >
+                                       {t('Sync to Moodle')}
+--- a/superset-frontend/src/features/reportDesigner/ReportListPage.tsx
++++ b/superset-frontend/src/features/reportDesigner/ReportListPage.tsx
+@@ -148,7 +148,7 @@
+               {report.dashboard_id != null && (
+                 <>
+                   <a
+-                    href={`/superset/dashboard/${report.dashboard_id}/`}
++                    href={`/xpbuilder/dashboard/${report.dashboard_id}/`}
+                     target="_blank"
+                     rel="noreferrer"
+                   >
+@@ -159,7 +159,7 @@
+                       href={moodleSyncUrl(
+                         report.dashboard_id,
+                         report.chart_name || report.name || '',
+-                        `/superset/dashboard/${report.dashboard_id}/`,
++                        `/xpbuilder/dashboard/${report.dashboard_id}/`,
+                       )}
+                     >
+                       {t('Moodle')}
+--- a/superset-frontend/src/middleware/loggerMiddleware.ts
++++ b/superset-frontend/src/middleware/loggerMiddleware.ts
+@@ -88,7 +88,7 @@
+   dispatch: Dispatch;
+ }
+ 
+-const LOG_ENDPOINT = '/superset/log/?explode=events';
++const LOG_ENDPOINT = '/xpbuilder/log/?explode=events';
+ 
+ const sendBeacon = (events: LogEventData[]): void => {
+   if (events.length <= 0) {
+--- a/superset-frontend/src/pages/DashboardList/index.tsx
++++ b/superset-frontend/src/pages/DashboardList/index.tsx
+@@ -162,7 +162,7 @@
+         href={moodleSyncUrl(
+           dashboard.id,
+           dashboard.dashboard_title || '',
+-          `/superset/dashboard/${dashboard.id}/`,
++          `/xpbuilder/dashboard/${dashboard.id}/`,
+         )}
+         data-test="dashboard-list-moodle-sync-icon"
+       >
+--- a/superset-frontend/src/pages/DatabaseList/index.tsx
++++ b/superset-frontend/src/pages/DatabaseList/index.tsx
+@@ -733,7 +733,7 @@
+                           avatar={<span>•</span>}
+                           title={
+                             <Typography.Link
+-                              href={`/superset/dashboard/${result.id}`}
++                              href={`/xpbuilder/dashboard/${result.id}`}
+                               target="_atRiskItem"
+                             >
+                               {result.title}
+--- a/superset-frontend/src/pages/DatasetList/index.tsx
++++ b/superset-frontend/src/pages/DatasetList/index.tsx
+@@ -802,7 +802,7 @@
+                           avatar={<span>•</span>}
+                           title={
+                             <Typography.Link
+-                              href={`/superset/dashboard/${result.id}`}
++                              href={`/xpbuilder/dashboard/${result.id}`}
+                               target="_atRiskItem"
+                             >
+                               {result.title}
+--- a/superset-frontend/src/pages/FileHandler/index.tsx
++++ b/superset-frontend/src/pages/FileHandler/index.tsx
+@@ -59,13 +59,13 @@
+             'File handling is not supported in this browser. Please use a modern browser like Chrome or Edge.',
+           ),
+         );
+-        history.push('/superset/welcome/');
++        history.push('/xpbuilder/welcome/');
+         return;
+       }
+ 
+       launchQueue.setConsumer(async (launchParams: FileLaunchParams) => {
+         if (!launchParams.files || launchParams.files.length === 0) {
+-          history.push('/superset/welcome/');
++          history.push('/xpbuilder/welcome/');
+           return;
+         }
+ 
+@@ -92,7 +92,7 @@
+                 'Unsupported file type. Please use CSV, Excel, or Columnar files.',
+               ),
+             );
+-            history.push('/superset/welcome/');
++            history.push('/xpbuilder/welcome/');
+             return;
+           }
+ 
+@@ -103,7 +103,7 @@
+         } catch (error) {
+           console.error('Error handling file launch:', error);
+           addDangerToast(t('Failed to open file. Please try again.'));
+-          history.push('/superset/welcome/');
++          history.push('/xpbuilder/welcome/');
+         }
+       });
+     };
+@@ -115,7 +115,7 @@
+     setShowModal(false);
+     setUploadFile(null);
+     setUploadType(null);
+-    history.push('/superset/welcome/');
++    history.push('/xpbuilder/welcome/');
+   };
+ 
+   if (!uploadFile || !uploadType) {
+--- a/superset-frontend/src/pages/Tags/index.tsx
++++ b/superset-frontend/src/pages/Tags/index.tsx
+@@ -168,7 +168,7 @@
+           },
+         }: any) => (
+           <AntdTag>
+-            <Link to={`/superset/all_entities/?id=${id}`}>{tagName}</Link>
++            <Link to={`/xpbuilder/all_entities/?id=${id}`}>{tagName}</Link>
+           </AntdTag>
+         ),
+         Header: t('Name'),
+--- a/superset-frontend/src/preamble.ts
++++ b/superset-frontend/src/preamble.ts
+@@ -72,7 +72,7 @@
+       }, LANGUAGE_PACK_REQUEST_TIMEOUT_MS);
+ 
+       try {
+-        const languagePackUrl = makeUrl(`/superset/language_pack/${lang}/`);
++        const languagePackUrl = makeUrl(`/xpbuilder/language_pack/${lang}/`);
+         const resp = await fetch(languagePackUrl, {
+           signal: abortController.signal,
+         });
+--- a/superset-frontend/src/pwa-manifest.json
++++ b/superset-frontend/src/pwa-manifest.json
+@@ -2,7 +2,7 @@
+   "name": "Apache Superset",
+   "short_name": "Superset",
+   "description": "Modern data exploration and visualization platform",
+-  "start_url": "/superset/welcome/",
++  "start_url": "/xpbuilder/welcome/",
+   "scope": "/",
+   "display": "standalone",
+   "background_color": "#ffffff",
+@@ -51,7 +51,7 @@
+   ],
+   "file_handlers": [
+     {
+-      "action": "/superset/file-handler",
++      "action": "/xpbuilder/file-handler",
+       "accept": {
+         "text/csv": [".csv"],
+         "application/vnd.ms-excel": [".xls"],
+--- a/superset-frontend/src/utils/pathUtils.ts
++++ b/superset-frontend/src/utils/pathUtils.ts
+@@ -51,11 +51,11 @@
+  * are returned unchanged.
+  *
+  * @param path - The path or URL to resolve (e.g., '/sqllab', 'https://example.com')
+- * @returns The resolved URL (e.g., '/superset/sqllab' or 'https://example.com')
++ * @returns The resolved URL (e.g., '/xpbuilder/sqllab' or 'https://example.com')
+  *
+  * @example
+  * // In a subdirectory deployment at /superset
+- * makeUrl('/sqllab?new=true')          // returns '/superset/sqllab?new=true'
++ * makeUrl('/sqllab?new=true')          // returns '/xpbuilder/sqllab?new=true'
+  * makeUrl('https://external.example.com') // returns 'https://external.example.com'
+  */
+ export function makeUrl(path: string): string {
+--- a/superset-frontend/src/views/routes.tsx
++++ b/superset-frontend/src/views/routes.tsx
+@@ -230,11 +230,11 @@
+     Component: Login,
+   },
+   {
+-    path: '/superset/welcome/',
++    path: '/xpbuilder/welcome/',
+     Component: Home,
+   },
+   {
+-    path: '/superset/file-handler',
++    path: '/xpbuilder/file-handler',
+     Component: FileHandler,
+   },
+   {
+@@ -242,7 +242,7 @@
+     Component: DashboardList,
+   },
+   {
+-    path: '/superset/dashboard/:idOrSlug/',
++    path: '/xpbuilder/dashboard/:idOrSlug/',
+     Component: Dashboard,
+   },
+   {
+@@ -312,7 +312,7 @@
+     Component: Chart,
+   },
+   {
+-    path: '/superset/explore/p',
++    path: '/xpbuilder/explore/p',
+     Component: Chart,
+   },
+   {
+@@ -360,11 +360,11 @@
+ 
+ if (isFeatureEnabled(FeatureFlag.TaggingSystem)) {
+   routes.push({
+-    path: '/superset/all_entities/',
++    path: '/xpbuilder/all_entities/',
+     Component: AllEntities,
+   });
+   routes.push({
+-    path: '/superset/tags/',
++    path: '/xpbuilder/tags/',
+     Component: Tags,
+   });
+ }

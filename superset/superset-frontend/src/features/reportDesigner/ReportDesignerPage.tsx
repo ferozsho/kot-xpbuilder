@@ -1011,7 +1011,7 @@ export default function ReportDesignerPage() {
                                     size="small"
                                     href={
                                       publishResult?.dashboard_url ||
-                                      `/superset/dashboard/${report?.dashboard_id}/`
+                                      `/xpbuilder/dashboard/${report?.dashboard_id}/`
                                     }
                                     target="_blank"
                                     rel="noreferrer"
@@ -1032,7 +1032,7 @@ export default function ReportDesignerPage() {
                                           '',
                                       )}&redirect=${encodeURIComponent(
                                         publishResult?.dashboard_url ||
-                                          `/superset/dashboard/${report?.dashboard_id}/`,
+                                          `/xpbuilder/dashboard/${report?.dashboard_id}/`,
                                       )}`}
                                     >
                                       {t('Sync to Moodle')}

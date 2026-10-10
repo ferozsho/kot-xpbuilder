@@ -788,7 +788,7 @@ const Header = (): JSX.Element => {
                     dashboardInfo.id,
                     dashboardInfo.dashboard_title || '',
                     dashboardInfo.url ||
-                      `/superset/dashboard/${dashboardInfo.id}/`,
+                      `/xpbuilder/dashboard/${dashboardInfo.id}/`,
                   )}
                 >
                   <Icons.SyncOutlined iconSize="m" />

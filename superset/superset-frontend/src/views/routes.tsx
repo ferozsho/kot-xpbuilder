@@ -230,11 +230,11 @@ export const routes: Routes = [
     Component: Login,
   },
   {
-    path: '/superset/welcome/',
+    path: '/xpbuilder/welcome/',
     Component: Home,
   },
   {
-    path: '/superset/file-handler',
+    path: '/xpbuilder/file-handler',
     Component: FileHandler,
   },
   {
@@ -242,7 +242,7 @@ export const routes: Routes = [
     Component: DashboardList,
   },
   {
-    path: '/superset/dashboard/:idOrSlug/',
+    path: '/xpbuilder/dashboard/:idOrSlug/',
     Component: Dashboard,
   },
   {
@@ -312,7 +312,7 @@ export const routes: Routes = [
     Component: Chart,
   },
   {
-    path: '/superset/explore/p',
+    path: '/xpbuilder/explore/p',
     Component: Chart,
   },
   {
@@ -360,11 +360,11 @@ export const routes: Routes = [
 
 if (isFeatureEnabled(FeatureFlag.TaggingSystem)) {
   routes.push({
-    path: '/superset/all_entities/',
+    path: '/xpbuilder/all_entities/',
     Component: AllEntities,
   });
   routes.push({
-    path: '/superset/tags/',
+    path: '/xpbuilder/tags/',
     Component: Tags,
   });
 }

@@ -109,7 +109,7 @@ export default class ChartClient {
         (await buildQueryRegistry.get(visType)) ?? (() => formData);
       const requestConfig: RequestConfig = useLegacyApi
         ? {
-            endpoint: '/superset/explore_json/',
+            endpoint: '/xpbuilder/explore_json/',
             postPayload: {
               form_data: buildQuery(formData),
             },
@@ -139,7 +139,7 @@ export default class ChartClient {
   ): Promise<Datasource> {
     return this.client
       .get({
-        endpoint: `/superset/fetch_datasource_metadata?datasourceKey=${datasourceKey}`,
+        endpoint: `/xpbuilder/fetch_datasource_metadata?datasourceKey=${datasourceKey}`,
         ...options,
       } as RequestConfig)
       .then(response => response.json as Datasource);

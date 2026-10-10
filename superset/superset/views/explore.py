@@ -37,7 +37,7 @@ class ExploreView(BaseSupersetView):
 
 
 class ExplorePermalinkView(BaseSupersetView):
-    route_base = "/superset"
+    route_base = "/xpbuilder"
     class_permission_name = "Explore"
 
     @expose("/explore/p/<key>/")

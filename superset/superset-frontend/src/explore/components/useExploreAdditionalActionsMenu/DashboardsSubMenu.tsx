@@ -72,7 +72,7 @@ export const useDashboardsMenuItems = ({
             <Link
               target="_blank"
               rel="noreferer noopener"
-              to={`/superset/dashboard/${dashboard.id}${urlQueryString}`}
+              to={`/xpbuilder/dashboard/${dashboard.id}${urlQueryString}`}
               css={css`
                 display: flex;
                 flex-direction: row;

@@ -51,11 +51,11 @@ export function ensureAppRoot(path: string): string {
  * are returned unchanged.
  *
  * @param path - The path or URL to resolve (e.g., '/sqllab', 'https://example.com')
- * @returns The resolved URL (e.g., '/superset/sqllab' or 'https://example.com')
+ * @returns The resolved URL (e.g., '/xpbuilder/sqllab' or 'https://example.com')
  *
  * @example
  * // In a subdirectory deployment at /superset
- * makeUrl('/sqllab?new=true')          // returns '/superset/sqllab?new=true'
+ * makeUrl('/sqllab?new=true')          // returns '/xpbuilder/sqllab?new=true'
  * makeUrl('https://external.example.com') // returns 'https://external.example.com'
  */
 export function makeUrl(path: string): string {

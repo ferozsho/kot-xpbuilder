@@ -623,7 +623,7 @@ def publish_report(
         "dashboard_title": dashboard.dashboard_title if dashboard else None,
         "explore_url": f"/explore/?slice_id={chart.id}",
         "dashboard_url": (
-            f"/superset/dashboard/{dashboard.id}/" if dashboard else None
+            f"/xpbuilder/dashboard/{dashboard.id}/" if dashboard else None
         ),
     }
 

@@ -1166,7 +1166,7 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
 
     @property
     def sql_url(self) -> str:
-        return f"/superset/sql/{self.id}/"
+        return f"/xpbuilder/sql/{self.id}/"
 
     @hybrid_property
     def perm(self) -> str:

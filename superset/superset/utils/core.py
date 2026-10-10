@@ -2132,7 +2132,7 @@ def to_int(v: Any, value_if_invalid: int = 0) -> int:
 def get_query_source_from_request() -> QuerySource | None:
     if not request or not request.referrer:
         return None
-    if "/superset/dashboard/" in request.referrer:
+    if "/xpbuilder/dashboard/" in request.referrer:
         return QuerySource.DASHBOARD
     if "/explore/" in request.referrer:
         return QuerySource.CHART

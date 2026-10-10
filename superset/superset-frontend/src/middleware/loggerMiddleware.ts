@@ -88,7 +88,7 @@ interface LoggerStore {
   dispatch: Dispatch;
 }
 
-const LOG_ENDPOINT = '/superset/log/?explode=events';
+const LOG_ENDPOINT = '/xpbuilder/log/?explode=events';
 
 const sendBeacon = (events: LogEventData[]): void => {
   if (events.length <= 0) {
