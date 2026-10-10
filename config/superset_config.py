@@ -307,6 +307,31 @@ def _xpbuilder_runtime_patches(app):
     _superset_config.THEME_DEFAULT["token"]["brandSpinnerUrl"] = None
     _superset_config.THEME_DEFAULT["token"]["brandSpinnerSvg"] = XP_LOADER_SVG
 
+    # 8) Legacy chart endpoints (/explore_json/, /slice/<id>/ and friends) resolve the
+    #    chart class with `superset.viz.viz_types[viz_type]`. That mapping only holds
+    #    the legacy classes defined in superset/viz.py — modern chart types (table,
+    #    big_number_total, echarts_*) live in the frontend plugins and are served by
+    #    /api/v1/chart/data — so a bare lookup raised KeyError('<viz_type>') and the
+    #    caller got HTTP 500 carrying nothing but {"error": "'table'"} (reachable from
+    #    an old bookmarked CSV/export URL). Answer with a clear 400 instead. Only
+    #    misses go through __missing__, so .get() and iteration behave exactly as
+    #    before and chart types that do exist are untouched.
+    import superset.viz as _viz
+    from superset.exceptions import SupersetGenericErrorException
+
+    class _XpBuilderVizTypes(dict):
+        """viz_types mapping that reports unknown chart types as a client error."""
+
+        def __missing__(self, key: str):
+            raise SupersetGenericErrorException(
+                f"Chart type '{key}' cannot be rendered by this endpoint. It is a "
+                "frontend chart type: open the chart in the explorer, or use its "
+                "Download action, which exports through the chart data API.",
+                status=400,
+            )
+
+    _viz.viz_types = _XpBuilderVizTypes(_viz.viz_types)
+
 
 FLASK_APP_MUTATOR = _xpbuilder_runtime_patches
 
