@@ -240,3 +240,78 @@
   setInterval(run, 2000);
 })();
 </script>
+{#
+    Embedded dashboards are read-only.
+
+    A guest-token viewer has NO Superset session, so the "editing" entries in a
+    chart's ⋮ menu are dead ends: "Edit chart" pushes /explore/, a
+    server-rendered page that cannot authenticate a guest token, and the
+    dashboard is replaced by a blank frame. "View query" hands a report reader
+    raw SQL, and "Share" builds links the viewer cannot open.
+
+    The frontend itself now hides them (SliceHeader / SliceHeaderControls gate
+    the explore affordance on isEmbedded()) — but that only lands on the next
+    frontend build, so this keeps already-deployed images clean. It is a no-op
+    once the app stops rendering those items, and it only ever runs inside a
+    frame (an admin browsing the console directly is unaffected).
+#}
+<script nonce="{{ macros.get_nonce() }}">
+(function () {
+  if (window.parent === window || window.self === window.top) { return; }
+
+  // ⋮ menu entries that need a real Superset session. "View as table",
+  // "Download", "Force refresh", "Enter fullscreen" and the chart description
+  // all work with a guest token and are kept.
+  var DROP = ['-menu-explore_chart', '-menu-view_query', '-menu-share'];
+
+  function prune(root) {
+    if (!root || root.nodeType !== 1) { return; }
+    // A plain entry carries data-menu-id on its own <li>; a SUBMENU ("Share")
+    // carries it on the inner title div. Match either and drop the whole row.
+    var marked = root.querySelectorAll('[data-menu-id]');
+    for (var i = 0; i < marked.length; i++) {
+      var id = marked[i].getAttribute('data-menu-id') || '';
+      for (var d = 0; d < DROP.length; d++) {
+        if (id.slice(-DROP[d].length) === DROP[d]) {
+          var row = marked[i].closest
+            ? (marked[i].closest('li') || marked[i])
+            : marked[i];
+          if (row.parentNode) { row.parentNode.removeChild(row); }
+          break;
+        }
+      }
+    }
+  }
+
+  // The chart title is a router link to /explore/ while the viewer "can
+  // explore" — same dead end, so swallow the navigation.
+  document.addEventListener('click', function (e) {
+    var node = e.target;
+    while (node && node.nodeType === 1) {
+      if (node.tagName === 'A') {
+        var href = node.getAttribute('href') || '';
+        if (href.indexOf('/explore/') === 0) {
+          e.preventDefault();
+          if (e.stopImmediatePropagation) { e.stopImmediatePropagation(); }
+        }
+        return;
+      }
+      node = node.parentNode;
+    }
+  }, true);
+
+  function start() {
+    prune(document.body);
+    if (window.MutationObserver && document.body) {
+      new MutationObserver(function (records) {
+        for (var i = 0; i < records.length; i++) {
+          var added = records[i].addedNodes;
+          for (var j = 0; j < added.length; j++) { prune(added[j]); }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  if (document.body) { start(); } else { document.addEventListener('DOMContentLoaded', start); }
+})();
+</script>

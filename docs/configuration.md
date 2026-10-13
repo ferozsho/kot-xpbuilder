@@ -242,6 +242,15 @@ what the drill-to-detail modal already did with its own button. Console users
 (Admin, Alpha, or any custom role that may edit charts) keep the item, because
 they have a real session and the console is never framed.
 
+The frontend change only lands on an image built with the frontend stage, so
+`customizations/templates/tail_js_custom_extra.html` carries a second, surgical
+guard for images that were not rebuilt that way: inside a frame it removes the
+menu rows that need a session (`Edit chart`, `View query`, `Share`) and swallows
+clicks on `/explore/` links. `Download`, `View as table`, `Force refresh`,
+free fullscreen and the chart description all work with a guest token and are
+kept. The guard is a no-op once the app stops rendering those rows, so it can be
+deleted after the next full frontend build.
+
 ## Secrets
 
 The following values are secrets and must exist only in `.env`:

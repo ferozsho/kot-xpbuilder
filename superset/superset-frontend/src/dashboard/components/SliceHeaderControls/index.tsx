@@ -195,6 +195,11 @@ const SliceHeaderControls = (
   // menu and the "View as table" footer follow the same rule.
   const canExplore = !!props.supersetCanExplore && !isEmbedded();
   const { canDrillToDetail, canViewQuery, canViewTable } = usePermissions();
+  // A guest-token viewer has no Superset session, so the query inspector and the
+  // share menu are dead ends there — and "View query" would hand a report reader
+  // raw SQL. Both stay console-only, like "Edit chart" above.
+  const canInspectQuery = canViewQuery && !isEmbedded();
+  const canShareChart = supersetCanShare && !isEmbedded();
 
   const datasetResource = useDatasetDrillInfo(
     props.slice.datasource,
@@ -480,7 +485,7 @@ const SliceHeaderControls = (
     newMenuItems.push({ type: 'divider' });
   }
 
-  if (canExplore || canViewQuery) {
+  if (canExplore || canInspectQuery) {
     newMenuItems.push({
       key: MenuKeys.ViewQuery,
       label: (
@@ -557,7 +562,7 @@ const SliceHeaderControls = (
     newMenuItems.push({ type: 'divider' });
   }
 
-  if (supersetCanShare) {
+  if (canShareChart) {
     newMenuItems.push(shareMenuItems);
   }
 
