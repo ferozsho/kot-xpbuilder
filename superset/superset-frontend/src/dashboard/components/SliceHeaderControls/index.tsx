@@ -50,6 +50,7 @@ import {
 import { useShareMenuItems } from 'src/dashboard/components/menu/ShareMenuItems';
 import downloadAsImage from 'src/utils/downloadAsImage';
 import { getSliceHeaderTooltip } from 'src/dashboard/util/getSliceHeaderTooltip';
+import { isEmbedded } from 'src/dashboard/util/isEmbedded';
 import { Icons } from '@superset-ui/core/components/Icons';
 import ViewQueryModal from 'src/explore/components/controls/ViewQueryModal';
 import { ResultsPaneOnDashboard } from 'src/explore/components/DataTablesPane';
@@ -186,7 +187,13 @@ const SliceHeaderControls = (
     getChartMetadataRegistry()
       .get(props.slice.viz_type)
       ?.behaviors?.includes(Behavior.InteractiveChart);
-  const canExplore = props.supersetCanExplore;
+  // Never offer "Edit chart" from an embedded dashboard: the guest token only
+  // authenticates the REST calls the SPA makes, while /explore/ is a
+  // server-rendered page that needs a real session — the menu item just
+  // replaces the dashboard with a blank page. The drill-to-detail modal
+  // already hides its own "Edit chart" button when embedded, so the header
+  // menu and the "View as table" footer follow the same rule.
+  const canExplore = !!props.supersetCanExplore && !isEmbedded();
   const { canDrillToDetail, canViewQuery, canViewTable } = usePermissions();
 
   const datasetResource = useDatasetDrillInfo(
@@ -497,7 +504,7 @@ const SliceHeaderControls = (
       key: MenuKeys.ViewResults,
       label: (
         <ViewResultsModalTrigger
-          canExplore={props.supersetCanExplore}
+          canExplore={canExplore}
           exploreUrl={props.exploreUrl}
           triggerNode={
             <div data-test="view-query-menu-item">{t('View as table')}</div>

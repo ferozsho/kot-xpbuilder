@@ -227,6 +227,21 @@ upstream Superset grants to the **Admin** and **Alpha** roles only. Give a role
 like **Gamma** that permission explicitly if its users should be able to upload
 (see the README for the one-liner).
 
+## Embedded dashboards
+
+A dashboard rendered inside the host app's iframe authenticates with a **guest
+token**, so the viewer is a `Gamma` user with no Superset session. A guest token
+only authenticates the REST calls the SPA makes — the server-rendered
+`/explore/` page cannot be opened with one, and following an "Edit chart" link
+therefore replaced the dashboard with a **blank page**.
+
+The fork hides that affordance whenever the dashboard runs inside a frame
+(`isEmbedded()`): the `Edit chart` item in the ⋮ chart menu, the chart-title
+link, and the `Edit chart` button in the "View as table" footer. This mirrors
+what the drill-to-detail modal already did with its own button. Console users
+(Admin, Alpha, or any custom role that may edit charts) keep the item, because
+they have a real session and the console is never framed.
+
 ## Secrets
 
 The following values are secrets and must exist only in `.env`:

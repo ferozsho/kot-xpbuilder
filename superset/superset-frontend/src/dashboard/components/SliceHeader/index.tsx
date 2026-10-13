@@ -219,7 +219,14 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
               0,
           );
 
-    const canExplore = !editMode && supersetCanExplore;
+    // An embedded dashboard can never be explored: the guest token only
+    // authenticates the REST calls the SPA makes, while /explore/ is a
+    // server-rendered page that needs a real session. Following that link (the
+    // chart title) replaces the dashboard with a blank page, so the affordance
+    // is offered only where it works. The drill-to-detail modal already hides
+    // its own "Edit chart" button when embedded; this brings the chart header
+    // in line with it.
+    const canExplore = !editMode && supersetCanExplore && !isEmbedded();
     const showRowLimitWarning =
       shouldShowRowLimitWarning && sqlRowCount >= rowLimit && rowLimit > 0;
 
