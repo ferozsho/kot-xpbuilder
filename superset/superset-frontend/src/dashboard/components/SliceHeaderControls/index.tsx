@@ -199,7 +199,6 @@ const SliceHeaderControls = (
   // share menu are dead ends there — and "View query" would hand a report reader
   // raw SQL. Both stay console-only, like "Edit chart" above.
   const canInspectQuery = canViewQuery && !isEmbedded();
-  const canShareChart = supersetCanShare && !isEmbedded();
 
   const datasetResource = useDatasetDrillInfo(
     props.slice.datasource,
@@ -384,6 +383,12 @@ const SliceHeaderControls = (
     supersetCanShare = false,
     isCached = [],
   } = props;
+  // Declared AFTER the props are destructured: `supersetCanShare` is pulled out of
+  // `props` just above, so computing this next to the other `can*` flags (~180
+  // lines up) read the binding before it was initialised and threw
+  // "Cannot access 'supersetCanShare' before initialization" on every chart
+  // header — which took the whole dashboard down behind the error boundary.
+  const canShareChart = supersetCanShare && !isEmbedded();
   const isTable = slice.viz_type === VizType.Table;
   const isPivotTable = slice.viz_type === VizType.PivotTable;
   const cachedWhen = (cachedDttm || []).map(itemCachedDttm =>
