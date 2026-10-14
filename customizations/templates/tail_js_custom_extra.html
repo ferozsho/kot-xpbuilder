@@ -134,8 +134,22 @@
     });
   }
 
-  // Hook the direct (non-iframe) dashboard document.
-  if (window.location.pathname.indexOf('/superset/dashboard/') === 0) {
+  // Hook BOTH dashboard routes.
+  //
+  //   /superset/dashboard/<slug>  the console's own dashboard page
+  //   /embedded/<uuid>            the route the Moodle connector loads inside
+  //                               embed.php — i.e. every report a user opens
+  //
+  // The embedded route used to be missed: the guard above let it through, but
+  // the hook call was restricted to '/superset/dashboard/', so in the embedded
+  // dashboard a click on "Clear all" left the APPLIED data mask untouched (the
+  // button is enabled from the applied mask while the handler dispatched
+  // nothing), the filter chips stayed set and the charts kept the filtered
+  // values — the button looked dead. Forcing the mask clear below fixes it on
+  // both routes.
+  var xpClearAllPath = window.location.pathname;
+  if (xpClearAllPath.indexOf('/superset/dashboard/') === 0 ||
+      xpClearAllPath.indexOf('/embedded/') === 0) {
     hookClearAll(document);
     // Re-hook after SPA route changes / re-renders in case the document is
     // replaced or the hook flag is lost.
