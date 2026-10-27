@@ -48,6 +48,24 @@ CACHE_CONFIG = {
     'CACHE_REDIS_URL': REDIS_URL,
 }
 
+# ── SQL Lab results backend ──────────────────────────────
+# Without an explicit RESULTS_BACKEND object, SQL Lab fails every query with
+# "Results backend is not configured." (Superset only ships the None default;
+# the old sqllab file cache is no longer used). Reuse the Redis instance, on a
+# separate logical DB and key prefix so query results never collide with the
+# application cache.
+from flask_caching.backends.rediscache import RedisCache  # noqa: E402
+
+RESULTS_BACKEND = RedisCache(
+    host='superset-redis',
+    port=6379,
+    password=_required('SUPERSET_REDIS_PASSWORD'),
+    db=1,
+    default_timeout=86400,
+    key_prefix='superset_results_',
+)
+RESULTS_BACKEND_USE_MSGPACK = True
+
 # ── Celery ───────────────────────────────────────────────
 # Superset reads broker/backend from the CELERY_CONFIG class, NOT from
 # top-level CELERY_BROKER_URL / CELERY_RESULT_BACKEND. The stock default
