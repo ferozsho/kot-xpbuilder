@@ -427,7 +427,15 @@ def _build_params(
     }
 
     if kind == "columns":
-        all_columns = [label for label in report_labels if label in column_names]
+        # A table must also show the aggregated columns. The published virtual
+        # dataset already returns them (the inner report SQL aggregates), so
+        # they are plain output columns of the dataset — dropping them here
+        # published tables that silently lost every metric.
+        dimension_labels = [label for label in report_labels if label in column_names]
+        metric_labels = [
+            label for label in report_metric_labels if label and label in column_names
+        ]
+        all_columns = dimension_labels + metric_labels
         params["all_columns"] = all_columns or column_names
         params["order_by_cols"] = []
     elif kind == "metric":
