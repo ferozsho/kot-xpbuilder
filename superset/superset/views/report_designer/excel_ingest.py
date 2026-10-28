@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any
 
 from flask_babel import gettext as _
+from sqlalchemy.exc import IntegrityError
 
 from superset import db
 from superset.connectors.sqla.models import SqlaTable
@@ -115,13 +116,36 @@ def ingest_excel(
         ) from ex
 
     # Register as a Superset dataset (physical table).
-    dataset = SqlaTable(
-        database_id=database.id,
-        schema=schema,
-        table_name=clean,
-    )
-    db.session.add(dataset)
-    db.session.commit()
+    #
+    # The (database_id, schema, table_name) triple is unique, and a previous
+    # upload of the same table may already have registered it (a run that was
+    # interrupted after staging, or the Moodle sync re-sending a table). Insert
+    # is therefore attempted only when the row is absent, and a concurrent
+    # insert is adopted instead of surfacing a 400 to the client.
+    def find_dataset() -> SqlaTable | None:
+        return (
+            db.session.query(SqlaTable)
+            .filter_by(database_id=database.id, schema=schema, table_name=clean)
+            .one_or_none()
+        )
+
+    dataset = find_dataset()
+    if dataset is None:
+        dataset = SqlaTable(
+            database_id=database.id,
+            schema=schema,
+            table_name=clean,
+        )
+        db.session.add(dataset)
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            dataset = find_dataset()
+            if dataset is None:
+                raise
+    else:
+        logger.info("Reusing existing dataset %s.%s", schema, clean)
 
     try:
         dataset.fetch_metadata()
