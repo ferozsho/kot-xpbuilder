@@ -467,7 +467,7 @@ class ReportDesignerView(BaseSupersetView):
         try:
             database_id = int(request.form.get("database_id") or 0)
             table_name = request.form.get("table_name") or None
-            schema = request.form.get("schema") or None
+            schema = (request.form.get("schema") or "").replace("\n", "").replace("\r", "").strip() or None
             mode = (request.form.get("mode") or "replace").lower()
             file_storage = request.files.get("file")
             if file_storage is None:

@@ -91,6 +91,37 @@ def _staging_dtypes(df, engine) -> dict:
     return dtypes
 
 
+def _align_to_existing(df, engine, table: str, schema: str | None):
+    """Cast append data to the column types of the table already created.
+
+    Part 1 infers types from its own rows; a later part can infer something
+    different (a column with "N/A" reads as text, one with only numbers as
+    int64), which MySQL rejects with "Data truncated for column". Numeric
+    columns are coerced (bad values become NULL) and everything else is sent as
+    text, so every part matches the table it appends to.
+    """
+    import pandas as pd
+    from sqlalchemy import inspect
+
+    numeric_prefixes = ("INT", "BIGINT", "SMALLINT", "TINYINT", "MEDIUMINT",
+                        "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "REAL", "BIT")
+    try:
+        columns = inspect(engine).get_columns(table, schema=schema)
+    except Exception:  # pylint: disable=broad-except
+        return df
+
+    for column in columns:
+        name = column["name"]
+        if name not in df.columns:
+            continue
+        sqltype = str(column["type"]).upper()
+        if sqltype.startswith(numeric_prefixes):
+            df[name] = pd.to_numeric(df[name], errors="coerce")
+        else:
+            df[name] = df[name].where(df[name].notna(), "").astype(str)
+    return df
+
+
 def _read_dataframe(file_stream: Any, filename: str):
     try:
         import pandas as pd
@@ -146,6 +177,8 @@ def ingest_excel(
             # Wide text columns plus row-sized chunks: a single INSERT can then
             # neither overflow a column nor exceed max_allowed_packet, which is
             # what made a whole table fail on one oversized row.
+            if append:
+                df = _align_to_existing(df, engine, clean, schema)
             df.to_sql(
                 clean,
                 con=engine,
