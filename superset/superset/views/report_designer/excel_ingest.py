@@ -112,12 +112,20 @@ def ingest_excel(
     filename: str,
     table_name: str | None = None,
     schema: str | None = None,
+    mode: str = "replace",
 ) -> dict[str, Any]:
     """Read an uploaded spreadsheet, stage it as a table, register a dataset.
 
     The target database must be writable (the report's read replica is not).
+
+    ``mode`` is ``replace`` for a whole file (the historic behaviour) or
+    ``append`` when a large file is pushed in parts: the first part replaces the
+    table, later parts append to it. Edge proxies reject big bodies (Cloudflare
+    answers 413 above ~100 MB), so the caller splits large files itself.
+
     Returns metadata about the new dataset.
     """
+    append = str(mode).lower() == "append"
     df = _read_dataframe(file_stream, filename)
     if df is None or df.empty:
         raise IngestError(_("The uploaded file has no rows"))
@@ -141,9 +149,9 @@ def ingest_excel(
             df.to_sql(
                 clean,
                 con=engine,
-                if_exists="replace",
+                if_exists="append" if append else "replace",
                 index=False,
-                dtype=_staging_dtypes(df, engine),
+                dtype=None if append else _staging_dtypes(df, engine),
                 chunksize=500,
             )
     except Exception as ex:
@@ -167,6 +175,21 @@ def ingest_excel(
         )
 
     dataset = find_dataset()
+    if append and dataset is not None:
+        # A later part: the table and dataset already exist, only the rows were
+        # appended above.
+        try:
+            dataset.fetch_metadata()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Metadata fetch failed for appended dataset %s", clean)
+        db.session.commit()
+        return {
+            "dataset_id": dataset.id,
+            "table_name": clean,
+            "rows": int(len(df)),
+            "columns": columns,
+            "mode": "append",
+        }
     if dataset is None:
         dataset = SqlaTable(
             database_id=database.id,

@@ -468,6 +468,7 @@ class ReportDesignerView(BaseSupersetView):
             database_id = int(request.form.get("database_id") or 0)
             table_name = request.form.get("table_name") or None
             schema = request.form.get("schema") or None
+            mode = (request.form.get("mode") or "replace").lower()
             file_storage = request.files.get("file")
             if file_storage is None:
                 return json_error_response(_("No file provided"), 400)
@@ -480,6 +481,7 @@ class ReportDesignerView(BaseSupersetView):
                 file_storage.filename or "upload.xlsx",
                 table_name=table_name,
                 schema=schema,
+                mode=mode,
             )
             return self.json_response(payload, 201)
         except (IngestError, ValueError) as ex:
