@@ -58,6 +58,39 @@ def _normalize_column_name(name: str, existing: set[str]) -> str:
     return cleaned
 
 
+def _staging_dtypes(df, engine) -> dict:
+    """Column types for the staging table.
+
+    Moodle HTML/plain-text columns (``assignsubmission_onlinetext.onlinetext``,
+    forum posts, page content) routinely exceed MySQL's TEXT ceiling of 64 KB,
+    and pandas' default inference picked a type that rejected them with
+    "Data too long for column". Every textual column is therefore created as the
+    widest text type the target dialect offers.
+    """
+    from pandas.api.types import is_object_dtype, is_string_dtype
+
+    dialect = (engine.dialect.name or "").lower()
+    if dialect in ("mysql", "mariadb"):
+        from sqlalchemy.dialects.mysql import LONGTEXT
+
+        text_type = LONGTEXT()
+    elif dialect == "postgresql":
+        from sqlalchemy import Text
+
+        text_type = Text()
+    else:
+        from sqlalchemy import Text
+
+        text_type = Text()
+
+    dtypes = {}
+    for column in df.columns:
+        series = df[column]
+        if is_object_dtype(series) or is_string_dtype(series):
+            dtypes[column] = text_type
+    return dtypes
+
+
 def _read_dataframe(file_stream: Any, filename: str):
     try:
         import pandas as pd
@@ -102,12 +135,16 @@ def ingest_excel(
 
     try:
         with database.get_sqla_engine(schema=schema) as engine:
+            # Wide text columns plus row-sized chunks: a single INSERT can then
+            # neither overflow a column nor exceed max_allowed_packet, which is
+            # what made a whole table fail on one oversized row.
             df.to_sql(
                 clean,
                 con=engine,
                 if_exists="replace",
                 index=False,
-                method="multi",
+                dtype=_staging_dtypes(df, engine),
+                chunksize=500,
             )
     except Exception as ex:
         raise IngestError(
