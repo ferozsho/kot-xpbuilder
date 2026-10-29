@@ -177,17 +177,37 @@
 (function () {
   if (window.parent === window || window.self === window.top) { return; }
 
+  // Measure the DASHBOARD CONTENT, never the viewport.
+  //
+  // The app shell is `min-height: 100vh` of the host iframe, so reading
+  // documentElement.scrollHeight returns "iframe height + chrome". The host then
+  // resized the iframe to that value, the next report added the chrome again, and
+  // the frame ratcheted upward forever (seen live: 28,000px tall embeds with a
+  // huge empty area at the bottom). Taking the bottom edge of the last laid-out
+  // grid row is content-driven, so it settles instead of oscillating.
   var lastSent = 0;
+  function contentBottom() {
+    var rows = document.querySelectorAll('.grid-row, .dragdroppable-row');
+    var bottom = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var box = rows[i].getBoundingClientRect();
+      if (box.height < 1) { continue; }
+      bottom = Math.max(bottom, box.bottom + window.scrollY);
+    }
+    if (bottom > 0) {
+      return Math.ceil(bottom + 16);
+    }
+    // Nothing rendered yet: fall back to a viewport-sized guess and wait.
+    return 0;
+  }
+
   function report() {
-    var doc = document.documentElement;
-    var body = document.body;
-    var h = Math.max(
-      doc ? doc.scrollHeight : 0,
-      body ? body.scrollHeight : 0,
-      body ? body.offsetHeight : 0
-    );
+    var h = contentBottom();
     if (!h || h < 200) { return; }
-    if (Math.abs(h - lastSent) < 4) { return; }
+    // Never report more than a sane dashboard height; a larger number can only
+    // come from a mis-measure, and the host would size the frame to it.
+    if (h > 15000) { h = 15000; }
+    if (Math.abs(h - lastSent) < 8) { return; }
     lastSent = h;
     try {
       window.parent.postMessage({ type: 'xpbuilder:embed-height', height: h }, '*');
@@ -197,8 +217,11 @@
   report();
   setInterval(report, 1500);
   window.addEventListener('resize', report);
-  if (window.ResizeObserver && document.body) {
-    try { new ResizeObserver(report).observe(document.body); } catch (e) { /* ignore */ }
+  if (window.ResizeObserver) {
+    var grid = document.querySelector('.grid-content') || document.querySelector('.dashboard-content');
+    if (grid) {
+      try { new ResizeObserver(report).observe(grid); } catch (e) { /* ignore */ }
+    }
   }
 })();
 </script>
