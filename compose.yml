@@ -195,12 +195,14 @@ services:
     container_name: ${XPBUILDER_INSTANCE}_mariadb
     restart: unless-stopped
     # utf8mb4 throughout: the default for Moodle-style content and emoji. The
-    # small buffer pool and disabled performance schema keep the bundled
-    # database friendly to the memory of a shared host.
+    # buffer pool is sized for a multi-GB reporting database (128M cached under
+    # 1% of a 10 GB dataset and left the cgroup constantly reclaiming); the
+    # disabled performance schema still keeps the footprint modest. Both the
+    # pool and the cap are env-tunable so a small site can shrink them again.
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
-      - --innodb-buffer-pool-size=128M
+      - --innodb-buffer-pool-size=${XPBUILDER_MARIADB_BUFFER_POOL:-512M}
       - --performance-schema=OFF
     environment:
       MARIADB_DATABASE: ${MARIADB_DATABASE:?MARIADB_DATABASE is required}
@@ -218,7 +220,9 @@ services:
       retries: 12
       start_period: 30s
     # Hard cap: the bundled database must never starve Superset or a neighbour.
-    mem_limit: ${XPBUILDER_MARIADB_MEMORY_LIMIT:-768m}
+    # Must leave headroom above XPBUILDER_MARIADB_BUFFER_POOL (pool + per-conn
+    # buffers + page cache), so the default is 3x the default pool.
+    mem_limit: ${XPBUILDER_MARIADB_MEMORY_LIMIT:-1536m}
     networks:
       - xpbuilder-internal
 
