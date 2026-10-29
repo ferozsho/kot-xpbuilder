@@ -455,6 +455,40 @@ class ReportDesignerView(BaseSupersetView):
             logger.exception("Failed to export report to PDF")
             return json_error_response(utils.error_msg_from_exception(ex), 400)
 
+    @expose("/api/ensure_indexes/", methods=("POST",))
+    @has_access_api
+    def api_ensure_indexes(self) -> FlaskResponse:
+        """Recreate the source database's primary key and indexes on a copy.
+
+        The sync sends the definitions it read from Moodle's
+        information_schema, so a staged table keeps the access paths the
+        reports were designed against instead of being scanned in full.
+        """
+        import json
+
+        from superset.views.report_designer.excel_indexes import ensure_indexes
+
+        try:
+            payload = request.get_json(silent=True) or {}
+            database_id = int(payload.get("database_id") or request.form.get("database_id") or 0)
+            table = (payload.get("table") or request.form.get("table") or "").strip()
+            schema = (payload.get("schema") or request.form.get("schema") or "")
+            schema = schema.replace("\n", "").replace("\r", "").strip() or None
+            indexes = payload.get("indexes")
+            if indexes is None:
+                indexes = json.loads(request.form.get("indexes") or "[]")
+            database = db.session.get(Database, database_id) if database_id else None
+            if database is None:
+                return json_error_response(_("Database not found"), 400)
+            if not table:
+                return json_error_response(_("Table name is required"), 400)
+            result = ensure_indexes(database, table, schema, indexes)
+            return self.json_response(result, 200)
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Failed to index staged table")
+            return json_error_response(utils.error_msg_from_exception(ex), 400)
+
     @expose("/api/upload/", methods=("POST",))
     @has_access_api
     def api_upload(self) -> FlaskResponse:
