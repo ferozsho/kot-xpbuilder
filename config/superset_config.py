@@ -48,6 +48,18 @@ CACHE_CONFIG = {
     'CACHE_REDIS_URL': REDIS_URL,
 }
 
+# ── Chart data cache ─────────────────────────────────────
+# Superset 6 reads chart results through DATA_CACHE_CONFIG; with it unset the
+# per-chart cache_timeout is ignored and every dashboard load re-runs the SQL
+# (the heavy KEF reports took 20-50 s per dashboard because of that). Redis
+# keeps the results so a repeat view is instant until the chart timeout expires.
+DATA_CACHE_CONFIG = {
+    'CACHE_TYPE': 'RedisCache',
+    'CACHE_DEFAULT_TIMEOUT': 300,
+    'CACHE_KEY_PREFIX': 'superset_data_',
+    'CACHE_REDIS_URL': REDIS_URL,
+}
+
 # ── SQL Lab results backend ──────────────────────────────
 # Without an explicit RESULTS_BACKEND object, SQL Lab fails every query with
 # "Results backend is not configured." (Superset only ships the None default;
