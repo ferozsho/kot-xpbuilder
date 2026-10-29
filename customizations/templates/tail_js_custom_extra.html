@@ -177,6 +177,19 @@
 (function () {
   if (window.parent === window || window.self === window.top) { return; }
 
+  // The host page owns the scrolling, so the framed app must not add its own.
+  // A stray absolutely-positioned dropdown (the "17 options" select popper) sits
+  // 18px below the viewport and made documentElement.scrollHeight always
+  // "viewport + 18", which drew a 1px-wide second scrollbar next to the page's.
+  // The grid itself fits inside the height we report (its own .dashboard/
+  // .grid-container do not scroll), so clipping at the body is safe and
+  // in-panel scrolling (tables, filter lists) keeps working.
+  try {
+    var style = document.createElement('style');
+    style.appendChild(document.createTextNode('html, body { overflow: hidden !important; }'));
+    document.head.appendChild(style);
+  } catch (e) { /* ignore */ }
+
   // Measure the DASHBOARD CONTENT, never the viewport.
   //
   // The app shell is `min-height: 100vh` of the host iframe, so reading
@@ -195,7 +208,11 @@
       bottom = Math.max(bottom, box.bottom + window.scrollY);
     }
     if (bottom > 0) {
-      return Math.ceil(bottom + 16);
+      // +40 covers the grid's trailing padding/row gap (measured live: the last
+      // row ends 34px above the app's real content height), so the embedded page
+      // never needs its own scrollbar. Too small a value leaves a 1px-wide inner
+      // scrollbar next to the page scrollbar.
+      return Math.ceil(bottom + 40);
     }
     // Nothing rendered yet: fall back to a viewport-sized guess and wait.
     return 0;
