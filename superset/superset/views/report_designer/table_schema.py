@@ -59,6 +59,32 @@ EXPRESSION_DEFAULT_RE = re.compile(
     r"^(?:CURRENT_TIMESTAMP|current_timestamp)(\(\d?\))?$", re.IGNORECASE
 )
 
+#: InnoDB refuses a longer index key: MariaDB answers "Specified key was too
+#: long; max key length is 3072 bytes" (error 1071) and rejects the whole CREATE
+#: TABLE, which failed every table whose source keyed a LONGTEXT or a wide
+#: VARCHAR. Source and target need not agree here (MySQL 8 allows a bigger
+#: prefix), so every key is rebuilt to fit this budget.
+MAX_KEY_BYTES = 3072
+#: Bytes one character may occupy; the copy is always utf8mb4.
+CHARSET_BYTES = 4
+#: Prefix a TEXT/BLOB column gets when the source keyed it without one.
+TEXT_PREFIX_CHARS = 191
+#: Never shrink a prefix below this; leave the index out instead.
+MIN_PREFIX_CHARS = 32
+
+LENGTH_RE = re.compile(r"^[a-z]+\((\d+)(?:,\s*(\d+))?\)", re.IGNORECASE)
+TEXTUAL_TYPES = {
+    "tinytext",
+    "text",
+    "mediumtext",
+    "longtext",
+    "blob",
+    "tinyblob",
+    "mediumblob",
+    "longblob",
+    "json",
+}
+
 def _quote(identifier: str, dialect: str) -> str:
     """Quote one identifier for the target dialect."""
     clean = re.sub(r"[^A-Za-z0-9_]", "", identifier or "")
@@ -178,12 +204,131 @@ def _table_options(collation: str | None) -> str:
     return f"{options} COLLATE={name}"
 
 
+def _base_type(type_sql: str) -> str:
+    """Base type name of an information_schema column type."""
+    return re.split(r"[\s(]", str(type_sql or "").strip().lower(), maxsplit=1)[0]
+
+
+def _key_chars(type_sql: str) -> int | None:
+    """Characters a column can occupy in a key, or None when unbounded.
+
+    ``None`` means TEXT/BLOB/JSON: those can only be keyed through a prefix.
+    Numeric, temporal and enumerated columns are treated as a few bytes, which
+    is close enough for a budget of 3072.
+    """
+    base = _base_type(type_sql)
+    if base in TEXTUAL_TYPES:
+        return None
+    match = LENGTH_RE.match(str(type_sql or "").strip())
+    if base in ("char", "varchar", "binary", "varbinary"):
+        return int(match.group(1)) if match else 255
+    if base in ("enum", "set"):
+        return 64
+    return 8
+
+
+def _fit_key_prefixes(plan: list[list[Any]]) -> bool:
+    """Shrink prefixable plan entries until the key fits the byte budget.
+
+    ``plan`` entries are ``[column, prefix or None, bytes]`` and are edited in
+    place. Returns True when something had to be shortened.
+    """
+    overflow = sum(part[2] for part in plan) - MAX_KEY_BYTES
+    changed = False
+    for part in plan:
+        if overflow <= 0:
+            break
+        if part[1] is None:
+            continue
+        room = max(0, part[1] - MIN_PREFIX_CHARS)
+        need = min(room, -(-overflow // CHARSET_BYTES))
+        if need <= 0:
+            continue
+        part[1] -= need
+        shrunk = part[1] * CHARSET_BYTES
+        overflow -= part[2] - shrunk
+        part[2] = shrunk
+        changed = True
+    return changed
+
+
+def index_definition(spec: dict[str, Any], coltypes: dict[str, str],
+                     dialect: str) -> tuple[str, str]:
+    """One secondary index as SQL, plus a warning when it had to be changed.
+
+    A Moodle index can name a column that cannot be keyed whole: the source may
+    run MySQL 8 with a bigger prefix budget than this MariaDB, or key a LONGTEXT
+    through a prefix that the plugin now carries in ``prefixes``. Naming such a
+    column in full makes MySQL reject the entire CREATE TABLE with error 1071, so
+    the index is rebuilt to fit instead:
+
+    * a prefix the source used is kept exactly;
+    * TEXT/BLOB/JSON columns and VARCHARs wider than the budget get a prefix;
+    * prefixes are shrunk until the key fits 3072 bytes;
+    * a prefixed key is created non-unique (a prefix cannot enforce uniqueness);
+    * an index that still cannot fit is left out, with the reason returned.
+
+    Returns ``("", "")`` when the index names no column of the table.
+    """
+    names = [
+        str(name) for name in (spec.get("columns") or []) if str(name) in coltypes
+    ]
+    if not names:
+        return "", ""
+    prefixes = {
+        str(name): int(value)
+        for name, value in (spec.get("prefixes") or {}).items()
+        if str(value).isdigit() and int(value) > 0
+    }
+    label = str(spec.get("name") or names[0])
+    plan: list[list[Any]] = []
+    for name in names:
+        chars = _key_chars(coltypes[name])
+        prefix = prefixes.get(name)
+        if chars is None:
+            prefix = prefix or TEXT_PREFIX_CHARS
+            plan.append([name, prefix, prefix * CHARSET_BYTES])
+        elif prefix:
+            plan.append([name, prefix, prefix * CHARSET_BYTES])
+        else:
+            plan.append([name, None, chars * CHARSET_BYTES])
+
+    warning = ""
+    if _fit_key_prefixes(plan):
+        warning = f"index {label}: shortened to fit the {MAX_KEY_BYTES}-byte key limit"
+    if sum(part[2] for part in plan) > MAX_KEY_BYTES:
+        return "", (
+            f"index {label}: skipped, its columns exceed the "
+            f"{MAX_KEY_BYTES}-byte key limit"
+        )
+
+    unique = bool(spec.get("unique"))
+    if unique and any(part[1] for part in plan):
+        unique = False
+        note = (
+            f"index {label}: created non-unique "
+            "(a key prefix cannot enforce uniqueness)"
+        )
+        warning = f"{warning}; {note}" if warning else note
+
+    columnlist = ", ".join(
+        _quote(part[0], dialect) + (f"({part[1]})" if part[1] else "")
+        for part in plan
+    )
+    keyword = "UNIQUE KEY" if unique else "KEY"
+    return f"{keyword} {_quote(label, dialect)} ({columnlist})", warning
+
+
 def _ddl(qualified: str, columns: list[dict[str, Any]], primary: list[str],
          indexlist: list[dict[str, Any]], dialect: str, create_indexes: bool,
-         collation: str | None = None) -> str:
-    """The CREATE TABLE statement for one staging table."""
+         collation: str | None = None) -> tuple[str, list[str]]:
+    """The CREATE TABLE statement for one staging table, plus index warnings."""
     definitions = [_column_sql(column, dialect) for column in columns]
     known = {str(column.get("name")) for column in columns}
+    coltypes = {
+        str(column.get("name")): str(column.get("type")) for column in columns
+    }
+    warnings: list[str] = []
     keycolumns = [name for name in primary if name in known]
     if keycolumns:
         columnlist = ", ".join(_quote(name, dialect) for name in keycolumns)
@@ -194,20 +339,15 @@ def _ddl(qualified: str, columns: list[dict[str, Any]], primary: list[str],
                 continue
             # An index may only name columns the table has, otherwise MySQL
             # refuses the whole CREATE TABLE ("Key column doesn't exist").
-            names = [
-                str(column)
-                for column in spec.get("columns") or []
-                if str(column) in known
-            ]
-            if not names:
-                continue
-            unique = "UNIQUE " if spec.get("unique") else ""
-            columnlist = ", ".join(_quote(name, dialect) for name in names)
-            indexname = _quote(str(spec.get("name") or names[0]), dialect)
-            definitions.append(f"{unique}KEY {indexname} ({columnlist})")
+            fragment, warning = index_definition(spec, coltypes, dialect)
+            if warning:
+                warnings.append(warning)
+            if fragment:
+                definitions.append(fragment)
     body = ",\n  ".join(definitions)
     return (
-        f"CREATE TABLE {qualified} (\n  {body}\n)" + _table_options(collation)
+        f"CREATE TABLE {qualified} (\n  {body}\n)" + _table_options(collation),
+        warnings,
     )
 
 
@@ -265,16 +405,24 @@ def prepare_table(
                 "unchanged": True,
                 "columns": len(columns),
                 "indexes": 0,
+                "warnings": [],
             }
 
-        ddl = _ddl(qualified, columns, primary, indexlist, dialect, create_indexes,
-                   collation)
+        ddl, warnings = _ddl(qualified, columns, primary, indexlist, dialect,
+                             create_indexes, collation)
         dropped = existing is not None
         with engine.begin() as connection:
             if dropped:
                 connection.execute(text(f"DROP TABLE IF EXISTS {qualified}"))
             connection.execute(text(ddl))
 
+    for warning in warnings:
+        logger.warning(
+            "Prepared %s%s: %s",
+            f"{schema}." if schema else "",
+            clean,
+            warning,
+        )
     logger.info(
         "Prepared %s%s (%d columns, %d indexes, dropped=%s)",
         f"{schema}." if schema else "",
@@ -290,4 +438,5 @@ def prepare_table(
         "unchanged": False,
         "columns": len(columns),
         "indexes": secondary,
+        "warnings": warnings,
     }

@@ -34,6 +34,7 @@ from typing import Any
 from sqlalchemy import inspect, text
 
 from superset.models.core import Database
+from superset.views.report_designer.table_schema import index_definition
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,24 @@ def _quote(identifier: str, dialect: str) -> str:
     if dialect in ("mysql", "mariadb"):
         return f"`{clean}`"
     return f'"{clean}"'
+
+
+def _add_secondary_index(connection, qualified: str, spec: dict[str, Any],
+                          coltypes: dict[str, str], dialect: str,
+                          existing: set[str]) -> tuple[str, str]:
+    """Create one secondary index, key-prefix safe.
+
+    Returns ``("applied" | "skipped", note)``: ``note`` is the reason for a skip
+    or the warning of an index that had to be shortened to fit.
+    """
+    name = str(spec.get("name") or "index")
+    if name.lower() in existing:
+        return "skipped", "already present"
+    fragment, warning = index_definition(spec, coltypes, dialect)
+    if not fragment:
+        return "skipped", warning or "no such columns on the copy"
+    connection.execute(text(f"ALTER TABLE {qualified} ADD {fragment}"))
+    return "applied", warning
 
 
 def ensure_indexes(
@@ -72,7 +91,9 @@ def ensure_indexes(
     with database.get_sqla_engine(schema=schema) as engine:
         dialect = (engine.dialect.name or "").lower()
         inspector = inspect(engine)
-        columns = {column["name"] for column in inspector.get_columns(clean, schema=schema)}
+        columninfo = inspector.get_columns(clean, schema=schema)
+        columns = {column["name"] for column in columninfo}
+        coltypes = {str(column["name"]): str(column["type"]) for column in columninfo}
         existing = {
             str(index.get("name")).lower()
             for index in inspector.get_indexes(clean, schema=schema)
@@ -106,17 +127,13 @@ def ensure_indexes(
                         has_primary = True
                         continue
 
-                    if name.lower() in existing:
-                        skipped.append({"name": name, "why": "already present"})
-                        continue
-                    unique = "UNIQUE " if spec.get("unique") else ""
-                    connection.execute(
-                        text(
-                            f"ALTER TABLE {qualified} ADD {unique}"
-                            f"INDEX {_quote(name, dialect)} ({columnlist})"
-                        )
+                    outcome, note = _add_secondary_index(
+                        connection, qualified, spec, coltypes, dialect, existing
                     )
-                    applied.append(name)
+                    if outcome == "applied":
+                        applied.append(name)
+                    if note:
+                        skipped.append({"name": name, "why": note})
             except Exception as ex:  # pylint: disable=broad-except
                 failed.append({"name": name, "error": str(ex)[:200]})
 
