@@ -508,6 +508,7 @@ const DashboardBuilder = () => {
       <>
         {!hideDashboardHeader && <DashboardHeader />}
         {showFilterBar &&
+          !uiConfig.hideFilters &&
           filterBarOrientation === FilterBarOrientation.Horizontal && (
             <FilterBar
               orientation={FilterBarOrientation.Horizontal}
@@ -516,7 +517,13 @@ const DashboardBuilder = () => {
           )}
       </>
     ),
-    [hideDashboardHeader, showFilterBar, filterBarOrientation, isReport],
+    [
+      hideDashboardHeader,
+      showFilterBar,
+      filterBarOrientation,
+      isReport,
+      uiConfig.hideFilters,
+    ],
   );
 
   const renderDraggableContent = useCallback(
