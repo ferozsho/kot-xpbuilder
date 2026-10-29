@@ -92,19 +92,35 @@ def _staging_dtypes(df, engine) -> dict:
 
 
 def _align_to_existing(df, engine, table: str, schema: str | None):
-    """Cast append data to the column types of the table already created.
+    """Cast appended data to the column types of the table already created.
 
-    Part 1 infers types from its own rows; a later part can infer something
-    different (a column with "N/A" reads as text, one with only numbers as
-    int64), which MySQL rejects with "Data truncated for column". Numeric
-    columns are coerced (bad values become NULL) and everything else is sent as
-    text, so every part matches the table it appends to.
+    The table now comes from the source's own definition (see
+    :mod:`table_schema`), so every part has to match real Moodle column types
+    rather than the LONGTEXT staging types pandas would have created:
+
+    * numeric columns are coerced (an unparsable value becomes NULL instead of
+      "Data truncated for column"),
+    * date/time columns are parsed, and an empty cell becomes NULL instead of
+      the empty string MySQL rejects under strict mode,
+    * text columns keep an empty string, because that is what Moodle stores.
     """
     import pandas as pd
     from sqlalchemy import inspect
 
-    numeric_prefixes = ("INT", "BIGINT", "SMALLINT", "TINYINT", "MEDIUMINT",
-                        "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "REAL", "BIT")
+    numeric_prefixes = (
+        "INT",
+        "BIGINT",
+        "SMALLINT",
+        "TINYINT",
+        "MEDIUMINT",
+        "DECIMAL",
+        "NUMERIC",
+        "FLOAT",
+        "DOUBLE",
+        "REAL",
+        "BIT",
+    )
+    temporal_prefixes = ("DATE", "DATETIME", "TIMESTAMP", "TIME", "YEAR")
     try:
         columns = inspect(engine).get_columns(table, schema=schema)
     except Exception:  # pylint: disable=broad-except
@@ -117,8 +133,15 @@ def _align_to_existing(df, engine, table: str, schema: str | None):
         sqltype = str(column["type"]).upper()
         if sqltype.startswith(numeric_prefixes):
             df[name] = pd.to_numeric(df[name], errors="coerce")
-        else:
+        elif sqltype.startswith(temporal_prefixes):
+            df[name] = pd.to_datetime(df[name], errors="coerce")
+        elif sqltype.startswith(("CHAR", "VARCHAR", "TEXT", "TINYTEXT", "MEDIUMTEXT",
+                                 "LONGTEXT")):
             df[name] = df[name].where(df[name].notna(), "").astype(str)
+        else:
+            # enum/set/json/binary and anything else: a literal empty string is
+            # not a legal value, so an empty cell has to stay NULL.
+            df[name] = df[name].where(df[name].notna(), None)
     return df
 
 

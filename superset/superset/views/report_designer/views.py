@@ -40,7 +40,7 @@ from superset import db
 from superset.models.core import Database
 from superset.models.report_designer import ReportDesigner
 from superset.superset_typing import FlaskResponse
-from superset.utils import core as utils
+from superset.utils import core as utils, json as superset_json
 from superset.views.base import BaseSupersetView
 from superset.views.error_handling import json_error_response
 
@@ -487,6 +487,65 @@ class ReportDesignerView(BaseSupersetView):
         except Exception as ex:  # pylint: disable=broad-except
             db.session.rollback()
             logger.exception("Failed to index staged table")
+            return json_error_response(utils.error_msg_from_exception(ex), 400)
+
+    @expose("/api/prepare_table/", methods=("POST",))
+    @has_access_api
+    def api_prepare_table(self) -> FlaskResponse:
+        """Create the staging table with the source's own columns and indexes.
+
+        Called by the Moodle "Sync DB" pass *before* any rows are sent, so the
+        copy keeps Moodle's column types, primary key and secondary indexes
+        instead of pandas' guesses — and so a table that is empty on the source
+        still exists (empty) on the target instead of keeping older rows.
+        """
+        from superset.views.report_designer.table_schema import prepare_table
+
+        def as_list(payload: dict[str, Any], key: str) -> list:
+            value = payload.get(key)
+            if value is None:
+                value = request.form.get(key) or "[]"
+                if isinstance(value, str):
+                    value = superset_json.loads(value)
+            return list(value or [])
+
+        try:
+            payload = request.get_json(silent=True) or {}
+            database_id = int(
+                payload.get("database_id") or request.form.get("database_id") or 0
+            )
+            table = (payload.get("table") or request.form.get("table") or "").strip()
+            schema = (payload.get("schema") or request.form.get("schema") or "")
+            schema = schema.replace("\n", "").replace("\r", "").strip() or None
+            replace = payload.get("replace")
+            if replace is None:
+                replace = str(request.form.get("replace") or "true").lower() not in (
+                    "0",
+                    "false",
+                    "no",
+                )
+            database = db.session.get(Database, database_id) if database_id else None
+            if database is None:
+                return json_error_response(_("Database not found"), 400)
+            if not table:
+                return json_error_response(_("Table name is required"), 400)
+            result = prepare_table(
+                database,
+                table,
+                schema,
+                as_list(payload, "columns"),
+                primary_key=as_list(payload, "primary_key"),
+                indexes=as_list(payload, "indexes"),
+                replace=bool(replace),
+                collation=(payload.get("collation") or request.form.get("collation")),
+            )
+            return self.json_response(result, 200)
+        except ValueError as ex:
+            db.session.rollback()
+            return json_error_response(str(ex), 400)
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Failed to prepare staging table")
             return json_error_response(utils.error_msg_from_exception(ex), 400)
 
     @expose("/api/upload/", methods=("POST",))
