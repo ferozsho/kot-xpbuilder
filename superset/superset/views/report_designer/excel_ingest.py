@@ -91,6 +91,14 @@ def _staging_dtypes(df, engine) -> dict:
     return dtypes
 
 
+def _blank_text(series, keep_null: bool):
+    """What an empty text cell becomes: NULL for a nullable key, else ""."""
+    if keep_null:
+        blank = series.isna() | (series.astype(str).str.strip() == "")
+        return series.where(~blank, None)
+    return series.where(series.notna(), "").astype(str)
+
+
 def _align_to_existing(df, engine, table: str, schema: str | None):
     """Cast appended data to the column types of the table already created.
 
@@ -102,7 +110,13 @@ def _align_to_existing(df, engine, table: str, schema: str | None):
       "Data truncated for column"),
     * date/time columns are parsed, and an empty cell becomes NULL instead of
       the empty string MySQL rejects under strict mode,
-    * text columns keep an empty string, because that is what Moodle stores.
+    * text columns keep an empty string, because that is what Moodle stores,
+      except when the column is nullable and part of a UNIQUE index: there the
+      source's NULL has to come back as NULL, because MySQL counts two NULLs as
+      distinct but two empty strings as a duplicate. Moodle's question bank
+      (``question_bank_entries.idnumber``), ``context.idnumber`` and the
+      competency tables all rely on that, and collapsing them to "" made every
+      one of their rows collide with the next one.
     """
     import pandas as pd
     from sqlalchemy import inspect
@@ -126,6 +140,15 @@ def _align_to_existing(df, engine, table: str, schema: str | None):
     except Exception:  # pylint: disable=broad-except
         return df
 
+    # Columns where an empty cell must not become an empty string (see above).
+    unique_columns: set[str] = set()
+    try:
+        for index in inspect(engine).get_indexes(table, schema=schema):
+            if index.get("unique"):
+                unique_columns.update(index.get("column_names") or [])
+    except Exception:  # pylint: disable=broad-except
+        unique_columns = set()
+
     for column in columns:
         name = column["name"]
         if name not in df.columns:
@@ -137,7 +160,8 @@ def _align_to_existing(df, engine, table: str, schema: str | None):
             df[name] = pd.to_datetime(df[name], errors="coerce")
         elif sqltype.startswith(("CHAR", "VARCHAR", "TEXT", "TINYTEXT", "MEDIUMTEXT",
                                  "LONGTEXT")):
-            df[name] = df[name].where(df[name].notna(), "").astype(str)
+            keepnull = bool(column.get("nullable")) and name in unique_columns
+            df[name] = _blank_text(df[name], keepnull)
         else:
             # enum/set/json/binary and anything else: a literal empty string is
             # not a legal value, so an empty cell has to stay NULL.
