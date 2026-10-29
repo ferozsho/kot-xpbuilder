@@ -565,16 +565,20 @@ const DashboardBuilder = () => {
 
   const renderChild = useCallback(
     adjustedWidth => {
-      const filterBarWidth = dashboardFiltersOpen
-        ? adjustedWidth
-        : CLOSED_FILTER_BAR_WIDTH;
+      // hideFilters (embedded uiConfig bit 64) removes the filter rail entirely
+      // so the dashboard grid can use the full width.
+      const filterBarWidth = uiConfig.hideFilters
+        ? 0
+        : dashboardFiltersOpen
+          ? adjustedWidth
+          : CLOSED_FILTER_BAR_WIDTH;
       if (filterBarWidth !== currentFilterBarWidth) {
         setCurrentFilterBarWidth(filterBarWidth);
       }
       return (
         <FiltersPanel
           width={filterBarWidth}
-          hidden={isReport}
+          hidden={isReport || uiConfig.hideFilters}
           data-test="dashboard-filters-panel"
         >
           <StickyPanel ref={containerRef} width={filterBarWidth}>
@@ -600,6 +604,7 @@ const DashboardBuilder = () => {
       filterBarHeight,
       filterBarOffset,
       isReport,
+      uiConfig.hideFilters,
     ],
   );
 
