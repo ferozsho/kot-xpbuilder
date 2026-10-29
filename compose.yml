@@ -220,9 +220,10 @@ services:
       retries: 12
       start_period: 30s
     # Hard cap: the bundled database must never starve Superset or a neighbour.
-    # Must leave headroom above XPBUILDER_MARIADB_BUFFER_POOL (pool + per-conn
-    # buffers + page cache), so the default is 3x the default pool.
-    mem_limit: ${XPBUILDER_MARIADB_MEMORY_LIMIT:-1536m}
+    # Measured overhead above the pool is ~680 MB (key/Aria buffers, threads,
+    # temp tables), so the default leaves ~840 MB of headroom on top of the
+    # default 512M pool for concurrent dashboard queries.
+    mem_limit: ${XPBUILDER_MARIADB_MEMORY_LIMIT:-2g}
     networks:
       - xpbuilder-internal
 
