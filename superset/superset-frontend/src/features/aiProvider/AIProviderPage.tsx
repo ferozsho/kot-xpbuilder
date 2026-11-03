@@ -395,9 +395,9 @@ export default function AIProviderPage() {
       {
         title: t('Actions'),
         key: 'actions',
-        width: 220,
+        width: 300,
         render: (_: unknown, record: ProviderRecord) => (
-          <Space size={4} wrap>
+          <Space size={4}>
             <Button
               buttonSize="small"
               loading={testingId === record.id}
