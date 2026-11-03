@@ -395,6 +395,55 @@ def check_ai_job_wiring(compatibility: dict) -> None:
         )
 
 
+def check_ai_response_blocks(compatibility: dict) -> None:
+    """One block vocabulary must be shared by the service, the types, the renderer.
+
+    A block type the service can emit but the page cannot render is an invisible
+    answer; a renderer for a type the service never sends is dead code. Both are
+    caught here instead of in a user's transcript.
+    """
+    workspace = compatibility.get('optional_features', {}).get(
+        'ai_prompt_workspace'
+    )
+    if not isinstance(workspace, dict):
+        raise AssertionError(
+            'ai_prompt_workspace must be declared under optional_features'
+        )
+
+    blocks = workspace.get('response_blocks') or []
+    if not blocks:
+        raise AssertionError('response_blocks must be declared')
+
+    module_path = workspace.get('response_blocks_module')
+    types_path = workspace.get('response_blocks_types')
+    renderer_path = workspace.get('response_blocks_renderer')
+    for label, path in (
+        ('response_blocks_module', module_path),
+        ('response_blocks_types', types_path),
+        ('response_blocks_renderer', renderer_path),
+    ):
+        if not path:
+            raise AssertionError(f'{label} must be declared')
+
+    source = (ROOT / module_path).read_text(encoding='utf-8')
+    types_file = (ROOT / types_path).read_text(encoding='utf-8')
+    renderer = (ROOT / renderer_path).read_text(encoding='utf-8')
+    for block in blocks:
+        if f'{block.upper()} = "{block}"' not in source:
+            raise AssertionError(f'block "{block}" is missing from {module_path}')
+        if f"type: '{block}'" not in types_file:
+            raise AssertionError(f'block "{block}" is missing from {types_path}')
+        if f"case '{block}':" not in renderer:
+            raise AssertionError(f'block "{block}" has no renderer case')
+    if 'BLOCK_TYPES' not in source:
+        raise AssertionError(f'{module_path} must publish BLOCK_TYPES')
+
+    turn = (ROOT / workspace['turn']).read_text(encoding='utf-8')
+    for marker in ('responses.answer_blocks(', 'responses.clarification_blocks('):
+        if marker not in turn:
+            raise AssertionError(f'the chat turn must emit blocks via {marker})')
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -482,6 +531,8 @@ def main():
     check_ai_prompt_wiring(compatibility)
 
     check_ai_job_wiring(compatibility)
+
+    check_ai_response_blocks(compatibility)
 
     print('Compatibility contract checks passed')
 

@@ -52,6 +52,87 @@ export interface MessageUsage {
   source?: string;
 }
 
+/**
+ * Structured response blocks (P2-F06). The backend normalizes and bounds every
+ * block, so the renderer can assume the shapes below; anything else is dropped
+ * before it reaches the browser.
+ */
+export interface ClarificationBlock {
+  type: 'clarification';
+  question: string;
+}
+
+export interface PlanBlock {
+  type: 'plan';
+  title: string;
+  items: string[];
+}
+
+export interface AssumptionsBlock {
+  type: 'assumptions';
+  items: string[];
+}
+
+export interface SqlPreviewBlock {
+  type: 'sql_preview';
+  sql: string;
+  dialect: string;
+  truncated: boolean;
+}
+
+export interface ResultPreviewBlock {
+  type: 'result_preview';
+  columns: string[];
+  rows: string[][];
+  row_count: number;
+  truncated: boolean;
+}
+
+export interface DatasetProfileBlock {
+  type: 'dataset_profile';
+  table: string;
+  columns: { name: string; type: string; nullable: boolean }[];
+  row_count: number | null;
+}
+
+export interface ChartRecommendationBlock {
+  type: 'chart_recommendation';
+  chart_type: string;
+  x: string;
+  y: string[];
+  reason: string;
+}
+
+export interface DashboardProposalBlock {
+  type: 'dashboard_proposal';
+  title: string;
+  sections: { title: string; items: string[] }[];
+}
+
+export interface WarningsBlock {
+  type: 'warnings';
+  items: string[];
+}
+
+export interface RepairBlock {
+  type: 'repair';
+  outcome: 'fixed' | 'failed' | 'unchanged' | 'skipped';
+  attempts: number;
+  notes: string;
+}
+
+export type ResponseBlock =
+  | ClarificationBlock
+  | PlanBlock
+  | AssumptionsBlock
+  | SqlPreviewBlock
+  | ResultPreviewBlock
+  | DatasetProfileBlock
+  | ChartRecommendationBlock
+  | DashboardProposalBlock
+  | WarningsBlock
+  | RepairBlock;
+
 export interface MessageRecord {
   id: string;
   conversation_id: string;
@@ -67,6 +148,7 @@ export interface MessageRecord {
     pending_intent?: IntentName | null;
     intent_reasons?: string[];
     intent_confidence?: number;
+    blocks?: ResponseBlock[];
     correlation_id?: string;
     provider?: string;
     model?: string;

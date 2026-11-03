@@ -53,6 +53,21 @@
       "context_migration": "20261103_04",
       "jobs_module": "services/xp_prompt/xp_prompt/jobs.py",
       "jobs_migration": "20261103_05",
+      "response_blocks_module": "services/xp_prompt/xp_prompt/responses.py",
+      "response_blocks_types": "superset/superset-frontend/src/features/aiPrompt/types.ts",
+      "response_blocks_renderer": "superset/superset-frontend/src/features/aiPrompt/blocks.tsx",
+      "response_blocks": [
+        "clarification",
+        "plan",
+        "assumptions",
+        "sql_preview",
+        "result_preview",
+        "dataset_profile",
+        "chart_recommendation",
+        "dashboard_proposal",
+        "warnings",
+        "repair"
+      ],
       "job_types": [
         "ping"
       ],

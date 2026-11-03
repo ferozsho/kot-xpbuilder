@@ -36,6 +36,7 @@ import {
   resetContext,
   sendMessage,
 } from './api';
+import ResponseBlocks from './blocks';
 import { ConversationRecord, MessageRecord } from './types';
 
 const StyledWrapper = styled.div`
@@ -400,13 +401,13 @@ export default function AIPromptPage() {
 
       {error && (
         <Card>
-          <StyledNotice>{error}</StyledNotice>
+          <StyledNotice role="alert">{error}</StyledNotice>
         </Card>
       )}
 
       <StyledLayout>
         <Card title={t('Conversations')}>
-          {loadingList && <StyledNotice>{t('Loading…')}</StyledNotice>}
+          {loadingList && <StyledNotice role="status">{t('Loading…')}</StyledNotice>}
           {!loadingList && sortedConversations.length === 0 && (
             <StyledNotice>{t('No conversations yet.')}</StyledNotice>
           )}
@@ -449,7 +450,7 @@ export default function AIPromptPage() {
             </StyledNotice>
           )}
           {activeId && loadingThread && (
-            <StyledNotice>{t('Loading conversation…')}</StyledNotice>
+            <StyledNotice role="status">{t('Loading conversation…')}</StyledNotice>
           )}
           {activeId && !loadingThread && messages.length === 0 && (
             <StyledNotice>
@@ -483,6 +484,9 @@ export default function AIPromptPage() {
                         <Tag color="gold">{t('Needs clarification')}</Tag>
                       )}
                       <div>{message.content ?? t('(content unavailable)')}</div>
+                      {message.role === 'assistant' && (
+                        <ResponseBlocks blocks={message.structured_content?.blocks} />
+                      )}
                       {message.role === 'assistant' &&
                         message.structured_content?.model && (
                           <StyledMeta>

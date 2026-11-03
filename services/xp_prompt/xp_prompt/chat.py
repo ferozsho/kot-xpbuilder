@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from xp_prompt import conversations, intents
+from xp_prompt import conversations, intents, responses
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.types import (
@@ -140,9 +140,11 @@ def run_turn(
         context_version=current_version,
     )
 
+    has_prior_answer = _has_prior_answer(history, user_message.id)
+
     decision = intents.classify(
         content,
-        has_prior_answer=_has_prior_answer(history, user_message.id),
+        has_prior_answer=has_prior_answer,
         pending_intent=_pending_intent(history, user_message.id),
     )
     if decision.is_clarification:
@@ -216,6 +218,11 @@ def run_turn(
             "target_intent": decision.target_intent,
             "intent_reasons": list(decision.reasons),
             "intent_confidence": decision.confidence,
+            "blocks": responses.answer_blocks(
+                decision.intent,
+                content=content,
+                has_prior_answer=has_prior_answer,
+            ),
             "correlation_id": correlation_id,
             "provider": routed.response.provider,
             "model": routed.response.model,
@@ -279,6 +286,7 @@ def _clarification_turn(
             "pending_intent": decision.pending_intent,
             "target_intent": decision.target_intent,
             "intent_reasons": list(decision.reasons),
+            "blocks": responses.clarification_blocks(question),
             "correlation_id": correlation_id,
         },
     )
