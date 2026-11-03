@@ -54,6 +54,77 @@ def message(
     )
 
 
+def conversation_record(*, context_version: int = 1) -> conversations.ConversationRecord:
+    return conversations.ConversationRecord(
+        id="c-1",
+        tenant_key="default",
+        superset_user_id=1,
+        title="New chat",
+        status="active",
+        context_version=context_version,
+        last_message_at=None,
+        created_at=None,
+        updated_at=None,
+    )
+
+
+class _FakeCursor:
+    """Minimal cursor double for the reset statements."""
+
+    def __init__(self, row: dict | None) -> None:
+        self.row = row
+        self.statements: list[str] = []
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.statements.append(sql)
+
+    def fetchone(self) -> dict | None:
+        return self.row
+
+
+class _FakeConnection:
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+
+    def __enter__(self) -> "_FakeConnection":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+
+def routed_response() -> RoutedResponse:
+    return RoutedResponse(
+        response=ProviderResponse(
+            provider="gemini",
+            model="gemini-2.5-flash",
+            content="Here is the answer.",
+            finish_reason="stop",
+            request_id="req-1",
+            usage=TokenUsage(10, 0, 5, 0, 15, "reported"),
+        ),
+        attempts=(
+            AttemptSummary(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                outcome="succeeded",
+                attempt=1,
+                correlation_id="corr-1",
+                operation="chat.turn",
+            ),
+        ),
+    )
+
+
 class RedactTest(unittest.TestCase):
     def test_api_key_shape_is_removed(self) -> None:
         self.assertNotIn("AIzaSyABCDEF1234567890", conversations.redact("key AIzaSyABCDEF1234567890"))
@@ -164,26 +235,7 @@ class BuildRequestTest(unittest.TestCase):
 
 class RunTurnTest(unittest.TestCase):
     def routed(self) -> RoutedResponse:
-        return RoutedResponse(
-            response=ProviderResponse(
-                provider="gemini",
-                model="gemini-2.5-flash",
-                content="Here is the answer.",
-                finish_reason="stop",
-                request_id="req-1",
-                usage=TokenUsage(10, 0, 5, 0, 15, "reported"),
-            ),
-            attempts=(
-                AttemptSummary(
-                    provider="gemini",
-                    model="gemini-2.5-flash",
-                    outcome="succeeded",
-                    attempt=1,
-                    correlation_id="corr-1",
-                    operation="chat.turn",
-                ),
-            ),
-        )
+        return routed_response()
 
     def test_successful_turn_persists_both_messages(self) -> None:
         stored: list[dict] = []
@@ -359,6 +411,43 @@ class RunTurnTest(unittest.TestCase):
         self.assertEqual(structure["kind"], "clarification")
         self.assertEqual(structure["pending_intent"], "chart")
 
+    def test_a_clarification_is_not_an_answer_to_modify(self) -> None:
+        stored: list[dict] = []
+        resolve = mock.Mock()
+        clarification = conversations.MessageRecord(
+            id="m-2",
+            conversation_id="c-1",
+            role="assistant",
+            content=intents.NO_SIGNAL_QUESTION,
+            structured_content={"kind": "clarification"},
+            created_at=datetime(2026, 11, 3, tzinfo=timezone.utc),
+        )
+
+        with mock.patch.object(conversations, "get_conversation", return_value=object()), \
+             mock.patch.object(
+                 conversations,
+                 "append_message",
+                 side_effect=lambda *args, **kwargs: stored.append(kwargs) or message(),
+             ), \
+             mock.patch.object(
+                 conversations,
+                 "list_messages",
+                 return_value=[clarification, message(id="m-3", content="make it a line chart")],
+             ), \
+             mock.patch.object(chat.registry, "resolve_router", resolve):
+            turn = chat.run_turn(
+                settings(),
+                conversation_id="c-1",
+                tenant_key="default",
+                superset_user_id=1,
+                content="make it a line chart",
+            )
+
+        resolve.assert_not_called()
+        self.assertTrue(turn.clarification)
+        self.assertEqual(turn.target_intent, "chart")
+        self.assertEqual(stored[1]["structured_content"]["pending_intent"], "chart")
+
     def test_follow_up_reply_reuses_the_parked_intent(self) -> None:
         stored: list[dict] = []
         router = mock.Mock()
@@ -399,6 +488,117 @@ class RunTurnTest(unittest.TestCase):
         self.assertEqual(turn.intent, "chart")
         system_prompt = router.generate.call_args[0][0].messages[0].content
         self.assertIn("chart", system_prompt)
+
+
+class ContextVersionTest(unittest.TestCase):
+    def test_stale_version_is_rejected_before_anything_is_written(self) -> None:
+        append = mock.Mock()
+        resolve = mock.Mock()
+        with mock.patch.object(
+            conversations,
+            "get_conversation",
+            return_value=conversation_record(context_version=2),
+        ), \
+             mock.patch.object(conversations, "append_message", append), \
+             mock.patch.object(chat.registry, "resolve_router", resolve):
+            with self.assertRaises(conversations.ContextVersionConflict):
+                chat.run_turn(
+                    settings(),
+                    conversation_id="c-1",
+                    tenant_key="default",
+                    superset_user_id=1,
+                    content="show monthly enrollment trends",
+                    expected_context_version=1,
+                )
+
+        append.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_history_is_scoped_to_the_current_context_version(self) -> None:
+        router = mock.Mock()
+        router.generate.return_value = routed_response()
+        list_messages = mock.Mock(return_value=[message(id="m-1")])
+
+        with mock.patch.object(
+            conversations,
+            "get_conversation",
+            return_value=conversation_record(context_version=3),
+        ), \
+             mock.patch.object(
+                 conversations,
+                 "append_message",
+                 return_value=message(),
+             ), \
+             mock.patch.object(conversations, "list_messages", list_messages), \
+             mock.patch.object(chat.registry, "resolve_router", return_value=router):
+            chat.run_turn(
+                settings(),
+                conversation_id="c-1",
+                tenant_key="default",
+                superset_user_id=1,
+                content="show monthly enrollment trends",
+                expected_context_version=3,
+            )
+
+        self.assertEqual(list_messages.call_args.kwargs["context_version"], 3)
+
+    def test_reset_bumps_the_version_and_keeps_the_transcript(self) -> None:
+        cursor = _FakeCursor({"context_version": 2})
+
+        with mock.patch.object(conversations, "connect", return_value=_FakeConnection(cursor)), \
+             mock.patch.object(
+                 conversations,
+                 "get_conversation",
+                 side_effect=[
+                     conversation_record(context_version=1),
+                     conversation_record(context_version=2),
+                 ],
+             ):
+            record = conversations.reset_context(
+                settings(),
+                "c-1",
+                tenant_key="default",
+                superset_user_id=1,
+                expected_version=1,
+            )
+
+        self.assertEqual(record.context_version, 2)
+        self.assertEqual(len(cursor.statements), 1)
+        self.assertIn("context_version = c.context_version + 1", cursor.statements[0])
+        self.assertNotIn("DELETE", cursor.statements[0])
+
+    def test_reset_with_a_stale_expected_version_is_rejected(self) -> None:
+        connect = mock.Mock()
+
+        with mock.patch.object(conversations, "connect", connect), \
+             mock.patch.object(
+                 conversations,
+                 "get_conversation",
+                 return_value=conversation_record(context_version=4),
+             ):
+            with self.assertRaises(conversations.ContextVersionConflict):
+                conversations.reset_context(
+                    settings(),
+                    "c-1",
+                    tenant_key="default",
+                    superset_user_id=1,
+                    expected_version=3,
+                )
+
+        connect.assert_not_called()
+
+    def test_public_message_dict_carries_the_generation(self) -> None:
+        record = conversations.MessageRecord(
+            id="m-9",
+            conversation_id="c-1",
+            role="assistant",
+            content="hi",
+            structured_content={},
+            created_at=None,
+            context_version=2,
+        )
+
+        self.assertEqual(record.to_public_dict()["context_version"], 2)
 
 
 if __name__ == "__main__":

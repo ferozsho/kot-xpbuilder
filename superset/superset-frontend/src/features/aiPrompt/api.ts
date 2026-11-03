@@ -19,6 +19,7 @@
 import { SupersetClient } from '@superset-ui/core';
 import {
   ChatTurnResponse,
+  ContextResetResponse,
   ConversationDetailResponse,
   ConversationListResponse,
   ConversationRecord,
@@ -75,15 +76,32 @@ export async function fetchConversation(
   return json as ConversationDetailResponse;
 }
 
+/**
+ * Send one turn. `contextVersion` is the generation the client has rendered:
+ * the server answers `409` when the context was reset in the meantime instead
+ * of answering from history the user has not seen.
+ */
 export async function sendMessage(
   id: string,
   content: string,
+  contextVersion?: number,
 ): Promise<ChatTurnResponse> {
   const { json } = await SupersetClient.post({
     endpoint: `${BASE}/conversations/${id}/messages/`,
-    jsonPayload: { content },
+    jsonPayload: { content, context_version: contextVersion },
   });
   return json as ChatTurnResponse;
+}
+
+export async function resetContext(
+  id: string,
+  contextVersion?: number,
+): Promise<ContextResetResponse> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/conversations/${id}/reset-context/`,
+    jsonPayload: { context_version: contextVersion },
+  });
+  return json as ContextResetResponse;
 }
 
 export async function archiveConversation(id: string): Promise<void> {

@@ -96,8 +96,15 @@ def run_turn(
     tenant_key: str,
     superset_user_id: int,
     content: str,
+    expected_context_version: int | None = None,
 ) -> ChatTurn:
-    """Persist the question, answer it with the routed provider, persist the answer."""
+    """Persist the question, answer it with the routed provider, persist the answer.
+
+    ``expected_context_version`` is the version the caller prepared against. A
+    mismatch means the context was reset (or replaced) since the client loaded
+    the conversation, so the turn is rejected rather than answered from a
+    history the caller has not seen.
+    """
     conversation = conversations.get_conversation(
         settings,
         conversation_id,
@@ -106,6 +113,14 @@ def run_turn(
     )
     if conversation is None:
         raise conversations.ConversationNotFound("conversation not found")
+    current_version = _current_context_version(conversation)
+    if (
+        expected_context_version is not None
+        and int(expected_context_version) != current_version
+    ):
+        raise conversations.ContextVersionConflict(
+            "conversation context changed; reload the conversation"
+        )
 
     user_message = conversations.append_message(
         settings,
@@ -122,6 +137,7 @@ def run_turn(
         tenant_key=tenant_key,
         superset_user_id=superset_user_id,
         limit=MAX_HISTORY_MESSAGES,
+        context_version=current_version,
     )
 
     decision = intents.classify(
@@ -289,17 +305,32 @@ def _clarification_turn(
     )
 
 
+def _current_context_version(conversation: Any) -> int:
+    """Context generation of a loaded conversation, ``1`` when it carries none.
+
+    A store record always has the column; the fallback only keeps a partially
+    constructed record (a test double, or a future read model) usable.
+    """
+    return int(getattr(conversation, "context_version", 1) or 1)
+
+
 def _has_prior_answer(
     history: list["conversations.MessageRecord"],
     current_user_message_id: str,
 ) -> bool:
-    """Does this conversation already hold an assistant turn to modify?"""
+    """Does this conversation already hold an assistant turn to modify?
+
+    A stored error or a clarification question is not material anyone can
+    change: only a real answer makes "make it a line chart" meaningful. Live
+    verification caught this — after one ambiguous message, "make it a line
+    chart" was routed to a modification of the router's own question.
+    """
     for record in history:
         if record.id == current_user_message_id:
             continue
         if record.role != "assistant" or not (record.content or "").strip():
             continue
-        if record.structured_content.get("kind") == "error":
+        if record.structured_content.get("kind") in {"error", "clarification"}:
             continue
         return True
     return False

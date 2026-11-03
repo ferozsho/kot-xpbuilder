@@ -45,6 +45,14 @@ class ConversationInputError(ValueError):
     """A rejected conversation or message payload (safe to return to the UI)."""
 
 
+class ContextVersionConflict(RuntimeError):
+    """The caller's context version is stale; it must reload the conversation.
+
+    Raised instead of silently replaying a context the caller has not seen, so a
+    reset performed in another tab can never be undone by a slow request.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ConversationRecord:
     id: str
@@ -79,6 +87,9 @@ class MessageRecord:
     content: str | None
     structured_content: dict[str, Any]
     created_at: datetime | None
+    #: Context version this message belongs to; only the conversation's current
+    #: version is replayed to a provider.
+    context_version: int = 1
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +98,7 @@ class MessageRecord:
             "role": self.role,
             "content": self.content,
             "structured_content": dict(self.structured_content),
+            "context_version": self.context_version,
             "created_at": _isoformat(self.created_at),
         }
 
@@ -189,8 +201,14 @@ def list_messages(
     tenant_key: str,
     superset_user_id: int,
     limit: int = 50,
+    context_version: int | None = None,
 ) -> list[MessageRecord]:
-    """Messages of one conversation in creation order."""
+    """Messages of one conversation in creation order.
+
+    ``context_version`` restricts the result to one context generation: the turn
+    passes the conversation's current version, so messages from before an
+    explicit reset stay stored (and visible) without being replayed to a model.
+    """
     bounded_limit = max(1, min(int(limit), 200))
     with connect(settings) as connection:
         with connection.cursor() as cursor:
@@ -203,10 +221,18 @@ def list_messages(
                 WHERE m.conversation_id = %s
                   AND t.key = %s
                   AND c.superset_user_id = %s
+                  AND (%s::int IS NULL OR m.context_version = %s)
                 ORDER BY m.created_at ASC
                 LIMIT %s
                 """,
-                (conversation_id, tenant_key, superset_user_id, bounded_limit),
+                (
+                    conversation_id,
+                    tenant_key,
+                    superset_user_id,
+                    context_version,
+                    context_version,
+                    bounded_limit,
+                ),
             )
             rows = cursor.fetchall()
     return [_message_from_row(row, settings) for row in rows]
@@ -242,7 +268,7 @@ def append_message(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT c.id, c.tenant_id
+                SELECT c.id, c.tenant_id, c.context_version
                 FROM ai_conversation c
                 JOIN ai_tenant t ON t.id = c.tenant_id
                 WHERE c.id = %s
@@ -256,14 +282,16 @@ def append_message(
             if row is None:
                 raise ConversationNotFound("conversation not found")
             tenant_id = row["tenant_id"]
+            context_version = int(row.get("context_version") or 1)
 
             cursor.execute(
                 """
                 INSERT INTO ai_message (
                     tenant_id, conversation_id, role, content_ciphertext,
-                    content_hash, redacted_excerpt, structured_content
+                    content_hash, redacted_excerpt, structured_content,
+                    context_version
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -274,6 +302,7 @@ def append_message(
                     _content_hash(text),
                     redact(text),
                     _json(structured_content or {}),
+                    context_version,
                 ),
             )
             message_id = str(cursor.fetchone()["id"])
@@ -293,7 +322,71 @@ def append_message(
         content=text,
         structured_content=dict(structured_content or {}),
         created_at=None,
+        context_version=context_version,
     )
+
+
+def reset_context(
+    settings: Settings,
+    conversation_id: str,
+    *,
+    tenant_key: str,
+    superset_user_id: int,
+    expected_version: int | None = None,
+) -> ConversationRecord:
+    """Start a fresh context generation without deleting the transcript.
+
+    The version bump is conditional on ``expected_version`` (when supplied), so
+    a request prepared against a context that has since been reset is rejected
+    with :class:`ContextVersionConflict` instead of silently resetting again.
+    Older messages stay stored and visible; the turn stops replaying them.
+    """
+    record = get_conversation(
+        settings,
+        conversation_id,
+        tenant_key=tenant_key,
+        superset_user_id=superset_user_id,
+    )
+    if record is None:
+        raise ConversationNotFound("conversation not found")
+    if expected_version is not None and int(expected_version) != record.context_version:
+        raise ContextVersionConflict(
+            "conversation context changed; reload the conversation"
+        )
+
+    with connect(settings) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ai_conversation c
+                SET context_version = c.context_version + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                FROM ai_tenant t
+                WHERE c.tenant_id = t.id
+                  AND t.key = %s
+                  AND c.id = %s
+                  AND c.superset_user_id = %s
+                  AND c.deleted_at IS NULL
+                  AND c.context_version = %s
+                RETURNING c.context_version
+                """,
+                (tenant_key, conversation_id, record.superset_user_id, record.context_version),
+            )
+            row = cursor.fetchone()
+    if row is None:  # pragma: no cover - only reachable under a concurrent reset
+        raise ContextVersionConflict(
+            "conversation context changed; reload the conversation"
+        )
+
+    refreshed = get_conversation(
+        settings,
+        conversation_id,
+        tenant_key=tenant_key,
+        superset_user_id=superset_user_id,
+    )
+    if refreshed is None:  # pragma: no cover - defensive
+        raise ConversationNotFound("conversation not found")
+    return refreshed
 
 
 def archive_conversation(
@@ -406,6 +499,7 @@ def _message_from_row(row: dict[str, Any], settings: Settings) -> MessageRecord:
         content=content,
         structured_content=dict(structured) if isinstance(structured, dict) else {},
         created_at=row.get("created_at"),
+        context_version=int(row.get("context_version") or 1),
     )
 
 

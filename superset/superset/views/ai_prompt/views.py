@@ -117,6 +117,24 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    @expose("/api/conversations/<conversation_id>/reset-context/", methods=("POST",))
+    @has_access_api
+    def api_conversation_reset_context(self, conversation_id: str) -> FlaskResponse:
+        """Start a fresh context generation, keeping the visible transcript."""
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        payload["superset_user_id"] = owner
+        status, body = call_xp_prompt(
+            "POST",
+            f"/ai/conversations/{conversation_id}/context/reset",
+            payload=payload,
+        )
+        return self.json_response(body, status)
+
     @expose("/api/conversations/<conversation_id>/archive/", methods=("POST",))
     @has_access_api
     def api_conversation_archive(self, conversation_id: str) -> FlaskResponse:

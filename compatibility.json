@@ -50,6 +50,7 @@
         "clarification"
       ],
       "permission_script": "docker/ensure_ai_prompt_permissions.py",
+      "context_migration": "20261103_04",
       "roles": [
         "Admin",
         "Alpha",

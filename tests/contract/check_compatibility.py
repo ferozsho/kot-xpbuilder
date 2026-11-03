@@ -249,6 +249,44 @@ def check_ai_prompt_wiring(compatibility: dict) -> None:
             'a clarification turn must be stored with kind=clarification'
         )
 
+    # Explicit context reset (P2-F03): the transcript is kept, the replay is
+    # scoped by generation, and the client must be able to reset it.
+    if 'context_version=current_version' not in turn:
+        raise AssertionError(
+            'the chat turn must replay only the current context generation'
+        )
+    if 'm.context_version = %s' not in store:
+        raise AssertionError(
+            'list_messages must be able to scope by context_version'
+        )
+    if 'context_version = c.context_version + 1' not in store:
+        raise AssertionError(
+            'reset_context must bump the generation instead of deleting messages'
+        )
+    if 'DELETE' in store.split('def reset_context', 1)[-1].split('def ', 1)[0]:
+        raise AssertionError('reset_context must not delete the transcript')
+
+    service = (ROOT / workspace['service']).read_text(encoding='utf-8')
+    if '/context/reset' not in service:
+        raise AssertionError(
+            'the XP Prompt service must expose the context reset endpoint'
+        )
+    if 'reset-context' not in proxy_view:
+        raise AssertionError(
+            'the XP Prompt proxy must expose the context reset route'
+        )
+
+    context_migration = workspace.get('context_migration')
+    if not context_migration:
+        raise AssertionError(
+            'ai_prompt_workspace.context_migration must be declared'
+        )
+    versions = ROOT / 'services' / 'xp_prompt' / 'migrations' / 'versions'
+    if not list(versions.glob(f'{context_migration}_*.py')):
+        raise AssertionError(
+            'context_migration must name an existing XP Prompt migration'
+        )
+
     initialize = (ROOT / 'docker' / 'initialize.sh').read_text(encoding='utf-8')
     script_name = workspace['permission_script'].rsplit('/', 1)[-1]
     if script_name not in initialize:

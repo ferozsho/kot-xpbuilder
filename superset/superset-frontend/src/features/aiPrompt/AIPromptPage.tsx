@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '@apache-superset/core/translation';
 import { styled } from '@apache-superset/core/theme';
 import {
@@ -33,6 +33,7 @@ import {
   describeError,
   fetchConversation,
   fetchConversations,
+  resetContext,
   sendMessage,
 } from './api';
 import { ConversationRecord, MessageRecord } from './types';
@@ -180,6 +181,17 @@ const StyledNotice = styled.div`
   `}
 `;
 
+const StyledContextDivider = styled.div`
+  ${({ theme }) => `
+    align-self: stretch;
+    text-align: center;
+    color: ${theme.colorTextSecondary};
+    font-size: ${theme.fontSizeSM}px;
+    border-top: 1px dashed ${theme.colorBorder};
+    padding-top: ${theme.sizeUnit * 2}px;
+  `}
+`;
+
 const isAssistantError = (message: MessageRecord) =>
   message.structured_content?.kind === 'error';
 
@@ -198,6 +210,10 @@ export default function AIPromptPage() {
   const [loadingList, setLoadingList] = useState(true);
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  //: Generation the rendered thread belongs to. Sent with every turn so the
+  //: server can reject a context that was reset elsewhere.
+  const [contextVersion, setContextVersion] = useState<number | undefined>();
   const [error, setError] = useState<string | null>(null);
   const threadEnd = useRef<HTMLDivElement | null>(null);
 
@@ -220,6 +236,7 @@ export default function AIPromptPage() {
     try {
       const detail = await fetchConversation(id);
       setMessages(detail.messages ?? []);
+      setContextVersion(detail.conversation?.context_version);
       setError(null);
     } catch (caught) {
       setError(await describeError(caught));
@@ -242,6 +259,7 @@ export default function AIPromptPage() {
       const created = await createConversation();
       setConversations(current => [created, ...current]);
       setActiveId(created.id);
+      setContextVersion(created.context_version);
       setMessages([]);
       setError(null);
     } catch (caught) {
@@ -280,6 +298,7 @@ export default function AIPromptPage() {
         setConversations(current => [created, ...current]);
         setActiveId(created.id);
         conversationId = created.id;
+        setContextVersion(created.context_version);
       }
       // Show the question immediately; the server is the source of truth once
       // the turn returns.
@@ -295,7 +314,7 @@ export default function AIPromptPage() {
         },
       ]);
       setDraft('');
-      const turn = await sendMessage(conversationId, content);
+      const turn = await sendMessage(conversationId, content, contextVersion);
       const detail = await fetchConversation(conversationId);
       setMessages(detail.messages ?? []);
       setConversations(current =>
@@ -313,10 +332,12 @@ export default function AIPromptPage() {
     } catch (caught) {
       setError(await describeError(caught));
       if (conversationId) {
-        // Keep the stored transcript authoritative after a failed turn.
+        // Keep the stored transcript authoritative after a failed turn; this is
+        // also how a stale-version rejection (409) refreshes the generation.
         try {
           const detail = await fetchConversation(conversationId);
           setMessages(detail.messages ?? []);
+          setContextVersion(detail.conversation?.context_version);
         } catch {
           // the toast below already explains the failure
         }
@@ -324,7 +345,7 @@ export default function AIPromptPage() {
     } finally {
       setSending(false);
     }
-  }, [activeId, addSuccessToast, draft, sending]);
+  }, [activeId, addSuccessToast, contextVersion, draft, sending]);
 
   const sortedConversations = useMemo(
     () =>
@@ -335,6 +356,25 @@ export default function AIPromptPage() {
       ),
     [conversations],
   );
+
+  /** Drop the replayed context without deleting the visible transcript. */
+  const resetThreadContext = useCallback(async () => {
+    if (!activeId || sending || resetting) {
+      return;
+    }
+    setResetting(true);
+    try {
+      const response = await resetContext(activeId, contextVersion);
+      setContextVersion(response.context_version);
+      const detail = await fetchConversation(activeId);
+      setMessages(detail.messages ?? []);
+      addSuccessToast(t('Context reset for this conversation'));
+    } catch (caught) {
+      addDangerToast(await describeError(caught));
+    } finally {
+      setResetting(false);
+    }
+  }, [activeId, addDangerToast, addSuccessToast, contextVersion, resetting, sending]);
 
   return (
     <StyledWrapper>
@@ -418,36 +458,51 @@ export default function AIPromptPage() {
           )}
           {activeId && !loadingThread && messages.length > 0 && (
             <StyledThread>
-              {messages.map(message => (
-                <StyledBubble
-                  key={message.id}
-                  $role={message.role === 'user' ? 'user' : 'assistant'}
-                >
-                  {isAssistantError(message) && (
-                    <Tag color="red">{t('Provider error')}</Tag>
-                  )}
-                  {isClarification(message) && (
-                    <Tag color="gold">{t('Needs clarification')}</Tag>
-                  )}
-                  <div>{message.content ?? t('(content unavailable)')}</div>
-                  {message.role === 'assistant' &&
-                    message.structured_content?.model && (
-                      <StyledMeta>
-                        {message.structured_content.intent
-                          ? `${intentLabel(message.structured_content.intent)} · `
-                          : ''}
-                        {message.structured_content.provider}{' '}
-                        {message.structured_content.model}
-                        {message.structured_content.usage?.total_tokens
-                          ? ` · ${message.structured_content.usage.total_tokens} ${t('tokens')}`
-                          : ''}
-                        {message.structured_content.correlation_id
-                          ? ` · ${message.structured_content.correlation_id.slice(0, 8)}`
-                          : ''}
-                      </StyledMeta>
+              {messages.map((message, index) => {
+                // A version change marks an explicit reset: everything above it
+                // stays readable but is no longer sent to the AI.
+                const contextChanged =
+                  index > 0 &&
+                  message.context_version !== undefined &&
+                  message.context_version !==
+                    messages[index - 1].context_version;
+                return (
+                  <Fragment key={message.id}>
+                    {contextChanged && (
+                      <StyledContextDivider>
+                        {t(
+                          'Context reset — earlier messages are no longer sent to the AI.',
+                        )}
+                      </StyledContextDivider>
                     )}
-                </StyledBubble>
-              ))}
+                    <StyledBubble $role={message.role === 'user' ? 'user' : 'assistant'}>
+                      {isAssistantError(message) && (
+                        <Tag color="red">{t('Provider error')}</Tag>
+                      )}
+                      {isClarification(message) && (
+                        <Tag color="gold">{t('Needs clarification')}</Tag>
+                      )}
+                      <div>{message.content ?? t('(content unavailable)')}</div>
+                      {message.role === 'assistant' &&
+                        message.structured_content?.model && (
+                          <StyledMeta>
+                            {message.structured_content.intent
+                              ? `${intentLabel(message.structured_content.intent)} · `
+                              : ''}
+                            {message.structured_content.provider}{' '}
+                            {message.structured_content.model}
+                            {message.structured_content.usage?.total_tokens
+                              ? ` · ${message.structured_content.usage.total_tokens} ${t('tokens')}`
+                              : ''}
+                            {message.structured_content.correlation_id
+                              ? ` · ${message.structured_content.correlation_id.slice(0, 8)}`
+                              : ''}
+                          </StyledMeta>
+                        )}
+                    </StyledBubble>
+                  </Fragment>
+                );
+              })}
               <div ref={threadEnd} />
             </StyledThread>
           )}
@@ -473,6 +528,21 @@ export default function AIPromptPage() {
               >
                 {t('Send')}
               </Button>
+              <Tooltip
+                title={t(
+                  'Start a fresh context. The transcript stays visible; earlier ' +
+                    'messages are no longer sent to the AI.',
+                )}
+              >
+                <Button
+                  buttonStyle="tertiary"
+                  loading={resetting}
+                  disabled={!activeId || sending}
+                  onClick={resetThreadContext}
+                >
+                  {t('Reset context')}
+                </Button>
+              </Tooltip>
               <StyledMeta>
                 {t('Ctrl/Cmd + Enter to send. Answers use the default AI provider.')}
               </StyledMeta>

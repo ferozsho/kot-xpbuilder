@@ -57,6 +57,9 @@ export interface MessageRecord {
   conversation_id: string;
   role: MessageRole;
   content: string | null;
+  //: Generation this message belongs to; only the conversation's current one
+  //: is replayed to the AI. A change marks an explicit context reset.
+  context_version?: number;
   structured_content: {
     kind?: 'answer' | 'error' | 'clarification';
     intent?: IntentName;
@@ -84,6 +87,11 @@ export interface ConversationListResponse {
 export interface ConversationDetailResponse {
   conversation: ConversationRecord;
   messages: MessageRecord[];
+}
+
+export interface ContextResetResponse {
+  conversation: ConversationRecord;
+  context_version: number;
 }
 
 export interface ChatTurnResponse {

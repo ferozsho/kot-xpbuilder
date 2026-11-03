@@ -133,6 +133,25 @@ def create_app(settings: Settings | None = None) -> Flask:
         except (TypeError, ValueError):
             return None
 
+    def _context_version(payload: dict[str, Any] | None) -> int | None | bool:
+        """Parse the optional version check; ``False`` marks a bad value.
+
+        ``False`` is used as the sentinel because ``int`` values are truthy and
+        ``None``/0 are legitimate answers from this helper's perspective.
+        """
+        raw: Any = None
+        if payload is not None:
+            raw = payload.get("context_version")
+        if raw in (None, ""):
+            raw = request.args.get("context_version")
+        if raw in (None, ""):
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return False
+        return value if value > 0 else False
+
     @app.post("/ai/conversations")
     @require_admin_token
     def conversation_create():
@@ -237,6 +256,9 @@ def create_app(settings: Settings | None = None) -> Flask:
         content = str(payload.get("content") or "").strip()
         if not content:
             return _admin_error("content is required", 400)
+        expected_version = _context_version(payload)
+        if expected_version is False:  # sentinel: present but not an integer
+            return _admin_error("context_version must be an integer", 400)
         try:
             turn = chat.run_turn(
                 resolved_settings,
@@ -244,9 +266,14 @@ def create_app(settings: Settings | None = None) -> Flask:
                 tenant_key=tenant_key,
                 superset_user_id=owner,
                 content=content,
+                expected_context_version=expected_version,
             )
         except conversations.ConversationNotFound:
             return _admin_error("Conversation not found", 404)
+        except conversations.ContextVersionConflict:
+            return _admin_error(
+                "Conversation context changed; reload the conversation", 409
+            )
         except conversations.ConversationInputError as exc:
             return _admin_error(str(exc), 400)
         except chat.ChatError as exc:
@@ -268,6 +295,46 @@ def create_app(settings: Settings | None = None) -> Flask:
                     "intent_reasons": list(turn.intent_reasons),
                     "usage": turn.usage,
                     "attempts": list(turn.attempts),
+                }
+            ),
+            200,
+        )
+
+    @app.post("/ai/conversations/<conversation_id>/context/reset")
+    @require_admin_token
+    def conversation_context_reset(conversation_id: str):
+        """Start a fresh context generation; the transcript itself is kept."""
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        expected_version = _context_version(payload)
+        if expected_version is False:
+            return _admin_error("context_version must be an integer", 400)
+        try:
+            record = conversations.reset_context(
+                resolved_settings,
+                conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                expected_version=expected_version,
+            )
+        except conversations.ConversationNotFound:
+            return _admin_error("Conversation not found", 404)
+        except conversations.ContextVersionConflict:
+            return _admin_error(
+                "Conversation context changed; reload the conversation", 409
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not reset context ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {
+                    "conversation": record.to_public_dict(),
+                    "context_version": record.context_version,
                 }
             ),
             200,
