@@ -51,6 +51,19 @@
       ],
       "permission_script": "docker/ensure_ai_prompt_permissions.py",
       "context_migration": "20261103_04",
+      "jobs_module": "services/xp_prompt/xp_prompt/jobs.py",
+      "jobs_migration": "20261103_05",
+      "job_types": [
+        "ping"
+      ],
+      "job_statuses": [
+        "queued",
+        "running",
+        "clarification",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
       "roles": [
         "Admin",
         "Alpha",

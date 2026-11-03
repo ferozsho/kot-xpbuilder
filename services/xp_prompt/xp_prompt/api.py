@@ -22,7 +22,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from xp_prompt import __version__, chat, conversations
+from xp_prompt import __version__, chat, conversations, jobs
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
@@ -362,6 +362,161 @@ def create_app(settings: Settings | None = None) -> Flask:
         if not archived:
             return _admin_error("Conversation not found", 404)
         return jsonify({"archived": True}), 200
+
+    # --- Jobs (P2-F05) -------------------------------------------------
+
+    def _enqueue_job(job_id: str) -> None:
+        """Hand a queued job to Celery; the database remains the queue state."""
+        try:
+            from xp_prompt.tasks import run_job
+
+            run_job.delay(job_id)
+        except Exception:  # pragma: no cover - broker outage is recoverable
+            logger.warning(
+                "Could not enqueue job %s; the recovery sweep will pick it up",
+                job_id,
+                exc_info=True,
+            )
+
+    @app.post("/ai/jobs")
+    @require_admin_token
+    def job_create():
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("conversation_id must be a UUID", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        request_payload = payload.get("request")
+        steps = payload.get("steps") or ()
+        if not isinstance(steps, list | tuple):
+            return _admin_error("steps must be a list", 400)
+        job_context_version = _context_version(payload)
+        if job_context_version is False:
+            return _admin_error("context_version must be an integer", 400)
+        try:
+            record = jobs.create_job(
+                resolved_settings,
+                conversation_id=conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                job_type=str(payload.get("job_type") or ""),
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+                request=request_payload if isinstance(request_payload, dict) else {},
+                steps=tuple(str(step) for step in steps),
+                context_version=job_context_version or 1,
+                max_attempts=payload.get("max_attempts") or jobs.DEFAULT_MAX_ATTEMPTS,
+            )
+        except jobs.JobIdempotencyConflict:
+            return _admin_error(
+                "idempotency_key was already used for a different request", 409
+            )
+        except jobs.JobInputError as exc:
+            return _admin_error(str(exc), 400)
+        except jobs.JobNotFound:
+            return _admin_error("Conversation not found", 404)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not create job ({_error_class(exc)})", 503)
+        if not record.replayed:
+            _enqueue_job(record.id)
+        return jsonify(record.to_public_dict()), 200 if record.replayed else 201
+
+    @app.get("/ai/jobs")
+    @require_admin_token
+    def job_list():
+        owner = _conversation_owner()
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        conversation_id = str(request.args.get("conversation_id") or "").strip()
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("conversation_id must be a UUID", 400)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            records = jobs.list_jobs(
+                resolved_settings,
+                conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not list jobs ({_error_class(exc)})", 503)
+        return (
+            jsonify({"count": len(records), "result": [r.to_public_dict() for r in records]}),
+            200,
+        )
+
+    @app.get("/ai/jobs/<job_id>")
+    @require_admin_token
+    def job_detail(job_id: str):
+        if not jobs.is_job_id(job_id):
+            return _admin_error("Job not found", 404)
+        owner = _conversation_owner()
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            record = jobs.get_job(
+                resolved_settings,
+                job_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not load job ({_error_class(exc)})", 503)
+        if record is None:
+            return _admin_error("Job not found", 404)
+        return jsonify(record.to_public_dict()), 200
+
+    @app.post("/ai/jobs/<job_id>/cancel")
+    @require_admin_token
+    def job_cancel(job_id: str):
+        if not jobs.is_job_id(job_id):
+            return _admin_error("Job not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            record = jobs.request_cancel(
+                resolved_settings,
+                job_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except jobs.JobNotFound:
+            return _admin_error("Job not found", 404)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not cancel job ({_error_class(exc)})", 503)
+        return jsonify(record.to_public_dict()), 200
+
+    @app.post("/ai/jobs/<job_id>/retry")
+    @require_admin_token
+    def job_retry(job_id: str):
+        if not jobs.is_job_id(job_id):
+            return _admin_error("Job not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            record = jobs.retry_job(
+                resolved_settings,
+                job_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except jobs.JobNotFound:
+            return _admin_error("Job not found", 404)
+        except jobs.JobStateError as exc:
+            return _admin_error(str(exc), 409)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not retry job ({_error_class(exc)})", 503)
+        _enqueue_job(record.id)
+        return jsonify(record.to_public_dict()), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

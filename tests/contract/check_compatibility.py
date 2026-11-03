@@ -319,6 +319,82 @@ def check_ai_prompt_wiring(compatibility: dict) -> None:
         )
 
 
+def check_ai_job_wiring(compatibility: dict) -> None:
+    """The job engine must stay the only way a turn does multi-step work.
+
+    Three invariants: the declared status vocabulary matches the database check
+    constraint (a new status that the schema rejects would fail at runtime), every
+    declared job type has a registered handler, and the API/worker entry points
+    exist. Recovery is part of the contract, because a job that cannot be
+    reclaimed after a worker restart is a job that silently disappears.
+    """
+    workspace = compatibility.get('optional_features', {}).get(
+        'ai_prompt_workspace'
+    )
+    if not isinstance(workspace, dict):
+        raise AssertionError(
+            'ai_prompt_workspace must be declared under optional_features'
+        )
+
+    jobs_module = workspace.get('jobs_module')
+    jobs_migration = workspace.get('jobs_migration')
+    if not jobs_module or not jobs_migration:
+        raise AssertionError(
+            'jobs_module and jobs_migration must be declared'
+        )
+
+    source = (ROOT / jobs_module).read_text(encoding='utf-8')
+    for status in workspace.get('job_statuses', []):
+        if f'{status.upper()} = "{status}"' not in source:
+            raise AssertionError(f'job status "{status}" is missing from {jobs_module}')
+
+    versions = ROOT / 'services' / 'xp_prompt' / 'migrations' / 'versions'
+    migration_files = list(versions.glob(f'{jobs_migration}_*.py'))
+    if not migration_files:
+        raise AssertionError('jobs_migration must name an existing migration')
+
+    # The schema is the authority for the status vocabulary.
+    initial = (
+        ROOT / 'services' / 'xp_prompt' / 'migrations' / 'versions'
+        / '20261103_01_initial_control_plane.py'
+    ).read_text(encoding='utf-8')
+    for status in workspace.get('job_statuses', []):
+        if f"'{status}'" not in initial:
+            raise AssertionError(
+                f'job status "{status}" is not accepted by ck_ai_job_status'
+            )
+
+    for job_type in workspace.get('job_types', []):
+        constant = f'{job_type.upper()}_JOB_TYPE'
+        if f'{constant} = "{job_type}"' not in source:
+            raise AssertionError(
+                f'job type "{job_type}" must be declared as {constant}'
+            )
+        if f'register_job_handler({constant})' not in source:
+            raise AssertionError(
+                f'job type "{job_type}" has no registered handler'
+            )
+
+    for marker in ('def recover_expired', 'def claim_job', 'def run_job'):
+        if marker not in source:
+            raise AssertionError(f'{jobs_module} lost {marker}')
+
+    service = (ROOT / workspace['service']).read_text(encoding='utf-8')
+    for route in ('/ai/jobs', '/cancel', '/retry'):
+        if route not in service:
+            raise AssertionError(
+                f'the XP Prompt service must expose the job route {route}'
+            )
+
+    tasks = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'tasks.py'
+    ).read_text(encoding='utf-8')
+    if 'xp_prompt.run_job' not in tasks or 'xp_prompt.recover_jobs' not in tasks:
+        raise AssertionError(
+            'the worker must expose run_job and recover_jobs tasks'
+        )
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -404,6 +480,8 @@ def main():
     check_ai_provider_wiring(compatibility)
 
     check_ai_prompt_wiring(compatibility)
+
+    check_ai_job_wiring(compatibility)
 
     print('Compatibility contract checks passed')
 
