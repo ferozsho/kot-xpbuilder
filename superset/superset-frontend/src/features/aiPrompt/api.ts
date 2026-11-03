@@ -23,6 +23,8 @@ import {
   ConversationDetailResponse,
   ConversationListResponse,
   ConversationRecord,
+  JobListResponse,
+  JobRecord,
 } from './types';
 
 const BASE = '/aiprompt/api';
@@ -109,4 +111,44 @@ export async function archiveConversation(id: string): Promise<void> {
     endpoint: `${BASE}/conversations/${id}/archive/`,
     jsonPayload: {},
   });
+}
+
+// --- Jobs (P2-F05/F08) -------------------------------------------------
+
+export async function fetchJobs(
+  conversationId: string,
+): Promise<JobListResponse> {
+  const { json } = await SupersetClient.get({
+    endpoint: `${BASE}/conversations/${conversationId}/jobs/`,
+  });
+  return json as JobListResponse;
+}
+
+export async function submitJob(
+  conversationId: string,
+  payload: {
+    job_type: string;
+    idempotency_key: string;
+    request?: Record<string, unknown>;
+    steps?: string[];
+  },
+): Promise<JobRecord> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/conversations/${conversationId}/jobs/`,
+    jsonPayload: payload,
+  });
+  return json as JobRecord;
+}
+
+export type JobAction = 'cancel' | 'retry' | 'confirm' | 'reject';
+
+export async function actOnJob(
+  jobId: string,
+  action: JobAction,
+): Promise<JobRecord> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/jobs/${jobId}/${action}/`,
+    jsonPayload: {},
+  });
+  return json as JobRecord;
 }

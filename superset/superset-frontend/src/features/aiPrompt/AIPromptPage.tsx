@@ -37,6 +37,7 @@ import {
   sendMessage,
 } from './api';
 import ResponseBlocks from './blocks';
+import JobPanel from './JobPanel';
 import { ConversationRecord, MessageRecord } from './types';
 
 const StyledWrapper = styled.div`
@@ -510,6 +511,8 @@ export default function AIPromptPage() {
               <div ref={threadEnd} />
             </StyledThread>
           )}
+
+          <JobPanel conversationId={activeId} />
 
           <StyledComposer>
             <StyledTextarea

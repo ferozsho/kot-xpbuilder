@@ -190,6 +190,45 @@ export interface ContextResetResponse {
   context_version: number;
 }
 
+export type JobStatus =
+  | 'queued'
+  | 'running'
+  | 'clarification'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+export interface JobStep {
+  step_key: string;
+  ordinal: number;
+  status: string;
+  attempt_count: number;
+  error_code: string | null;
+}
+
+export interface JobRecord {
+  id: string;
+  conversation_id: string;
+  job_type: string;
+  status: JobStatus;
+  attempt_count: number;
+  max_attempts: number;
+  context_version: number;
+  cancel_requested: boolean;
+  requires_confirmation: boolean;
+  error_code: string | null;
+  replayed: boolean;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  steps: JobStep[];
+}
+
+export interface JobListResponse {
+  count: number;
+  result: JobRecord[];
+}
+
 export interface ChatTurnResponse {
   conversation_id: string;
   correlation_id: string;

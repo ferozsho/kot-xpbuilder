@@ -397,6 +397,13 @@ def check_ai_job_wiring(compatibility: dict) -> None:
             'claim_job must only claim queued (confirmed) work'
         )
 
+    proxy_view = (ROOT / workspace['proxy']).read_text(encoding='utf-8')
+    for marker in ('/jobs/', '_JOB_ACTIONS', '"confirm": "confirm"'):
+        if marker not in proxy_view:
+            raise AssertionError(
+                f'the XP Prompt proxy must expose job operations ({marker})'
+            )
+
     tasks = (
         ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'tasks.py'
     ).read_text(encoding='utf-8')

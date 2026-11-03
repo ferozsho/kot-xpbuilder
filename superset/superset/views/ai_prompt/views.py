@@ -150,6 +150,74 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    # --- Jobs (P2-F05/F08) ---------------------------------------------
+
+    @expose("/api/conversations/<conversation_id>/jobs/", methods=("GET", "POST"))
+    @has_access_api
+    def api_conversation_jobs(self, conversation_id: str) -> FlaskResponse:
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        if request.method == "GET":
+            status, body = call_xp_prompt(
+                "GET",
+                f"/ai/jobs?conversation_id={conversation_id}"
+                f"&superset_user_id={owner}",
+            )
+            return self.json_response(body, status)
+        payload = _body()
+        payload["superset_user_id"] = owner
+        payload["conversation_id"] = conversation_id
+        status, body = call_xp_prompt("POST", "/ai/jobs", payload=payload)
+        return self.json_response(body, status)
+
+    @expose("/api/jobs/<job_id>/", methods=("GET",))
+    @has_access_api
+    def api_job_detail(self, job_id: str) -> FlaskResponse:
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        status, body = call_xp_prompt(
+            "GET", f"/ai/jobs/{job_id}?superset_user_id={owner}"
+        )
+        return self.json_response(body, status)
+
+    @expose(
+        "/api/jobs/<job_id>/<action>/",
+        methods=("POST",),
+    )
+    @has_access_api
+    def api_job_action(self, job_id: str, action: str) -> FlaskResponse:
+        """Proxy cancel / retry / confirm / reject without inventing new verbs."""
+        if action not in _JOB_ACTIONS:
+            return self.json_response(
+                {"message": _("Unsupported job action"), "severity": "danger"}, 404
+            )
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        payload["superset_user_id"] = owner
+        status, body = call_xp_prompt(
+            "POST", f"/ai/jobs/{job_id}/{_JOB_ACTIONS[action]}", payload=payload
+        )
+        return self.json_response(body, status)
+
+
+#: Browser-facing verb -> XP Prompt endpoint verb. Only these four exist upstream.
+_JOB_ACTIONS = {
+    "cancel": "cancel",
+    "retry": "retry",
+    "confirm": "confirm",
+    "reject": "reject",
+}
+
 
 def _current_user_id() -> int | None:
     """Superset user id of the caller; the only trusted identity source."""
