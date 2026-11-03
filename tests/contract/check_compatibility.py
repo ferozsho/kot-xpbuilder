@@ -664,14 +664,39 @@ def check_ai_sql_guard(compatibility: dict) -> None:
         raise AssertionError('the proxy must expose the end-to-end SQL turn')
     if '/ai/sql/candidate' not in proxy_source:
         raise AssertionError('the SQL turn must ask the service for a candidate')
-    if '/blocks' not in proxy_source:
-        raise AssertionError('the SQL turn must store its blocks through the service')
     if '@app.post("/ai/conversations/<conversation_id>/blocks")' not in service:
         raise AssertionError('the service must expose the block-append endpoint')
     blocks_route = service.split('def conversation_append_blocks', 1)[-1][:1200]
     if 'responses.normalize_blocks(' not in blocks_route:
         raise AssertionError(
             'a stored turn must re-normalize its blocks instead of trusting the caller'
+        )
+
+    # A Superset SQL dataset has no physical table, so the pipeline must be able to
+    # inline its definition; without that, every virtual dataset fails at execution
+    # with UndefinedTable (found live, runtime-evidence §7.24–§7.25).
+    slice_source = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'schema_slice.py'
+    ).read_text(encoding='utf-8')
+    guard_source = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'sql_guard.py'
+    ).read_text(encoding='utf-8')
+    execution_source = execution.read_text(encoding='utf-8')
+    for marker in ('def virtual_tables', 'def is_virtual', 'def _dataset_query'):
+        if marker not in slice_source:
+            raise AssertionError(
+                f'the schema slice lost virtual dataset support: {marker}'
+            )
+    for marker in ('def _inline_virtual_datasets', 'def _virtual_dataset_query'):
+        if marker not in guard_source:
+            raise AssertionError(f'the SQL guard lost virtual dataset inlining: {marker}')
+    if 'virtual_tables=schema.virtual_tables(' not in execution_source:
+        raise AssertionError(
+            'execution must inline virtual datasets before running a statement'
+        )
+    if '"sql": str(definition)' not in proxy_source:
+        raise AssertionError(
+            'the proxy must forward a virtual dataset definition to the service'
         )
 
 

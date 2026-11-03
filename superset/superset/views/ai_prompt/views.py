@@ -280,7 +280,9 @@ class AIPromptView(BaseSupersetView):
         if database is None:
             return self.json_response(
                 {
-                    "message": _("Choose a database: the workspace is authorized for several"),
+                    "message": _(
+                        "Choose a database: the workspace is authorized for several"
+                    ),
                     "severity": "danger",
                 },
                 400,
@@ -307,7 +309,10 @@ class AIPromptView(BaseSupersetView):
             )
         except SupersetSecurityException:
             return self.json_response(
-                {"message": _("Not authorized to run this query"), "severity": "danger"},
+                {
+                    "message": _("Not authorized to run this query"),
+                    "severity": "danger",
+                },
                 403,
             )
 
@@ -392,7 +397,8 @@ class AIPromptView(BaseSupersetView):
         database_id = payload.get("database_id")
         raw_sql = str(payload.get("sql") or "").strip()
         schema_name = str(payload.get("schema") or "").strip() or None
-        max_rows = min(int(payload.get("max_rows") or MAX_PREVIEW_ROWS), MAX_PREVIEW_ROWS)
+        requested = int(payload.get("max_rows") or MAX_PREVIEW_ROWS)
+        max_rows = min(requested, MAX_PREVIEW_ROWS)
         if not raw_sql:
             return self.json_response(
                 {"message": _("sql is required"), "severity": "danger"}, 400
@@ -535,6 +541,9 @@ MAX_SLICE_COLUMNS = 60
 #: practical limit on how much a single request can serialise.
 MAX_PREVIEW_ROWS = 200
 MAX_CELL_CHARS = 200
+#: A virtual dataset's SQL is forwarded so the service can inline it; the service
+#: enforces the same bound, this is only here to keep one request small.
+MAX_DATASET_SQL_CHARS = 8_000
 
 
 def _cell(value: Any) -> str:
@@ -557,16 +566,28 @@ def _database_for(payload: dict[str, Any], datasets: list[dict[str, Any]]) -> An
     database_id = payload.get("database_id")
     if database_id not in (None, ""):
         try:
-            return db.session.query(Database).filter(Database.id == int(database_id)).one_or_none()
+            return (
+                db.session.query(Database)
+                .filter(Database.id == int(database_id))
+                .one_or_none()
+            )
         except (TypeError, ValueError):
             return None
     name = str(payload.get("database") or "").strip()
     if name:
-        return db.session.query(Database).filter(Database.database_name == name).one_or_none()
+        return (
+            db.session.query(Database)
+            .filter(Database.database_name == name)
+            .one_or_none()
+        )
     names = {item["database"] for item in datasets if item.get("database")}
     if len(names) != 1:
         return None
-    return db.session.query(Database).filter(Database.database_name == names.pop()).one_or_none()
+    return (
+        db.session.query(Database)
+        .filter(Database.database_name == names.pop())
+        .one_or_none()
+    )
 
 
 def authorized_datasets() -> list[dict[str, Any]]:
@@ -574,6 +595,11 @@ def authorized_datasets() -> list[dict[str, Any]]:
 
     ``get_user_datasources`` already combines explicit dataset permissions with
     implicit database access, so it is the same authority that gates Explore.
+
+    A *virtual* dataset carries its own SQL: the name is a governed query, not a
+    physical table, so the pipeline needs the definition to reference it at all.
+    It is included as-is (bounded) because it is admin-authored, and the service
+    validates it before inlining; a templated definition is dropped there.
     """
     from superset import security_manager
 
@@ -588,8 +614,11 @@ def authorized_datasets() -> list[dict[str, Any]]:
                 "type": column.type or "",
                 "temporal": bool(column.is_dttm),
             }
-            for column in (getattr(datasource, "columns", None) or [])[:MAX_SLICE_COLUMNS]
+            for column in (
+                getattr(datasource, "columns", None) or []
+            )[:MAX_SLICE_COLUMNS]
         ]
+        definition = getattr(datasource, "sql", None) or ""
         datasets.append(
             {
                 "dataset_id": datasource.id,
@@ -597,6 +626,7 @@ def authorized_datasets() -> list[dict[str, Any]]:
                 "schema": datasource.schema or "",
                 "database": database.database_name,
                 "dialect": (database.backend or "").split("://", 1)[0],
+                "sql": str(definition)[:MAX_DATASET_SQL_CHARS],
                 "columns": columns,
             }
         )

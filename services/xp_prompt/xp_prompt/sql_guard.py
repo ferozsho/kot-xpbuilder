@@ -186,6 +186,8 @@ class GuardResult:
     limit: int
     wrapped: bool
     read_only: bool = True
+    #: Datasets whose governed SQL was inlined as a CTE, for audit.
+    inlined: tuple[str, ...] = ()
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +197,7 @@ class GuardResult:
             "limit": self.limit,
             "wrapped": self.wrapped,
             "read_only": self.read_only,
+            "inlined": list(self.inlined),
         }
 
 
@@ -205,6 +208,7 @@ def check(
     allowed_tables: Any = None,
     max_rows: int = MAX_ROWS,
     connection_names: Any = None,
+    virtual_tables: Any = None,
 ) -> GuardResult:
     """Validate one candidate statement and return a safe, limit-enforced SQL.
 
@@ -218,6 +222,11 @@ def check(
     cross-database read — which PostgreSQL refuses with
     ``feature_not_supported``. Removing the label can only narrow the reference to
     the same authorized table, never widen it.
+
+    ``virtual_tables`` maps a dataset name to its SQL for Superset *SQL datasets*:
+    those have no physical table, so a reference to one is replaced by a CTE
+    holding the governed query. The dataset SQL is admin-authored and is itself
+    validated (one statement, a query, no denial) before it is inlined.
     """
     text = (sql or "").strip()
     if not text:
@@ -245,10 +254,16 @@ def check(
     _reject_mutating_nodes(statement)
     _reject_denied_functions(statement)
     _strip_connection_catalog(statement, connection_names)
+    definitions = _virtual_definitions(virtual_tables)
+    inlined = _normalise_virtual_references(statement, definitions)
+    # The allowlist is about what the model wrote, so it is checked before the
+    # dataset definitions are inlined (their base tables are the admin's choice,
+    # not the model's).
     tables = _collect_tables(statement)
     _reject_system_schemas(tables)
     if allowed_tables is not None:
         _reject_unlisted_tables(tables, allowed_tables)
+    _inline_virtual_datasets(statement, definitions, inlined, normalised_dialect)
 
     capped, limit, wrapped = _enforce_limit(statement, max_rows)
 
@@ -258,6 +273,8 @@ def check(
         tables=tuple(sorted(selector for selector in tables)),
         limit=limit,
         wrapped=wrapped,
+        read_only=True,
+        inlined=inlined,
     )
 
 
@@ -329,13 +346,118 @@ def _strip_connection_catalog(statement: exp.Expression, connection_names: Any) 
             table.set("catalog", None)
 
 
+def _virtual_definitions(virtual_tables: Any) -> dict[str, tuple[str, str]]:
+    """Lower-cased dataset name -> (canonical name, SQL)."""
+    if not isinstance(virtual_tables, dict) or not virtual_tables:
+        return {}
+    definitions: dict[str, tuple[str, str]] = {}
+    for name, query in virtual_tables.items():
+        original = str(name or "").strip()
+        text = str(query or "").strip()
+        if original and text:
+            definitions[original.lower()] = (original, text)
+    return definitions
+
+
+def _normalise_virtual_references(
+    statement: exp.Expression, definitions: dict[str, tuple[str, str]]
+) -> tuple[str, ...]:
+    """Point every reference to a virtual dataset at its bare dataset name.
+
+    A virtual dataset has no schema or catalog, so ``public."Student Overview"``
+    can only resolve once the qualifiers are gone. The name is rewritten to the
+    dataset's canonical spelling as well: the reference and the CTE alias have to
+    be identical, and a quoted identifier with a space is case-sensitive.
+    """
+    if not definitions:
+        return ()
+    found: list[str] = []
+    for table in list(statement.find_all(exp.Table)):
+        key = (table.name or "").lower()
+        if not key or key not in definitions:
+            continue
+        table.set("catalog", None)
+        table.set("db", None)
+        table.set("this", exp.to_identifier(definitions[key][0], quoted=True))
+        if key not in found:
+            found.append(key)
+    return tuple(sorted(found))
+
+
+def _inline_virtual_datasets(
+    statement: exp.Expression,
+    definitions: dict[str, tuple[str, str]],
+    names: tuple[str, ...],
+    dialect: str,
+) -> None:
+    """Prepend one CTE per referenced virtual dataset, holding its own query.
+
+    The dataset definition is admin-authored but is treated as untrusted input: it
+    must parse as exactly one query with no denied function, so nothing that could
+    not itself pass the guard runs on its behalf. It is deliberately *not* checked
+    against the allowlist — the model never wrote it, and its base tables may not be
+    separately exposed as datasets.
+    """
+    if not names:
+        return
+    existing_cte_names = {
+        cte.alias_or_name.lower()
+        for cte in statement.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
+    for name in names:
+        if name in existing_cte_names:
+            raise SqlPolicyError(
+                "virtual_dataset_conflict",
+                "a dataset name collides with a name the query already defines",
+            )
+    ctes = [
+        exp.CTE(
+            this=_virtual_dataset_query(definitions[name][1], dialect),
+            alias=exp.TableAlias(
+                this=exp.to_identifier(definitions[name][0], quoted=True)
+            ),
+        )
+        for name in names
+    ]
+    current = statement.args.get("with_")
+    if isinstance(current, exp.With):
+        # Dataset CTEs must come first: the query's own CTEs may reference them.
+        current.set("expressions", [*ctes, *list(current.expressions)])
+    else:
+        statement.set("with_", exp.With(expressions=ctes, recursive=False))
+
+
+def _virtual_dataset_query(query: str, dialect: str) -> exp.Expression:
+    """The parsed dataset definition, or a refusal (never the raw text)."""
+    text = query.strip()
+    if len(text) > MAX_SQL_CHARS:
+        raise SqlPolicyError("virtual_dataset_invalid", "a dataset query is too large")
+    if _EXECUTABLE_COMMENT in text:
+        raise SqlPolicyError("virtual_dataset_invalid", "a dataset query is obfuscated")
+    parsed = _parse(text, dialect)
+    if len(parsed) != 1:
+        raise SqlPolicyError(
+            "virtual_dataset_invalid", "a dataset query must be one statement"
+        )
+    definition = parsed[0]
+    if not isinstance(definition, _QUERY_NODES):
+        raise SqlPolicyError(
+            "virtual_dataset_invalid", "a dataset query must be a query"
+        )
+    _reject_mutating_nodes(definition)
+    _reject_denied_functions(definition)
+    return definition
+
+
 def _collect_tables(statement: exp.Expression) -> set[str]:
     """Referenced table names, excluding CTE aliases (they are not tables).
 
     A catalog-qualified reference keeps its catalog (``proj.ds.table`` in
     BigQuery), so a cross-project read cannot pass as the same dataset name. A
     connection label has already been removed by
-    :func:`_strip_connection_catalog`.
+    :func:`_strip_connection_catalog`, and an inlined virtual dataset is a CTE, so
+    it is excluded like any other CTE name.
     """
     cte_names = {
         cte.alias_or_name.lower()

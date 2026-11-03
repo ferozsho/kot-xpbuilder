@@ -70,11 +70,13 @@ def validate(
         allowed_tables=schema.allowed_tables(database=database),
         max_rows=max_rows,
         connection_names=schema.connection_names(),
+        virtual_tables=schema.virtual_tables(database=database),
     )
     return {
         "sql": guarded.sql,
         "dialect": guarded.dialect,
         "tables": list(guarded.tables),
+        "inlined": list(guarded.inlined),
         "limit": guarded.limit,
         "schema_fingerprint": schema.fingerprint,
     }

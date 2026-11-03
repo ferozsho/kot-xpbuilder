@@ -68,6 +68,30 @@ class ResolveDialectTest(unittest.TestCase):
             sql_execution.resolve_dialect(slice_([]))
 
 
+class VirtualDatasetTest(unittest.TestCase):
+    def test_a_virtual_dataset_is_inlined_before_execution(self) -> None:
+        schema = slice_(
+            [
+                {
+                    "name": "Student Overview",
+                    "schema": "public",
+                    "database": "File uploads",
+                    "dialect": "postgresql",
+                    "sql": "SELECT student_id FROM public.users",
+                    "columns": [{"name": "student_id", "type": "int"}],
+                }
+            ]
+        )
+
+        result = sql_execution.validate(
+            'SELECT COUNT(*) FROM "Student Overview"', schema=schema
+        )
+
+        self.assertEqual(result["inlined"], ["student overview"])
+        self.assertIn("WITH", result["sql"].upper())
+        self.assertIn("public.users", result["sql"])
+
+
 class LabelQualifiedReferenceTest(unittest.TestCase):
     def test_a_connection_label_is_removed_before_execution(self) -> None:
         """The statement that runs must not carry the Superset connection name."""

@@ -165,6 +165,104 @@ class ConnectionLabelTest(unittest.TestCase):
         self.assertEqual(result.tables, ('public.student overview',))
 
 
+class VirtualDatasetTest(unittest.TestCase):
+    """A Superset SQL dataset has no physical table (P4-F24).
+
+    Live evidence: every authorized dataset on the deployment was virtual, so
+    ``FROM public."Student Overview"`` failed with ``UndefinedTable``. The dataset
+    name is a governed query, and it has to be inlined as a CTE.
+    """
+
+    DATASET_SQL = 'SELECT student_id, student_name FROM public.users'
+
+    def check(self, sql: str, **overrides):
+        arguments = {
+            'allowed_tables': {'student overview'},
+            'virtual_tables': {'Student Overview': self.DATASET_SQL},
+        }
+        arguments.update(overrides)
+        return sql_guard.check(sql, **arguments)
+
+    def test_the_dataset_query_is_inlined_as_a_cte(self) -> None:
+        result = self.check('SELECT COUNT(*) FROM "Student Overview"')
+
+        self.assertEqual(result.inlined, ('student overview',))
+        self.assertEqual(result.tables, ('student overview',))
+        self.assertIn('WITH', result.sql.upper())
+        self.assertIn('public.users', result.sql)
+        self.assertIn('LIMIT', result.sql.upper())
+
+    def test_a_qualified_or_miscased_reference_is_normalised(self) -> None:
+        result = self.check('SELECT COUNT(*) FROM public."student overview" so')
+
+        self.assertIn('WITH "Student Overview" AS', result.sql)
+        self.assertIn('FROM "Student Overview" AS so', result.sql)
+
+    def test_the_dataset_cte_comes_before_the_query_ctes(self) -> None:
+        result = self.check(
+            'WITH t AS (SELECT 1 AS a) SELECT s.student_id FROM "Student Overview" s'
+        )
+
+        self.assertLess(result.sql.index('"Student Overview" AS'), result.sql.index('t AS'))
+
+    def test_two_virtual_datasets_both_inline(self) -> None:
+        result = self.check(
+            'SELECT * FROM "Student Overview" a JOIN "Course Analytics" c ON true',
+            allowed_tables={'student overview', 'course analytics'},
+            virtual_tables={
+                'Student Overview': self.DATASET_SQL,
+                'Course Analytics': 'SELECT course_id FROM public.courses',
+            },
+        )
+
+        self.assertEqual(result.inlined, ('course analytics', 'student overview'))
+        self.assertIn('public.courses', result.sql)
+
+    def test_a_dataset_definition_that_is_not_a_query_is_refused(self) -> None:
+        for definition in (
+            'DELETE FROM public.users',
+            'SELECT 1; DROP TABLE public.users',
+            'SELECT pg_read_file(\'/etc/passwd\')',
+        ):
+            with self.subTest(definition=definition):
+                with self.assertRaises(sql_guard.SqlPolicyError) as raised:
+                    self.check(
+                        'SELECT COUNT(*) FROM "Student Overview"',
+                        virtual_tables={'Student Overview': definition},
+                    )
+                self.assertIn(
+                    raised.exception.code,
+                    {'virtual_dataset_invalid', 'unsafe_function'},
+                )
+
+    def test_an_unknown_table_beside_a_virtual_one_is_still_refused(self) -> None:
+        with self.assertRaises(sql_guard.SqlPolicyError) as raised:
+            self.check(
+                'SELECT * FROM "Student Overview" a JOIN public.secret s ON true'
+            )
+
+        self.assertEqual(raised.exception.code, 'unknown_table')
+
+    def test_a_name_that_collides_with_a_query_cte_is_refused(self) -> None:
+        with self.assertRaises(sql_guard.SqlPolicyError) as raised:
+            self.check(
+                'WITH "Student Overview" AS (SELECT 1 AS a) '
+                'SELECT * FROM "Student Overview"'
+            )
+
+        self.assertEqual(raised.exception.code, 'virtual_dataset_conflict')
+
+    def test_a_physical_table_is_not_inlined(self) -> None:
+        result = sql_guard.check(
+            'select count(*) from public.mdl_user',
+            allowed_tables={'public.mdl_user'},
+            virtual_tables={'Student Overview': self.DATASET_SQL},
+        )
+
+        self.assertEqual(result.inlined, ())
+        self.assertNotIn('WITH', result.sql.upper())
+
+
 class LimitTest(unittest.TestCase):
     def test_missing_limit_is_added(self) -> None:
         result = sql_guard.check("select id from mdl_user", max_rows=25)
@@ -264,9 +362,10 @@ class ResultShapeTest(unittest.TestCase):
 
         self.assertEqual(
             sorted(payload),
-            ["dialect", "limit", "read_only", "sql", "tables", "wrapped"],
+            ["dialect", "inlined", "limit", "read_only", "sql", "tables", "wrapped"],
         )
         self.assertTrue(payload["read_only"])
+        self.assertEqual(payload["inlined"], [])
 
 
 if __name__ == "__main__":

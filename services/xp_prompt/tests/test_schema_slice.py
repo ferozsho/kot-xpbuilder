@@ -181,6 +181,64 @@ class AllowedTablesTest(unittest.TestCase):
             )
 
 
+class VirtualDatasetTest(unittest.TestCase):
+    def test_a_virtual_dataset_is_referenced_by_its_bare_name(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(sql="SELECT id FROM public.users")]}
+        )
+
+        entry = slice_.datasets[0]
+        self.assertTrue(entry.is_virtual)
+        self.assertEqual(entry.sql_name, "mdl_user")
+        self.assertNotIn("public.mdl_user", slice_.allowed_tables())
+        self.assertIn("mdl_user", slice_.allowed_tables())
+        self.assertIn("dataset", entry.render())
+
+    def test_the_definition_is_exposed_for_inlining(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {
+                "datasets": [
+                    dataset(sql="SELECT id FROM public.users"),
+                    dataset(name="wp_post", database="blog"),
+                ]
+            }
+        )
+
+        self.assertEqual(
+            slice_.virtual_tables(), {"mdl_user": "SELECT id FROM public.users"}
+        )
+        self.assertEqual(slice_.virtual_tables(database="blog"), {})
+
+    def test_the_inlining_key_keeps_the_dataset_spelling(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(name="Student Overview", sql="SELECT 1 AS a")]}
+        )
+
+        self.assertEqual(list(slice_.virtual_tables()), ["Student Overview"])
+
+    def test_a_templated_definition_is_dropped(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {
+                "datasets": [
+                    dataset(sql="SELECT * FROM {{ filter_values('x') }}"),
+                ]
+            }
+        )
+
+        self.assertEqual(slice_.virtual_tables(), {})
+        self.assertFalse(slice_.datasets[0].is_virtual)
+
+    def test_a_changed_definition_changes_the_fingerprint(self) -> None:
+        first = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(sql="SELECT id FROM public.users")]}
+        )
+        second = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(sql="SELECT id, deleted FROM public.users")]}
+        )
+
+        self.assertNotEqual(first.fingerprint, second.fingerprint)
+
+
 class PromptTest(unittest.TestCase):
     def test_prompt_lists_only_validated_names(self) -> None:
         slice_ = schema_slice.SchemaSlice.from_payload(

@@ -37,6 +37,10 @@ MAX_COLUMNS = 60
 MAX_NAME_CHARS = 128
 MAX_TYPE_CHARS = 64
 MAX_PROMPT_CHARS = 12_000
+#: A dataset's own SQL is bounded and must not be a template: Superset renders
+#: Jinja before executing, and this service cannot, so a templated dataset is
+#: unusable rather than half-usable.
+MAX_DATASET_SQL_CHARS = 8_000
 
 #: Conservative identifier shape for a table/schema/column name. Anything outside
 #: it is dropped, not escaped.
@@ -83,6 +87,14 @@ class Dataset:
     dialect: str = ""
     dataset_id: int | None = None
     columns: tuple[Column, ...] = ()
+    #: The dataset's own SQL when it is *virtual* (a Superset SQL dataset): the
+    #: name is a governed query, not a physical table, so referencing it requires
+    #: inlining that query.
+    query: str = ""
+
+    @property
+    def is_virtual(self) -> bool:
+        return bool(self.query)
 
     @property
     def qualified_name(self) -> str:
@@ -91,6 +103,9 @@ class Dataset:
 
     @property
     def sql_name(self) -> str:
+        """The name a statement must use: a virtual dataset has no physical schema."""
+        if self.is_virtual:
+            return self.name
         return f"{self.schema}.{self.name}" if self.schema else self.name
 
     def render(self) -> str:
@@ -107,6 +122,8 @@ class Dataset:
             origin = f"{origin}, connection: {self.database}" if origin else (
                 f"connection: {self.database}"
             )
+        if self.is_virtual:
+            origin = f"{origin}, dataset" if origin else "dataset"
         suffix = f" [{origin}]" if origin else ""
         return f"{self.sql_name}{suffix} ({columns})"
 
@@ -155,18 +172,37 @@ class SchemaSlice:
         Every accepted form is included (``table``, ``schema.table``,
         ``database.schema.table``) because a model writes all three; passing
         ``database`` narrows the set to a single target, which is what execution
-        should do.
+        should do. A virtual dataset has no physical schema, so only its bare name
+        is accepted — there is nothing for a qualifier to resolve to.
         """
         names: set[str] = set()
         for dataset in self.datasets:
             if database and dataset.database and dataset.database != database:
                 continue
             names.add(dataset.name.lower())
+            if dataset.is_virtual:
+                continue
             if dataset.schema:
                 names.add(f"{dataset.schema}.{dataset.name}".lower())
             if dataset.database:
                 names.add(dataset.qualified_name.lower())
         return frozenset(names)
+
+    def virtual_tables(self, database: str | None = None) -> dict[str, str]:
+        """Dataset name -> SQL for the virtual datasets the guard must inline.
+
+        A Superset SQL dataset is a governed query, not a table: ``FROM name`` only
+        works once that query is inlined as a CTE, which is what
+        :func:`xp_prompt.sql_guard.check` does with this map. The key keeps the
+        dataset's own spelling: a quoted identifier with a space is
+        case-sensitive, so the CTE alias has to match it exactly.
+        """
+        return {
+            dataset.name: dataset.query
+            for dataset in self.datasets
+            if dataset.is_virtual
+            and not (database and dataset.database and dataset.database != database)
+        }
 
     def dialects(self) -> tuple[str, ...]:
         return tuple(sorted({dataset.dialect for dataset in self.datasets if dataset.dialect}))
@@ -205,6 +241,7 @@ class SchemaSlice:
                     "database": dataset.database,
                     "dialect": dataset.dialect,
                     "dataset_id": dataset.dataset_id,
+                    "virtual": dataset.is_virtual,
                     "columns": [column.name for column in dataset.columns],
                 }
                 for dataset in self.datasets
@@ -251,7 +288,23 @@ def _dataset(entry: Any) -> Dataset | None:
         dialect=dialect,
         dataset_id=_integer(entry.get("dataset_id")),
         columns=tuple(columns),
+        query=_dataset_query(entry.get("sql")),
     )
+
+
+def _dataset_query(value: Any) -> str:
+    """A virtual dataset's SQL, bounded, or empty when it is not usable.
+
+    Superset renders Jinja before running a dataset query; this service cannot, so
+    a templated definition is dropped (the dataset then behaves as if it had no
+    query and stays unusable) rather than executed half-rendered.
+    """
+    text = str(value or "").strip()
+    if not text or len(text) > MAX_DATASET_SQL_CHARS:
+        return ""
+    if "{{" in text or "{%" in text:
+        return ""
+    return text
 
 
 def _identifier(value: Any) -> str | None:
@@ -293,6 +346,13 @@ def _fingerprint(datasets: list[Dataset] | tuple[Dataset, ...]) -> str:
                 "schema": dataset.schema,
                 "database": dataset.database,
                 "dialect": dataset.dialect,
+                # A changed dataset query must change the fingerprint: the same
+                # columns can come from a different (wider) definition.
+                "query": (
+                    hashlib.sha256(dataset.query.encode("utf-8")).hexdigest()
+                    if dataset.query
+                    else ""
+                ),
                 "columns": [
                     [column.name, column.type, column.temporal]
                     for column in dataset.columns

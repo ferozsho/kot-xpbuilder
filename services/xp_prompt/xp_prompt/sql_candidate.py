@@ -307,6 +307,7 @@ def _guard(
             allowed_tables=allowlist,
             max_rows=max_rows,
             connection_names=schema.connection_names(),
+            virtual_tables=schema.virtual_tables(database=database),
         )
     except sql_guard.SqlPolicyError as exc:
         logger.info("sql_candidate outcome=blocked guard_code=%s", exc.code)
