@@ -375,6 +375,9 @@ export default function AIProviderPage() {
         title: t('Display name'),
         dataIndex: 'name',
         key: 'name',
+        // Wide enough that the header itself never wraps; the model and key are
+        // shown in the edit form instead of as table columns.
+        width: 240,
         render: (name: string, record: ProviderRecord) => (
           <Space size={4} wrap>
             <strong>{name}</strong>
@@ -388,21 +391,6 @@ export default function AIProviderPage() {
         dataIndex: 'provider_label',
         key: 'provider_label',
         width: 170,
-      },
-      {
-        title: t('Default model'),
-        dataIndex: 'default_model',
-        key: 'default_model',
-        width: 200,
-      },
-      {
-        title: t('API key'),
-        key: 'api_key',
-        width: 150,
-        render: (_: unknown, record: ProviderRecord) =>
-          record.api_key.configured
-            ? `••••${record.api_key.last_four}`
-            : t('not set'),
       },
       {
         title: t('Priority'),

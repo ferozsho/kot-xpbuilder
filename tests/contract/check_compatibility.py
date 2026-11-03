@@ -179,6 +179,81 @@ def check_ai_provider_wiring(compatibility: dict) -> None:
         )
 
 
+def check_ai_prompt_wiring(compatibility: dict) -> None:
+    """The XP Prompt chat spans the same two services as provider settings.
+
+    Two invariants keep the workspace safe: the proxy must derive the caller's
+    identity from the Superset session (never from the request body), and the
+    store must scope every query by that identity. A regression in either place
+    would expose another user's conversation.
+    """
+    workspace = compatibility.get('optional_features', {}).get(
+        'ai_prompt_workspace'
+    )
+    if not isinstance(workspace, dict):
+        raise AssertionError(
+            'ai_prompt_workspace must be declared under optional_features'
+        )
+
+    proxy_view = (ROOT / workspace['proxy']).read_text(encoding='utf-8')
+    reads_session = 'g.user' in proxy_view or 'getattr(g, "user"' in proxy_view
+    if not reads_session:
+        raise AssertionError(
+            'the XP Prompt proxy must read the caller from the FAB session (g.user)'
+        )
+    if 'payload["superset_user_id"] = owner' not in proxy_view:
+        raise AssertionError(
+            'the XP Prompt proxy must overwrite, not trust, superset_user_id'
+        )
+    if 'call_xp_prompt' not in proxy_view:
+        raise AssertionError(
+            'the XP Prompt proxy must reuse call_xp_prompt so the token stays shared'
+        )
+
+    store = (ROOT / workspace['store']).read_text(encoding='utf-8')
+    if store.count('superset_user_id = %s') < 3:
+        raise AssertionError(
+            'every conversation query must be scoped by superset_user_id'
+        )
+
+    turn = (ROOT / workspace['turn']).read_text(encoding='utf-8')
+    if 'resolve_router' not in turn:
+        raise AssertionError(
+            'the chat turn must go through resolve_router so routing policy applies'
+        )
+
+    initialize = (ROOT / 'docker' / 'initialize.sh').read_text(encoding='utf-8')
+    script_name = workspace['permission_script'].rsplit('/', 1)[-1]
+    if script_name not in initialize:
+        raise AssertionError(
+            f'initialize.sh must run {script_name}'
+        )
+
+    dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
+    if script_name not in dockerfile:
+        raise AssertionError(f'Dockerfile must ship {script_name}')
+
+    routes = (
+        ROOT / 'superset' / 'superset-frontend' / 'src' / 'views' / 'routes.tsx'
+    ).read_text(encoding='utf-8')
+    if workspace['page'] not in routes:
+        raise AssertionError(
+            f"SPA routes must register {workspace['page']}"
+        )
+
+    conversations = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'conversations.py'
+    ).read_text(encoding='utf-8')
+    expected_limit = workspace.get('max_message_chars')
+    if expected_limit is not None and (
+        f'MAX_MESSAGE_CHARS = {expected_limit:_}' not in conversations
+        and f'MAX_MESSAGE_CHARS = {expected_limit}' not in conversations
+    ):
+        raise AssertionError(
+            'MAX_MESSAGE_CHARS drifted from compatibility.json max_message_chars'
+        )
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -262,6 +337,8 @@ def main():
     check_build_inputs(dockerfile)
 
     check_ai_provider_wiring(compatibility)
+
+    check_ai_prompt_wiring(compatibility)
 
     print('Compatibility contract checks passed')
 

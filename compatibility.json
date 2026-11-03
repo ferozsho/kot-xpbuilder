@@ -29,6 +29,24 @@
         "failure_threshold": 3,
         "max_open_seconds": 900
       }
+    },
+    "ai_prompt_workspace": {
+      "flag": "XP_PROMPT_API_URL",
+      "default": true,
+      "description": "Top-level 'XP Prompt' chat workspace. The browser talks only to the Superset proxy, which injects superset_user_id from the session; conversations and sealed message bodies live in the XP Prompt database.",
+      "page": "/aiprompt/",
+      "proxy": "superset/superset/views/ai_prompt/views.py",
+      "service": "services/xp_prompt/xp_prompt/api.py",
+      "store": "services/xp_prompt/xp_prompt/conversations.py",
+      "turn": "services/xp_prompt/xp_prompt/chat.py",
+      "permission_script": "docker/ensure_ai_prompt_permissions.py",
+      "roles": [
+        "Admin",
+        "Alpha",
+        "Gamma"
+      ],
+      "max_message_chars": 8000,
+      "max_history_messages": 20
     }
   },
   "superset": {

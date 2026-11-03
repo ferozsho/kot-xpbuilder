@@ -103,6 +103,9 @@ PY
 echo "Ensuring the AI Provider settings permissions"
 /app/.venv/bin/python /opt/xpbuilder/bin/ensure_ai_provider_permissions.py
 
+echo "Ensuring the XP Prompt workspace permissions"
+/app/.venv/bin/python /opt/xpbuilder/bin/ensure_ai_prompt_permissions.py
+
 # Without an upload-capable database connection, Superset greys out
 # "Upload file to database" for every user, including administrators.
 if [ "${XPBUILDER_ENABLE_FILE_UPLOADS:-yes}" = "no" ]; then

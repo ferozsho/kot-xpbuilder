@@ -188,6 +188,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.sqllab.permalink.api import SqlLabPermalinkRestApi
         from superset.tags.api import TagRestApi
         from superset.themes.api import ThemeRestApi
+        from superset.views.ai_prompt.views import AIPromptView
         from superset.views.ai_provider.views import AIProviderView
         from superset.views.alerts import AlertView, ReportView
         from superset.views.all_entities import TaggedObjectsModelView
@@ -342,6 +343,18 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             category_icon="",
         )
 
+        # Conversational XP Prompt workspace. Top-level like Report Designer; the
+        # link name equals AIPromptView.class_permission_name so FAB's own menu
+        # filtering hides it from roles without ``menu_access`` on ``AIPrompt``.
+        appbuilder.add_link(
+            "AIPrompt",
+            label=_("XP Prompt"),
+            href=f"{app_root}/aiprompt/",
+            icon="fa-comments",
+            category="",
+            category_icon="",
+        )
+
         # XP Prompt provider configuration. Lives in the Settings menu under
         # "Manage". The link name must equal the view's class_permission_name so
         # FAB's own menu filtering hides it from roles without ``menu_access``
@@ -465,6 +478,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_view_no_menu(ExplorePermalinkView)
         appbuilder.add_view_no_menu(ReportDesignerView)
         appbuilder.add_view_no_menu(AIProviderView)
+        appbuilder.add_view_no_menu(AIPromptView)
         appbuilder.add_view_no_menu(SavedQueryView)
         appbuilder.add_view_no_menu(SqllabView)
         appbuilder.add_view_no_menu(Superset)

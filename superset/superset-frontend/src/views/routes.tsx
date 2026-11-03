@@ -160,6 +160,13 @@ const AIProviderSettings = lazy(
     ),
 );
 
+const AIPromptWorkspace = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "AIPromptWorkspace" */ 'src/features/aiPrompt/AIPromptPage'
+    ),
+);
+
 const TaskList = lazy(
   () => import(/* webpackChunkName: "TaskList" */ 'src/pages/TaskList'),
 );
@@ -353,6 +360,14 @@ export const routes: Routes = [
   {
     path: '/aiprovider/list/',
     Component: AIProviderSettings,
+  },
+  {
+    path: '/aiprompt/',
+    Component: AIPromptWorkspace,
+  },
+  {
+    path: '/aiprompt/list/',
+    Component: AIPromptWorkspace,
   },
   {
     path: '/tasks/list/',
