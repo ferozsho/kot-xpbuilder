@@ -53,6 +53,23 @@ x-superset-environment: &x-superset-environment
   # own host so the SPA's Moodle sync actions target the Moodle origin.
   XPBUILDER_MOODLE_URL: "${XPBUILDER_MOODLE_URL:-}"
 
+x-xp-prompt-environment: &x-xp-prompt-environment
+  PYTHONPATH: /app/xp_prompt:/app/pythonpath
+  XP_PROMPT_POSTGRES_HOST: xp-prompt-db
+  XP_PROMPT_POSTGRES_PORT: "5432"
+  XP_PROMPT_POSTGRES_USER: xprompt
+  # The first runtime slice reuses the existing .env PostgreSQL secret while
+  # keeping a separate server, role, database, and volume. A dedicated key can
+  # replace this mapping once the deployment .env is rotated.
+  XP_PROMPT_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  XP_PROMPT_POSTGRES_DB: xprompt
+  XP_PROMPT_REDIS_HOST: superset-redis
+  XP_PROMPT_REDIS_PORT: "6379"
+  XP_PROMPT_REDIS_PASSWORD: ${SUPERSET_REDIS_PASSWORD:?SUPERSET_REDIS_PASSWORD is required}
+  XP_PROMPT_REDIS_DB: "2"
+  XP_PROMPT_QDRANT_URL: http://xp-prompt-qdrant:6333
+  XP_PROMPT_DEPENDENCY_TIMEOUT_SECONDS: "3"
+
 services:
   superset:
     <<: *x-xpbuilder-image
@@ -126,6 +143,107 @@ services:
     networks:
       - xpbuilder-internal
       - xpbuilder-link
+
+  xp-prompt-api:
+    <<: *x-xpbuilder-image
+    container_name: ${XPBUILDER_INSTANCE}_xp_prompt_api
+    restart: unless-stopped
+    command:
+      - gunicorn
+      - --bind=0.0.0.0:8090
+      - --workers=2
+      - --threads=4
+      - --timeout=60
+      - xp_prompt.api:app
+    environment: *x-xp-prompt-environment
+    depends_on:
+      xp-prompt-db:
+        condition: service_healthy
+      xp-prompt-qdrant:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /app/.venv/bin/python -c "import urllib.request;
+          assert urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=5).status == 200"
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 30s
+    networks:
+      - xpbuilder-internal
+
+  xp-prompt-worker:
+    <<: *x-xpbuilder-image
+    container_name: ${XPBUILDER_INSTANCE}_xp_prompt_worker
+    restart: unless-stopped
+    command:
+      - celery
+      - -A
+      - xp_prompt.celery_app:app
+      - worker
+      - -l
+      - INFO
+    environment: *x-xp-prompt-environment
+    depends_on:
+      xp-prompt-db:
+        condition: service_healthy
+      xp-prompt-qdrant:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          celery -A xp_prompt.celery_app:app inspect ping
+          -d "celery@$${HOSTNAME}" --timeout 8 | grep -q pong
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 45s
+    networks:
+      - xpbuilder-internal
+
+  xp-prompt-db:
+    image: postgres:16-alpine
+    container_name: ${XPBUILDER_INSTANCE}_xp_prompt_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xprompt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: xprompt
+    volumes:
+      - xp-prompt-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - xpbuilder-internal
+
+  xp-prompt-qdrant:
+    image: ${XP_PROMPT_QDRANT_IMAGE:-qdrant/qdrant:v1.15.5}
+    container_name: ${XPBUILDER_INSTANCE}_xp_prompt_qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - xp-prompt-qdrant:/qdrant/storage
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -c ':> /dev/tcp/127.0.0.1/6333'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - xpbuilder-internal
 
   initialize:
     <<: *x-xpbuilder-image
@@ -285,6 +403,12 @@ volumes:
   # external volume.
   mariadb-data:
     name: ${XPBUILDER_MARIADB_VOLUME:?XPBUILDER_MARIADB_VOLUME is required}
+    external: false
+  xp-prompt-postgres:
+    name: ${XP_PROMPT_POSTGRES_VOLUME:-${XPBUILDER_INSTANCE}_xp_prompt_postgres}
+    external: false
+  xp-prompt-qdrant:
+    name: ${XP_PROMPT_QDRANT_VOLUME:-${XPBUILDER_INSTANCE}_xp_prompt_qdrant}
     external: false
 
 networks:

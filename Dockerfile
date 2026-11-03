@@ -268,6 +268,7 @@ RUN uv pip install \
 RUN uv pip install --python /app/.venv/bin/python --no-cache reportlab==4.2.5
 
 COPY --chown=superset:superset config/superset_config.py /app/xpbuilder/superset_config.py
+COPY --chown=superset:superset services/xp_prompt/xp_prompt /app/xp_prompt/xp_prompt
 COPY --chown=superset:superset docker/initialize.sh /opt/xpbuilder/bin/initialize.sh
 COPY --chown=superset:superset docker/ensure_uploads_db.py /opt/xpbuilder/bin/ensure_uploads_db.py
 COPY --chown=superset:superset docker/ensure_report_designer_permissions.py /opt/xpbuilder/bin/ensure_report_designer_permissions.py

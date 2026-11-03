@@ -86,7 +86,8 @@ python3 tests/contract/runtime_contract.py \
 
 services=(
     superset superset-worker superset-beat superset-db superset-redis
-    mariadb phpmyadmin
+    mariadb phpmyadmin xp-prompt-api xp-prompt-worker xp-prompt-db
+    xp-prompt-qdrant
 )
 for attempt in $(seq 1 40); do
     all_healthy=1
@@ -113,6 +114,13 @@ for attempt in $(seq 1 40); do
     fi
     sleep 3
 done
+
+"${compose[@]}" exec -T xp-prompt-api /app/.venv/bin/python -c \
+    "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=5).status == 200"
+"${compose[@]}" exec -T xp-prompt-worker celery \
+    -A xp_prompt.celery_app:app inspect ping \
+    -d "celery@$("${compose[@]}" exec -T xp-prompt-worker hostname | tr -d '\r')" \
+    --timeout 8 | grep -q pong
 
 uploads_psql() {
     "${compose[@]}" exec -T superset-db \

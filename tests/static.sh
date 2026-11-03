@@ -6,6 +6,10 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 python3 -m py_compile config/superset_config.py docker/*.py tests/contract/*.py
+PYTHONPATH=services/xp_prompt python3 -m compileall -q \
+    services/xp_prompt/xp_prompt services/xp_prompt/tests
+PYTHONPATH=services/xp_prompt python3 -m unittest discover \
+    -s services/xp_prompt/tests -v
 python3 tests/contract/check_compatibility.py
 python3 -m json.tool compatibility.json >/dev/null
 

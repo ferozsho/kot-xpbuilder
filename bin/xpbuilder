@@ -81,7 +81,8 @@ case "$command_name" in
     health)
         services=(
             superset superset-worker superset-beat superset-db superset-redis
-            mariadb phpmyadmin
+            mariadb phpmyadmin xp-prompt-api xp-prompt-worker xp-prompt-db
+            xp-prompt-qdrant
         )
         failed=0
         for service in "${services[@]}"; do
@@ -101,6 +102,8 @@ case "$command_name" in
         [ "$failed" -eq 0 ] || exit 1
         "${compose[@]}" exec -T superset /app/.venv/bin/python -c \
             "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=5).status == 200"
+        "${compose[@]}" exec -T xp-prompt-api /app/.venv/bin/python -c \
+            "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8090/health/ready', timeout=5).status == 200"
         # The bundled MariaDB must accept the site credentials, and phpMyAdmin
         # must answer on the loopback port a reverse proxy forwards to.
         "${compose[@]}" exec -T mariadb sh -c \
