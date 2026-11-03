@@ -32,6 +32,7 @@ from xp_prompt import (
     chat,
     conversations,
     jobs,
+    responses,
     result_validation,
     schema_slice,
     sql_candidate,
@@ -855,6 +856,63 @@ def create_app(settings: Settings | None = None) -> Flask:
         except result_validation.ResultValidationError as exc:
             return _admin_error(f"Result rejected ({exc.code})", 422)
         return jsonify(verdict.to_public_dict()), 200
+
+    @app.post("/ai/conversations/<conversation_id>/blocks")
+    @require_admin_token
+    def conversation_append_blocks(conversation_id: str):
+        """Store a completed SQL turn (P4-F09/F10 join).
+
+        Superset executes and therefore owns the last two steps, but the content
+        and the blocks are still authored by this service (``sql_candidate`` and
+        ``result_validation``); this endpoint only *stores* them, re-validating the
+        blocks so a caller cannot inject an unnormalized shape into a transcript.
+        """
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        kind = str(payload.get("kind") or "answer")
+        if kind not in {"answer", "clarification", "error"}:
+            return _admin_error("Unsupported message kind", 400)
+        blocks = responses.normalize_blocks(payload.get("blocks"))
+        if not blocks:
+            return _admin_error("blocks are required", 400)
+        content = str(payload.get("content") or "").strip()
+        question = str(payload.get("question") or "").strip()
+        try:
+            if question:
+                conversations.append_message(
+                    resolved_settings,
+                    conversation_id,
+                    tenant_key=tenant_key,
+                    superset_user_id=owner,
+                    role="user",
+                    content=question,
+                )
+            message = conversations.append_message(
+                resolved_settings,
+                conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                role="assistant",
+                content=content or "Here is the result.",
+                structured_content={
+                    "kind": kind,
+                    "intent": str(payload.get("intent") or ""),
+                    "correlation_id": str(payload.get("correlation_id") or ""),
+                    "blocks": blocks,
+                },
+            )
+        except conversations.ConversationNotFound:
+            return _admin_error("Conversation not found", 404)
+        except conversations.ConversationInputError as exc:
+            return _admin_error(str(exc), 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not store the turn ({_error_class(exc)})", 503)
+        return jsonify({"message": message.to_public_dict()}), 201
 
     @app.get("/ai/providers/types")
     @require_admin_token

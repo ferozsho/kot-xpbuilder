@@ -251,6 +251,125 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    # --- Guided SQL turn: candidate → execute → validate → store ---------
+
+    @expose("/api/conversations/<conversation_id>/sql/", methods=("POST",))
+    @has_access_api
+    def api_conversation_sql(self, conversation_id: str) -> FlaskResponse:
+        """Answer a data question end to end, inside one request.
+
+        The division of labour is deliberate: the service writes and validates the
+        SQL and decides what the result may show; this view only authorizes the
+        database and runs the statement on Superset's own connection. The finished
+        turn is handed back to the service to store, so a transcript can never
+        contain a shape this service did not normalize.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        question = str(payload.get("question") or "").strip()
+        if not question:
+            return self.json_response(
+                {"message": _("question is required"), "severity": "danger"}, 400
+            )
+        datasets = authorized_datasets()
+        database = _database_for(payload, datasets)
+        if database is None:
+            return self.json_response(
+                {
+                    "message": _("Choose a database: the workspace is authorized for several"),
+                    "severity": "danger",
+                },
+                400,
+            )
+
+        schema_name = str(payload.get("schema") or "").strip() or None
+        candidate_status, candidate = call_xp_prompt(
+            "POST",
+            "/ai/sql/candidate",
+            payload={
+                "superset_user_id": owner,
+                "question": question,
+                "database": database.database_name,
+                "max_rows": MAX_PREVIEW_ROWS,
+                "datasets": datasets,
+            },
+        )
+        if candidate_status != 200:
+            return self.json_response(candidate, candidate_status)
+
+        try:
+            security_manager.raise_for_access(
+                database=database, sql=candidate["sql"], schema=schema_name
+            )
+        except SupersetSecurityException:
+            return self.json_response(
+                {"message": _("Not authorized to run this query"), "severity": "danger"},
+                403,
+            )
+
+        started = time.monotonic()
+        try:
+            frame = database.get_df(candidate["sql"], schema=schema_name)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("XP Prompt SQL turn failed: %s", type(exc).__name__)
+            return self.json_response(
+                {"message": _("The query could not be executed"), "severity": "danger"},
+                400,
+            )
+        duration_ms = round((time.monotonic() - started) * 1000)
+
+        preview = frame.head(MAX_PREVIEW_ROWS)
+        result_status, verdict = call_xp_prompt(
+            "POST",
+            "/ai/sql/result",
+            payload={
+                "superset_user_id": owner,
+                "columns": [str(column) for column in preview.columns],
+                "rows": [
+                    list(row) for row in preview.itertuples(index=False, name=None)
+                ],
+                "row_count": int(len(frame)),
+                "truncated": len(frame) > len(preview),
+                "intent": "query",
+                "max_rows": MAX_PREVIEW_ROWS,
+            },
+        )
+        if result_status != 200:
+            return self.json_response(verdict, result_status)
+
+        blocks = [*candidate.get("blocks", []), *verdict.get("blocks", [])]
+        store_status, stored = call_xp_prompt(
+            "POST",
+            f"/ai/conversations/{conversation_id}/blocks",
+            payload={
+                "superset_user_id": owner,
+                "question": question,
+                "content": candidate.get("rationale") or "",
+                "blocks": blocks,
+                "kind": "answer",
+                "intent": "query",
+                "correlation_id": candidate.get("correlation_id"),
+            },
+        )
+        if store_status not in (200, 201):
+            return self.json_response(stored, store_status)
+
+        return self.json_response(
+            {
+                "message": stored.get("message"),
+                "sql": candidate["sql"],
+                "duration_ms": duration_ms,
+                "limit": candidate.get("limit"),
+                "tables": candidate.get("tables", []),
+                "database": database.database_name,
+            },
+            201,
+        )
+
     # --- Guarded execution (P4-F09) --------------------------------------
 
     @expose("/api/sql/execute/", methods=("POST",))
@@ -426,6 +545,28 @@ def _cell(value: Any) -> str:
     if text in {"nan", "NaN", "NaT", "None"}:
         return ""
     return text[:MAX_CELL_CHARS]
+
+
+def _database_for(payload: dict[str, Any], datasets: list[dict[str, Any]]) -> Any:
+    """Resolve the target database from the slice rather than from a client id.
+
+    A caller may name a database explicitly; otherwise the one database the
+    principal is authorized for is used, and several candidates are refused so the
+    UI must ask rather than guess.
+    """
+    database_id = payload.get("database_id")
+    if database_id not in (None, ""):
+        try:
+            return db.session.query(Database).filter(Database.id == int(database_id)).one_or_none()
+        except (TypeError, ValueError):
+            return None
+    name = str(payload.get("database") or "").strip()
+    if name:
+        return db.session.query(Database).filter(Database.database_name == name).one_or_none()
+    names = {item["database"] for item in datasets if item.get("database")}
+    if len(names) != 1:
+        return None
+    return db.session.query(Database).filter(Database.database_name == names.pop()).one_or_none()
 
 
 def authorized_datasets() -> list[dict[str, Any]]:

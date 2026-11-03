@@ -29,6 +29,7 @@ import {
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import {
   archiveConversation,
+  askWithSql,
   createConversation,
   describeError,
   fetchConversation,
@@ -213,6 +214,7 @@ export default function AIPromptPage() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [runningSql, setRunningSql] = useState(false);
   //: Generation the rendered thread belongs to. Sent with every turn so the
   //: server can reject a context that was reset elsewhere.
   const [contextVersion, setContextVersion] = useState<number | undefined>();
@@ -358,6 +360,55 @@ export default function AIPromptPage() {
       ),
     [conversations],
   );
+
+  /**
+   * Answer the draft as a data question: the service writes and validates the
+   * SQL, Superset executes it, and the stored turn comes back with blocks.
+   */
+  const runSql = useCallback(async () => {
+    const question = draft.trim();
+    if (!question || sending || runningSql) {
+      return;
+    }
+    setRunningSql(true);
+    setError(null);
+    let conversationId = activeId;
+    try {
+      if (!conversationId) {
+        const created = await createConversation();
+        setConversations(current => [created, ...current]);
+        setActiveId(created.id);
+        setContextVersion(created.context_version);
+        conversationId = created.id;
+      }
+      setDraft('');
+      const response = await askWithSql(conversationId, question);
+      const detail = await fetchConversation(conversationId);
+      setMessages(detail.messages ?? []);
+      setConversations(current =>
+        current.map(item =>
+          item.id === conversationId
+            ? { ...item, last_message_at: new Date().toISOString() }
+            : item,
+        ),
+      );
+      addSuccessToast(
+        t('Query ran in %(ms)s ms', { ms: response.duration_ms }),
+      );
+    } catch (caught) {
+      setError(await describeError(caught));
+      if (conversationId) {
+        try {
+          const detail = await fetchConversation(conversationId);
+          setMessages(detail.messages ?? []);
+        } catch {
+          // the error banner already explains the failure
+        }
+      }
+    } finally {
+      setRunningSql(false);
+    }
+  }, [activeId, addSuccessToast, draft, runningSql, sending]);
 
   /** Drop the replayed context without deleting the visible transcript. */
   const resetThreadContext = useCallback(async () => {
@@ -530,11 +581,26 @@ export default function AIPromptPage() {
               <Button
                 buttonStyle="primary"
                 loading={sending}
-                disabled={!draft.trim()}
+                disabled={!draft.trim() || runningSql}
                 onClick={submit}
               >
                 {t('Send')}
               </Button>
+              <Tooltip
+                title={t(
+                  'Answer as a data question: generate SQL, run it against the ' +
+                    'authorized dataset, and show the result preview.',
+                )}
+              >
+                <Button
+                  buttonStyle="secondary"
+                  loading={runningSql}
+                  disabled={!draft.trim() || sending}
+                  onClick={runSql}
+                >
+                  {t('Run SQL')}
+                </Button>
+              </Tooltip>
               <Tooltip
                 title={t(
                   'Start a fresh context. The transcript stays visible; earlier ' +

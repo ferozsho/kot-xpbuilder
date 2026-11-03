@@ -25,9 +25,20 @@ import {
   ConversationRecord,
   JobListResponse,
   JobRecord,
+  MessageRecord,
 } from './types';
 
 const BASE = '/aiprompt/api';
+
+/** What one end-to-end SQL turn reports back to the workspace. */
+export interface SqlTurnResponse {
+  message: MessageRecord;
+  sql: string;
+  duration_ms: number;
+  limit?: number | null;
+  tables?: string[];
+  database?: string;
+}
 
 /**
  * The Superset client rejects with the raw `Response`, so surface the JSON
@@ -111,6 +122,26 @@ export async function archiveConversation(id: string): Promise<void> {
     endpoint: `${BASE}/conversations/${id}/archive/`,
     jsonPayload: {},
   });
+}
+
+/**
+ * Answer a data question end to end: the service writes and validates the SQL,
+ * Superset executes it, and the resulting turn is stored with its blocks.
+ *
+ * ``databaseId`` is only needed when the principal is authorized for several
+ * databases; otherwise Superset derives the single one from the slice.
+ */
+export async function askWithSql(
+  conversationId: string,
+  question: string,
+  databaseId?: number,
+): Promise<SqlTurnResponse> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/conversations/${conversationId}/sql/`,
+    jsonPayload:
+      databaseId === undefined ? { question } : { question, database_id: databaseId },
+  });
+  return json as SqlTurnResponse;
 }
 
 // --- Jobs (P2-F05/F08) -------------------------------------------------

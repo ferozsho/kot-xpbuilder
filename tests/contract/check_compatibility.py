@@ -658,6 +658,22 @@ def check_ai_sql_guard(compatibility: dict) -> None:
             'the execution route must ask the service to validate the result'
         )
 
+    # The whole pipeline has to be reachable from one turn: candidate in the
+    # service, execution in Superset, storage back in the service.
+    if '/api/conversations/<conversation_id>/sql/' not in proxy_source:
+        raise AssertionError('the proxy must expose the end-to-end SQL turn')
+    if '/ai/sql/candidate' not in proxy_source:
+        raise AssertionError('the SQL turn must ask the service for a candidate')
+    if '/blocks' not in proxy_source:
+        raise AssertionError('the SQL turn must store its blocks through the service')
+    if '@app.post("/ai/conversations/<conversation_id>/blocks")' not in service:
+        raise AssertionError('the service must expose the block-append endpoint')
+    blocks_route = service.split('def conversation_append_blocks', 1)[-1][:1200]
+    if 'responses.normalize_blocks(' not in blocks_route:
+        raise AssertionError(
+            'a stored turn must re-normalize its blocks instead of trusting the caller'
+        )
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.
