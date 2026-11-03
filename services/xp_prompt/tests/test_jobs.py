@@ -273,5 +273,121 @@ class IdentifierTest(unittest.TestCase):
         self.assertFalse(jobs.is_job_id(None))
 
 
+class _FakeCursor:
+    """Minimal cursor double for the single-statement job transitions."""
+
+    def __init__(self, row: dict | None) -> None:
+        self.row = row
+        self.statements: list[str] = []
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.statements.append(sql)
+
+    def fetchone(self) -> dict | None:
+        return self.row
+
+    def fetchall(self) -> list:
+        return []
+
+
+class _FakeConnection:
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+
+    def __enter__(self) -> "_FakeConnection":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+
+class ConfirmationTest(unittest.TestCase):
+    JOB_ID = "11111111-1111-1111-1111-111111111111"
+
+    def test_mutating_registration_is_tracked(self) -> None:
+        def handler(context: jobs.JobContext) -> dict:
+            return {}
+
+        try:
+            jobs.register_job_handler("mutates-things", mutating=True)(handler)
+            self.assertTrue(jobs.is_mutating("mutates-things"))
+            self.assertFalse(jobs.is_mutating(jobs.PING_JOB_TYPE))
+        finally:
+            jobs.JOB_HANDLERS.pop("mutates-things", None)
+            jobs.MUTATING_JOB_TYPES.discard("mutates-things")
+
+    def test_awaiting_confirmation_is_derived_from_status_and_registry(self) -> None:
+        row = {
+            "id": self.JOB_ID,
+            "conversation_id": "22222222-2222-2222-2222-222222222222",
+            "job_type": "mutates-things",
+            "status": "clarification",
+            "attempt_count": 0,
+            "max_attempts": 3,
+            "context_version": 1,
+        }
+
+        try:
+            jobs.MUTATING_JOB_TYPES.add("mutates-things")
+            self.assertTrue(jobs._job_from_row(row, ()).requires_confirmation)
+            row["status"] = "queued"
+            self.assertFalse(jobs._job_from_row(row, ()).requires_confirmation)
+        finally:
+            jobs.MUTATING_JOB_TYPES.discard("mutates-things")
+
+    def test_claim_only_takes_confirmed_work(self) -> None:
+        cursor = _FakeCursor(None)
+        with mock.patch.object(jobs, "connect", return_value=_FakeConnection(cursor)):
+            claimed = jobs.claim_job(settings(), self.JOB_ID, worker_id="worker-1")
+
+        self.assertIsNone(claimed)
+        self.assertIn("status = 'queued'", cursor.statements[0])
+        self.assertIn("cancel_requested_at IS NULL", cursor.statements[0])
+
+    def confirm(self, *, updated: bool, current: jobs.JobRecord | None):
+        cursor = _FakeCursor({"id": self.JOB_ID} if updated else None)
+        with mock.patch.object(jobs, "connect", return_value=_FakeConnection(cursor)), \
+             mock.patch.object(jobs, "get_job", return_value=current):
+            return jobs.confirm_job(
+                settings(), self.JOB_ID, tenant_key="default", superset_user_id=1
+            )
+
+    def test_confirm_moves_an_awaiting_job_to_queued(self) -> None:
+        record = self.confirm(updated=True, current=job(status=jobs.QUEUED))
+
+        self.assertEqual(record.status, jobs.QUEUED)
+
+    def test_confirm_of_a_job_not_awaiting_is_a_state_error(self) -> None:
+        with self.assertRaises(jobs.JobStateError):
+            self.confirm(updated=False, current=job(status=jobs.SUCCEEDED))
+
+    def test_confirm_of_a_missing_job_is_not_found(self) -> None:
+        with self.assertRaises(jobs.JobNotFound):
+            self.confirm(updated=False, current=None)
+
+    def test_reject_cancels_without_running(self) -> None:
+        cursor = _FakeCursor({"id": self.JOB_ID})
+        with mock.patch.object(jobs, "connect", return_value=_FakeConnection(cursor)), \
+             mock.patch.object(jobs, "get_job", return_value=job(status=jobs.CANCELLED)):
+            record = jobs.reject_job(
+                settings(), self.JOB_ID, tenant_key="default", superset_user_id=1
+            )
+
+        self.assertEqual(record.status, jobs.CANCELLED)
+        self.assertIn("status = 'cancelled'", cursor.statements[0])
+
+    def test_clarification_job_is_cancellable(self) -> None:
+        self.assertTrue(jobs.can_cancel(job(status=jobs.CLARIFICATION)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,7 @@ class VocabularyTest(unittest.TestCase):
                 "dashboard_proposal",
                 "warnings",
                 "repair",
+                "links",
             },
         )
 
@@ -220,6 +221,82 @@ class AnswerBlocksTest(unittest.TestCase):
         blocks = responses.clarification_blocks("Which metric?")
 
         self.assertEqual(blocks, [{"type": "clarification", "question": "Which metric?"}])
+
+
+class LinksTest(unittest.TestCase):
+    def test_only_known_entities_with_safe_ids_survive(self) -> None:
+        block = responses.normalize_blocks(
+            [
+                {
+                    "type": "links",
+                    "items": [
+                        {"entity_type": "chart", "entity_id": "42"},
+                        {"entity_type": "user", "entity_id": "1"},
+                        {"entity_type": "dataset", "entity_id": "../../etc/passwd"},
+                        {"label": "no entity", "entity_id": "7"},
+                    ],
+                }
+            ]
+        )[0]
+
+        self.assertEqual(len(block["items"]), 1)
+        self.assertEqual(block["items"][0]["entity_type"], "chart")
+        self.assertEqual(block["items"][0]["entity_id"], "42")
+        self.assertEqual(block["items"][0]["label"], "Open chart")
+
+    def test_links_need_at_least_one_valid_item(self) -> None:
+        self.assertEqual(
+            responses.normalize_blocks(
+                [
+                    {
+                        "type": "links",
+                        "items": [{"entity_type": "nope", "entity_id": "1"}],
+                    }
+                ]
+            ),
+            [],
+        )
+
+    def test_link_count_is_capped(self) -> None:
+        block = responses.normalize_blocks(
+            [
+                {
+                    "type": "links",
+                    "items": [{"entity_type": "chart", "entity_id": str(n)} for n in range(20)],
+                }
+            ]
+        )[0]
+
+        self.assertEqual(len(block["items"]), responses.MAX_LINKS)
+
+    def test_no_url_is_ever_stored(self) -> None:
+        block = responses.normalize_blocks(
+            [
+                {
+                    "type": "links",
+                    "items": [
+                        {
+                            "entity_type": "dashboard",
+                            "entity_id": "7",
+                            "label": "Open dashboard",
+                            "href": "https://evil.example/steal",
+                        }
+                    ],
+                }
+            ]
+        )[0]
+
+        self.assertNotIn("href", block["items"][0])
+
+    def test_native_link_helper_rejects_bad_input(self) -> None:
+        self.assertEqual(
+            responses.native_link("chart", 12),
+            {"entity_type": "chart", "entity_id": "12"},
+        )
+        with self.assertRaises(ValueError):
+            responses.native_link("user", 1)
+        with self.assertRaises(ValueError):
+            responses.native_link("chart", "../x")
 
 
 if __name__ == "__main__":

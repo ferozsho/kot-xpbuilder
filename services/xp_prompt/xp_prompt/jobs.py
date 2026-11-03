@@ -135,6 +135,8 @@ class JobRecord:
     context_version: int
     error_code: str | None = None
     cancel_requested: bool = False
+    #: True while a mutating job waits for the user to confirm it.
+    requires_confirmation: bool = False
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -157,6 +159,7 @@ class JobRecord:
             "max_attempts": self.max_attempts,
             "context_version": self.context_version,
             "cancel_requested": self.cancel_requested,
+            "requires_confirmation": self.requires_confirmation,
             "error_code": self.error_code,
             "replayed": self.replayed,
             "created_at": _isoformat(self.created_at),
@@ -180,10 +183,20 @@ class JobContext:
 JobHandler = Callable[[JobContext], dict[str, Any]]
 
 JOB_HANDLERS: dict[str, JobHandler] = {}
+#: Job types that change Superset objects. A message can never start one: the job
+#: is created `clarification` (awaiting confirmation) and ``claim_job`` only takes
+#: ``queued`` work, so the gate is structural rather than advisory.
+MUTATING_JOB_TYPES: set[str] = set()
 
 
-def register_job_handler(job_type: str) -> Callable[[JobHandler], JobHandler]:
-    """Register the handler for one job type (Phases 4–8 add theirs)."""
+def register_job_handler(
+    job_type: str, *, mutating: bool = False
+) -> Callable[[JobHandler], JobHandler]:
+    """Register the handler for one job type (Phases 4–8 add theirs).
+
+    ``mutating=True`` marks a job that saves, publishes, overwrites, or spends
+    real money; such a job must be confirmed before a worker may claim it.
+    """
 
     def decorator(handler: JobHandler) -> JobHandler:
         key = (job_type or "").strip()
@@ -192,9 +205,15 @@ def register_job_handler(job_type: str) -> Callable[[JobHandler], JobHandler]:
         if key in JOB_HANDLERS and JOB_HANDLERS[key] is not handler:
             raise JobInputError(f"job_type {key} is already registered")
         JOB_HANDLERS[key] = handler
+        if mutating:
+            MUTATING_JOB_TYPES.add(key)
         return handler
 
     return decorator
+
+
+def is_mutating(job_type: str) -> bool:
+    return job_type in MUTATING_JOB_TYPES
 
 
 def known_job_types() -> tuple[str, ...]:
@@ -270,9 +289,9 @@ def create_job(
                     tenant_id, conversation_id, superset_user_id, job_type,
                     idempotency_key, request_hash, request_ciphertext,
                     context_version, policy_version, authorization_version,
-                    max_attempts
+                    max_attempts, status
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, 1, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, 1, %s, %s)
                 ON CONFLICT (tenant_id, superset_user_id, idempotency_key)
                 DO NOTHING
                 RETURNING id
@@ -287,6 +306,7 @@ def create_job(
                     sealed,
                     max(1, int(context_version)),
                     attempts,
+                    CLARIFICATION if is_mutating(job_type) else QUEUED,
                 ),
             )
             row = cursor.fetchone()
@@ -431,6 +451,100 @@ def request_cancel(
         superset_user_id=int(superset_user_id),
     )
     if record is None:  # pragma: no cover - defensive
+        raise JobNotFound("job not found")
+    return record
+
+
+def confirm_job(
+    settings: Settings,
+    job_id: str,
+    *,
+    tenant_key: str,
+    superset_user_id: int,
+) -> JobRecord:
+    """Approve a mutating job so a worker may claim it (P2-F08).
+
+    Until this runs the job sits in ``clarification`` and ``claim_job`` refuses
+    it, so attaching a new message can never publish or overwrite anything.
+    """
+    with connect(settings) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ai_job j
+                SET status = 'queued', updated_at = CURRENT_TIMESTAMP
+                FROM ai_tenant t
+                WHERE j.tenant_id = t.id
+                  AND t.key = %s
+                  AND j.id = %s
+                  AND j.superset_user_id = %s
+                  AND j.status = 'clarification'
+                  AND j.cancel_requested_at IS NULL
+                RETURNING j.id
+                """,
+                (tenant_key, job_id, int(superset_user_id)),
+            )
+            confirmed = cursor.fetchone() is not None
+    if not confirmed:
+        if get_job(
+            settings, job_id, tenant_key=tenant_key, superset_user_id=superset_user_id
+        ) is None:
+            raise JobNotFound("job not found")
+        raise JobStateError("job is not awaiting confirmation")
+
+    record = get_job(
+        settings,
+        job_id,
+        tenant_key=tenant_key,
+        superset_user_id=int(superset_user_id),
+    )
+    if record is None:
+        raise JobNotFound("job not found")
+    return record
+
+
+def reject_job(
+    settings: Settings,
+    job_id: str,
+    *,
+    tenant_key: str,
+    superset_user_id: int,
+) -> JobRecord:
+    """Refuse a mutating job; it ends ``cancelled`` without ever running."""
+    with connect(settings) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ai_job j
+                SET status = 'cancelled',
+                    cancel_requested_at = COALESCE(j.cancel_requested_at, CURRENT_TIMESTAMP),
+                    completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                FROM ai_tenant t
+                WHERE j.tenant_id = t.id
+                  AND t.key = %s
+                  AND j.id = %s
+                  AND j.superset_user_id = %s
+                  AND j.status = 'clarification'
+                RETURNING j.id
+                """,
+                (tenant_key, job_id, int(superset_user_id)),
+            )
+            rejected = cursor.fetchone() is not None
+    if not rejected:
+        if get_job(
+            settings, job_id, tenant_key=tenant_key, superset_user_id=superset_user_id
+        ) is None:
+            raise JobNotFound("job not found")
+        raise JobStateError("job is not awaiting confirmation")
+
+    record = get_job(
+        settings,
+        job_id,
+        tenant_key=tenant_key,
+        superset_user_id=int(superset_user_id),
+    )
+    if record is None:
         raise JobNotFound("job not found")
     return record
 
@@ -818,16 +932,19 @@ def _load_steps(cursor: Any, job_id: str) -> tuple[JobStepRecord, ...]:
 
 
 def _job_from_row(row: dict[str, Any], steps: tuple[JobStepRecord, ...]) -> JobRecord:
+    status = str(row["status"])
+    job_type = str(row["job_type"])
     return JobRecord(
         id=str(row["id"]),
         conversation_id=str(row["conversation_id"]),
-        job_type=str(row["job_type"]),
-        status=str(row["status"]),
+        job_type=job_type,
+        status=status,
         attempt_count=int(row["attempt_count"]),
         max_attempts=int(row["max_attempts"]),
         context_version=int(row.get("context_version") or 1),
         error_code=row.get("error_code"),
         cancel_requested=bool(row.get("cancel_requested_at")),
+        requires_confirmation=status == CLARIFICATION and is_mutating(job_type),
         created_at=row.get("created_at"),
         started_at=row.get("started_at"),
         completed_at=row.get("completed_at"),
@@ -846,6 +963,7 @@ def _replace(record: JobRecord, **changes: Any) -> JobRecord:
         "context_version": record.context_version,
         "error_code": record.error_code,
         "cancel_requested": record.cancel_requested,
+        "requires_confirmation": record.requires_confirmation,
         "created_at": record.created_at,
         "started_at": record.started_at,
         "completed_at": record.completed_at,

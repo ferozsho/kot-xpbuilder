@@ -419,7 +419,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             return _admin_error("Conversation not found", 404)
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not create job ({_error_class(exc)})", 503)
-        if not record.replayed:
+        if not record.replayed and record.status == jobs.QUEUED:
             _enqueue_job(record.id)
         return jsonify(record.to_public_dict()), 200 if record.replayed else 201
 
@@ -516,6 +516,59 @@ def create_app(settings: Settings | None = None) -> Flask:
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not retry job ({_error_class(exc)})", 503)
         _enqueue_job(record.id)
+        return jsonify(record.to_public_dict()), 200
+
+    @app.post("/ai/jobs/<job_id>/confirm")
+    @require_admin_token
+    def job_confirm(job_id: str):
+        """Approve a mutating job; nothing runs until this is called (P2-F08)."""
+        if not jobs.is_job_id(job_id):
+            return _admin_error("Job not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            record = jobs.confirm_job(
+                resolved_settings,
+                job_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except jobs.JobNotFound:
+            return _admin_error("Job not found", 404)
+        except jobs.JobStateError as exc:
+            return _admin_error(str(exc), 409)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not confirm job ({_error_class(exc)})", 503)
+        _enqueue_job(record.id)
+        return jsonify(record.to_public_dict()), 200
+
+    @app.post("/ai/jobs/<job_id>/reject")
+    @require_admin_token
+    def job_reject(job_id: str):
+        """Refuse a mutating job; it ends cancelled without running."""
+        if not jobs.is_job_id(job_id):
+            return _admin_error("Job not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            record = jobs.reject_job(
+                resolved_settings,
+                job_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except jobs.JobNotFound:
+            return _admin_error("Job not found", 404)
+        except jobs.JobStateError as exc:
+            return _admin_error(str(exc), 409)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not reject job ({_error_class(exc)})", 503)
         return jsonify(record.to_public_dict()), 200
 
     @app.get("/ai/providers/types")

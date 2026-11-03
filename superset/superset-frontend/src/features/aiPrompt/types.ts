@@ -121,6 +121,19 @@ export interface RepairBlock {
   notes: string;
 }
 
+/**
+ * Native Superset links (P2-F09). Only the object identity is sent — never a
+ * URL — so the page resolves it against this deployment's own routes.
+ */
+export interface LinksBlock {
+  type: 'links';
+  items: {
+    label: string;
+    entity_type: 'dataset' | 'chart' | 'dashboard';
+    entity_id: string;
+  }[];
+}
+
 export type ResponseBlock =
   | ClarificationBlock
   | PlanBlock
@@ -131,7 +144,8 @@ export type ResponseBlock =
   | ChartRecommendationBlock
   | DashboardProposalBlock
   | WarningsBlock
-  | RepairBlock;
+  | RepairBlock
+  | LinksBlock;
 
 export interface MessageRecord {
   id: string;

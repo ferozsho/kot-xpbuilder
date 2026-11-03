@@ -380,11 +380,22 @@ def check_ai_job_wiring(compatibility: dict) -> None:
             raise AssertionError(f'{jobs_module} lost {marker}')
 
     service = (ROOT / workspace['service']).read_text(encoding='utf-8')
-    for route in ('/ai/jobs', '/cancel', '/retry'):
+    for route in ('/ai/jobs', '/cancel', '/retry', '/confirm', '/reject'):
         if route not in service:
             raise AssertionError(
                 f'the XP Prompt service must expose the job route {route}'
             )
+
+    # Confirmation (P2-F08) must be structural: mutating jobs start unconfirmed
+    # and the claim statement only takes queued work.
+    if 'MUTATING_JOB_TYPES' not in source:
+        raise AssertionError(
+            f'{jobs_module} must track mutating job types'
+        )
+    if "status = 'queued'" not in source:
+        raise AssertionError(
+            'claim_job must only claim queued (confirmed) work'
+        )
 
     tasks = (
         ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'tasks.py'

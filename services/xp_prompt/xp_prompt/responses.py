@@ -40,6 +40,7 @@ CHART_RECOMMENDATION = "chart_recommendation"
 DASHBOARD_PROPOSAL = "dashboard_proposal"
 WARNINGS = "warnings"
 REPAIR = "repair"
+LINKS = "links"
 
 BLOCK_TYPES: tuple[str, ...] = (
     CLARIFICATION,
@@ -52,6 +53,7 @@ BLOCK_TYPES: tuple[str, ...] = (
     DASHBOARD_PROPOSAL,
     WARNINGS,
     REPAIR,
+    LINKS,
 )
 
 MAX_BLOCKS = 12
@@ -61,6 +63,12 @@ MAX_SQL_CHARS = 4000
 MAX_ROWS = 20
 MAX_CELLS = 12
 MAX_CELL_CHARS = 200
+MAX_LINKS = 6
+
+#: Superset objects the workspace may link to. The frontend owns the actual
+#: paths, so a route change never leaves a stale href in a stored transcript.
+LINK_ENTITIES: tuple[str, ...] = ("dataset", "chart", "dashboard")
+_SAFE_ENTITY_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _REPAIR_OUTCOMES = frozenset({"fixed", "failed", "unchanged", "skipped"})
 _PERIOD_CUE = re.compile(
@@ -302,6 +310,46 @@ def _repair(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _links(item: dict[str, Any]) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for entry in _list(item.get("items")):
+        if not isinstance(entry, dict):
+            continue
+        entity_type = str(entry.get("entity_type") or "").strip().lower()
+        entity_id = str(entry.get("entity_id") or "").strip()
+        if entity_type not in LINK_ENTITIES or not _SAFE_ENTITY_ID.match(entity_id):
+            continue
+        entries.append(
+            {
+                "label": _text(entry.get("label")) or f"Open {entity_type}",
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+            }
+        )
+    if not entries:
+        raise ValueError("links needs at least one valid item")
+    return {"type": LINKS, "items": entries[:MAX_LINKS]}
+
+
+def native_link(entity_type: str, entity_id: Any, label: str | None = None) -> dict:
+    """Build one link entry for a producer (Phases 7–8).
+
+    Only the object identity is stored: the frontend maps it to the deployment's
+    own Superset route, so a stored transcript can never carry a stale or foreign
+    URL.
+    """
+    entity = str(entity_type or "").strip().lower()
+    identifier = str(entity_id or "").strip()
+    if entity not in LINK_ENTITIES:
+        raise ValueError(f"unsupported entity_type {entity_type!r}")
+    if not _SAFE_ENTITY_ID.match(identifier):
+        raise ValueError("entity_id must be alphanumeric, dash, or underscore")
+    entry = {"entity_type": entity, "entity_id": identifier}
+    if label:
+        entry["label"] = _text(label)
+    return entry
+
+
 _NORMALIZERS = {
     CLARIFICATION: _clarification,
     PLAN: _plan,
@@ -313,6 +361,7 @@ _NORMALIZERS = {
     DASHBOARD_PROPOSAL: _dashboard_proposal,
     WARNINGS: _warnings,
     REPAIR: _repair,
+    LINKS: _links,
 }
 
 

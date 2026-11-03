@@ -117,6 +117,31 @@ const StyledMeta = styled.p`
   `}
 `;
 
+const StyledLinks = styled.ul`
+  ${({ theme }) => `
+    margin: 0;
+    padding-left: ${theme.sizeUnit * 4}px;
+    display: flex;
+    flex-direction: column;
+    gap: ${theme.sizeUnit}px;
+  `}
+`;
+
+/**
+ * Native routes, copied from `src/views/routes.tsx` so a link always points at a
+ * page this build actually serves. The backend stores only the object identity.
+ */
+const ENTITY_PATHS: Record<string, (id: string) => string> = {
+  chart: id => `/explore/?slice_id=${encodeURIComponent(id)}`,
+  dashboard: id => `/xpbuilder/dashboard/${encodeURIComponent(id)}/`,
+  dataset: id => `/dataset/${encodeURIComponent(id)}`,
+};
+
+function entityHref(entityType: string, entityId: string): string | null {
+  const build = ENTITY_PATHS[entityType];
+  return build ? build(entityId) : null;
+}
+
 function BlockFrame({
   title,
   children,
@@ -281,6 +306,21 @@ function Block({ block }: { block: ResponseBlock }) {
             {t('%(count)s attempt(s)', { count: block.attempts })}
             {block.notes ? ` · ${block.notes}` : ''}
           </StyledMeta>
+        </BlockFrame>
+      );
+    case 'links':
+      return (
+        <BlockFrame title={t('Open in Superset')}>
+          <StyledLinks>
+            {block.items.map(item => {
+              const href = entityHref(item.entity_type, item.entity_id);
+              return href ? (
+                <li key={`${item.entity_type}-${item.entity_id}`}>
+                  <a href={href}>{item.label}</a>
+                </li>
+              ) : null;
+            })}
+          </StyledLinks>
         </BlockFrame>
       );
     default:
