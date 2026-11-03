@@ -25,6 +25,10 @@ class ProviderRequest:
     max_output_tokens: int
     temperature: float = 0.0
     json_output: bool = False
+    #: Caller-supplied correlation id. The router stamps a generated one when
+    #: the caller has no request/job identity yet, so every attempt of one
+    #: logical request can be joined in logs and in the future usage ledger.
+    correlation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.operation.strip():
@@ -35,6 +39,11 @@ class ProviderRequest:
             raise ValueError("max_output_tokens is outside the platform range")
         if not 0.0 <= self.temperature <= 2.0:
             raise ValueError("temperature must be between 0 and 2")
+        if self.correlation_id is not None:
+            if not self.correlation_id.strip():
+                raise ValueError("correlation_id must not be blank when provided")
+            if len(self.correlation_id) > 64:
+                raise ValueError("correlation_id must be at most 64 characters")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +75,10 @@ class AttemptSummary:
     retryable: bool = False
     #: 1-based ordinal of this attempt against the same provider.
     attempt: int = 1
+    #: Correlation id shared by every attempt of one logical request.
+    correlation_id: str | None = None
+    #: Operation name, so audit can group attempts without the raw request.
+    operation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +116,7 @@ class ProviderRoutingError(ProviderError):
         *,
         cause: ProviderError,
         attempts: tuple[AttemptSummary, ...],
+        correlation_id: str | None = None,
     ) -> None:
         super().__init__(
             provider=cause.provider,
@@ -113,6 +127,7 @@ class ProviderRoutingError(ProviderError):
             retry_after_seconds=cause.retry_after_seconds,
         )
         self.attempts = attempts
+        self.correlation_id = correlation_id
 
 
 @dataclass(frozen=True, slots=True)

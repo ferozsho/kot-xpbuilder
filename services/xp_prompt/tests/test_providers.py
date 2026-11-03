@@ -71,7 +71,11 @@ class StubProvider:
         return self.result
 
 
-def request(*, json_output: bool = False) -> ProviderRequest:
+def request(
+    *,
+    json_output: bool = False,
+    correlation_id: str | None = None,
+) -> ProviderRequest:
     return ProviderRequest(
         operation="sql.generate",
         messages=(
@@ -81,6 +85,7 @@ def request(*, json_output: bool = False) -> ProviderRequest:
         max_output_tokens=512,
         temperature=0.0,
         json_output=json_output,
+        correlation_id=correlation_id,
     )
 
 
@@ -390,6 +395,67 @@ class ProviderRouterTest(unittest.TestCase):
 
         self.assertEqual(routed.response.provider, "gemini")
         self.assertEqual(seen, [("gemini", None)])
+
+    def test_attempts_share_one_generated_correlation_id(self) -> None:
+        primary = StubProvider(
+            "gemini",
+            "gemini-test",
+            ProviderError(
+                provider="gemini",
+                code="http_503",
+                message="unavailable",
+                retryable=True,
+            ),
+        )
+        fallback = StubProvider(
+            "deepseek", "deepseek-flash", response("deepseek", "deepseek-flash")
+        )
+
+        routed = self.router(primary, fallback).generate(request())
+
+        correlation_ids = {a.correlation_id for a in routed.attempts}
+        self.assertEqual(len(correlation_ids), 1)
+        correlation_id = correlation_ids.pop()
+        self.assertIsNotNone(correlation_id)
+        self.assertEqual(len(correlation_id), 32)
+
+    def test_caller_supplied_correlation_id_is_preserved(self) -> None:
+        primary = StubProvider(
+            "gemini", "gemini-test", response("gemini", "gemini-test")
+        )
+
+        routed = self.router(primary, None).generate(
+            request(correlation_id="job-42")
+        )
+
+        self.assertEqual(routed.attempts[0].correlation_id, "job-42")
+
+    def test_attempts_record_the_operation(self) -> None:
+        primary = StubProvider(
+            "gemini", "gemini-test", response("gemini", "gemini-test")
+        )
+
+        routed = self.router(primary, None).generate(request())
+
+        self.assertEqual(routed.attempts[0].operation, "sql.generate")
+
+    def test_routing_error_carries_the_correlation_id(self) -> None:
+        primary = StubProvider(
+            "gemini",
+            "gemini-test",
+            ProviderError(
+                provider="gemini",
+                code="content_blocked",
+                message="blocked",
+                retryable=False,
+            ),
+        )
+
+        with self.assertRaises(ProviderRoutingError) as raised:
+            self.router(primary, None).generate(request(correlation_id="job-7"))
+
+        self.assertEqual(raised.exception.correlation_id, "job-7")
+        self.assertEqual(raised.exception.attempts[0].correlation_id, "job-7")
 
 
 if __name__ == "__main__":

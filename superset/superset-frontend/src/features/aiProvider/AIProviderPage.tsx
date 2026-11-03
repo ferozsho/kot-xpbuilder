@@ -30,6 +30,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
 } from '@superset-ui/core/components';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import {
@@ -182,6 +183,10 @@ const StyledRow = styled.div`
  * the same gutter keeps the side cards aligned with the form card.
  */
 const StyledCard = styled(Card)`
+  .ant-card-head {
+    padding: 0 ${({ theme }) => theme.sizeUnit * 4}px;
+  }
+
   .ant-card-body {
     padding: ${({ theme }) => theme.sizeUnit * 4}px;
   }
@@ -418,6 +423,33 @@ export default function AIProviderPage() {
             <Tag color="green">{t('Succeeded')}</Tag>
           ) : (
             <Tag color="red">{record.last_test.error || t('Failed')}</Tag>
+          );
+        },
+      },
+      {
+        title: t('Health'),
+        key: 'health',
+        width: 150,
+        render: (_: unknown, record: ProviderRecord) => {
+          const health = record.health;
+          if (!health || health.state !== 'open') {
+            return <Tag color="green">{t('Healthy')}</Tag>;
+          }
+          // The breaker is skipping this provider until `open_until`; the
+          // tooltip carries the redacted reason so no prompt data is exposed.
+          return (
+            <Tooltip
+              title={`${t('Skipped until')} ${health.open_until ?? '—'}${
+                health.last_error ? ` — ${health.last_error}` : ''
+              }`}
+            >
+              <Tag color="orange">
+                {t('Cooling down')}
+                {health.consecutive_failures
+                  ? ` (${health.consecutive_failures})`
+                  : ''}
+              </Tag>
+            </Tooltip>
           );
         },
       },
@@ -667,7 +699,7 @@ export default function AIProviderPage() {
                   }
                 />
               </StyledField>
-            </Card>
+            </StyledCard>
             <StyledCard title={t('Connection test')} style={{ marginTop: 16 }}>
               <span className="helper">
                 {editing

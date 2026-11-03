@@ -13,7 +13,9 @@ Three route groups live here:
 from __future__ import annotations
 
 import logging
+import os
 import time
+import uuid
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
@@ -30,8 +32,27 @@ from xp_prompt.security import constant_time_equals, internal_admin_token
 ADMIN_TOKEN_HEADER = "X-XP-Prompt-Token"
 TEST_PROMPT = "Reply with the single word OK."
 TEST_MAX_TOKENS = 16
+LOG_LEVEL_ENV = "XP_PROMPT_LOG_LEVEL"
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    """Attach one stdout handler to the ``xp_prompt`` logger.
+
+    Gunicorn configures only its own loggers, so without this the structured
+    attempt and probe lines never reach the container log. Idempotent, and the
+    level is tunable with ``XP_PROMPT_LOG_LEVEL``.
+    """
+    package_logger = logging.getLogger("xp_prompt")
+    level_name = (os.environ.get(LOG_LEVEL_ENV) or "INFO").strip().upper()
+    package_logger.setLevel(getattr(logging, level_name, logging.INFO))
+    if package_logger.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    package_logger.addHandler(handler)
 
 
 def _admin_error(message: str, status: int) -> tuple[Response, int]:
@@ -44,6 +65,7 @@ def _error_class(exc: BaseException) -> str:
 
 def create_app(settings: Settings | None = None) -> Flask:
     """Create the XP Prompt API application."""
+    _configure_logging()
     app = Flask(__name__)
     resolved_settings = settings or Settings.from_env()
 
@@ -188,6 +210,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             return _admin_error(str(exc), 400)
 
         started = time.monotonic()
+        correlation_id = uuid.uuid4().hex
         try:
             response = provider.generate(
                 ProviderRequest(
@@ -195,6 +218,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                     messages=(Message("user", TEST_PROMPT),),
                     max_output_tokens=TEST_MAX_TOKENS,
                     temperature=0.0,
+                    correlation_id=correlation_id,
                 )
             )
         except ProviderError as exc:
@@ -206,6 +230,14 @@ def create_app(settings: Settings | None = None) -> Flask:
                 error=exc.code,
             )
             _record_health(provider_id, exc)
+            logger.info(
+                "provider_test correlation_id=%s provider=%s outcome=failed "
+                "error_code=%s duration_ms=%d",
+                correlation_id,
+                record.name,
+                exc.code,
+                duration_ms,
+            )
             return (
                 jsonify(
                     {
@@ -213,6 +245,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                         "error_code": exc.code,
                         "retryable": exc.retryable,
                         "duration_ms": duration_ms,
+                        "correlation_id": correlation_id,
                     }
                 ),
                 200,
@@ -230,6 +263,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                         "status": "failed",
                         "error_code": "adapter_error",
                         "retryable": False,
+                        "correlation_id": correlation_id,
                     }
                 ),
                 200,
@@ -238,6 +272,14 @@ def create_app(settings: Settings | None = None) -> Flask:
         duration_ms = round((time.monotonic() - started) * 1000)
         registry.record_test_result(resolved_settings, provider_id, status="succeeded")
         _record_health(provider_id, None)
+        logger.info(
+            "provider_test correlation_id=%s provider=%s outcome=succeeded "
+            "model=%s duration_ms=%d",
+            correlation_id,
+            record.name,
+            response.model,
+            duration_ms,
+        )
         return (
             jsonify(
                 {
@@ -245,6 +287,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                     "model": response.model,
                     "duration_ms": duration_ms,
                     "finish_reason": response.finish_reason,
+                    "correlation_id": correlation_id,
                 }
             ),
             200,

@@ -52,6 +52,18 @@ export interface ProviderTestInfo {
   at: string | null;
 }
 
+/**
+ * Passive health of one provider row. `state` is `open` while the circuit
+ * breaker is skipping the provider, so the table can explain missing traffic.
+ */
+export interface ProviderHealthInfo {
+  state: 'open' | 'closed';
+  consecutive_failures: number;
+  open_until: string | null;
+  last_error: string | null;
+  last_failure_at: string | null;
+}
+
 export interface ProviderRecord {
   id: string;
   tenant: string;
@@ -66,6 +78,7 @@ export interface ProviderRecord {
   priority: number;
   api_key: ProviderApiKeyInfo;
   last_test: ProviderTestInfo;
+  health: ProviderHealthInfo;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -103,4 +116,6 @@ export interface ProviderTestResult {
   error_code?: string;
   retryable?: boolean;
   message?: string;
+  /** Server-side correlation id for the attempt, quoted in support requests. */
+  correlation_id?: string;
 }
