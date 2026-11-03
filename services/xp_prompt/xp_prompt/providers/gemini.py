@@ -67,6 +67,14 @@ class GeminiProvider:
         }
         if request.json_output:
             generation_config["responseMimeType"] = "application/json"
+        if _supports_thinking_budget(self.model) and (
+            request.reasoning_budget_tokens is not None
+        ):
+            # Gemini 2.5 charges thoughts against ``maxOutputTokens``; a structured
+            # answer truncated mid-JSON is the symptom of letting it think freely.
+            generation_config["thinkingConfig"] = {
+                "thinkingBudget": request.reasoning_budget_tokens
+            }
 
         payload: dict[str, object] = {
             "contents": contents,
@@ -159,4 +167,15 @@ class GeminiProvider:
 
 def _optional_int(value: object) -> int | None:
     return value if isinstance(value, int) and value >= 0 else None
+
+
+def _supports_thinking_budget(model: str) -> bool:
+    """Only some Gemini models accept ``thinkingConfig``.
+
+    2.5 Flash / Flash-Lite accept a budget (including 0); 2.5 Pro requires a
+    minimum, and 1.x models reject the field entirely, so it is only sent where it
+    is understood rather than optimistically everywhere.
+    """
+    name = (model or "").lower()
+    return "2.5" in name and "pro" not in name
 

@@ -29,6 +29,12 @@ class ProviderRequest:
     #: as a non-retryable validation failure, so a caller never starts acting on
     #: a half-populated document.
     json_required_keys: tuple[str, ...] = ()
+    #: How many tokens the provider may spend *thinking* before answering.
+    #: Some models charge that against ``max_output_tokens``; a structured answer
+    #: can then be truncated mid-JSON (observed live with Gemini 2.5 Flash), so a
+    #: caller that needs a small, deterministic document can ask for zero.
+    #: ``None`` leaves the provider's default alone.
+    reasoning_budget_tokens: int | None = None
     #: Caller-supplied correlation id. The router stamps a generated one when
     #: the caller has no request/job identity yet, so every attempt of one
     #: logical request can be joined in logs and in the future usage ledger.
@@ -49,6 +55,12 @@ class ProviderRequest:
             )
         if len(self.json_required_keys) > 32:
             raise ValueError("json_required_keys accepts at most 32 keys")
+        if self.reasoning_budget_tokens is not None and not (
+            0 <= self.reasoning_budget_tokens <= 32_768
+        ):
+            raise ValueError(
+                "reasoning_budget_tokens must be between 0 and 32768"
+            )
         for key in self.json_required_keys:
             if not key.strip() or len(key) > 64:
                 raise ValueError(

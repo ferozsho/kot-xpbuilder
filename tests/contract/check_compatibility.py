@@ -584,6 +584,24 @@ def check_ai_sql_guard(compatibility: dict) -> None:
                 f'the adversarial corpus must cover the "{code}" refusal'
             )
 
+    # P4-F04: a candidate is only a candidate once the guard has seen it, and the
+    # structured answer must not be starved by a thinking budget.
+    candidate_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'sql_candidate.py'
+    candidate = candidate_path.read_text(encoding='utf-8')
+    if 'sql_guard.check(' not in candidate:
+        raise AssertionError('candidates must pass through sql_guard.check')
+    if 'reasoning_budget_tokens=0' not in candidate:
+        raise AssertionError(
+            'structured candidates must disable provider thinking so the JSON is not truncated'
+        )
+    if 'allowed_tables' not in candidate:
+        raise AssertionError('candidates must be checked against the schema allowlist')
+    service = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'api.py'
+    ).read_text(encoding='utf-8')
+    if '/ai/sql/candidate' not in service:
+        raise AssertionError('the XP Prompt service must expose /ai/sql/candidate')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

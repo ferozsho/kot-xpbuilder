@@ -26,7 +26,16 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from xp_prompt import __version__, artifacts, chat, conversations, jobs, schema_slice
+from xp_prompt import (
+    __version__,
+    artifacts,
+    chat,
+    conversations,
+    jobs,
+    schema_slice,
+    sql_candidate,
+    sql_guard,
+)
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
@@ -65,6 +74,37 @@ def _admin_error(message: str, status: int) -> tuple[Response, int]:
 
 def _error_class(exc: BaseException) -> str:
     return type(exc).__name__
+
+
+#: P4-F04 refusals -> HTTP status. A blocked statement is a policy outcome (422),
+#: an exhausted provider is availability (503), a bad answer is upstream (502).
+_SQL_CANDIDATE_STATUS = {
+    "empty_question": 400,
+    "question_too_long": 400,
+    "unsupported_dialect": 400,
+    "dialect_ambiguous": 400,
+    "no_schema": 409,
+    "sql_blocked": 422,
+    "invalid_response": 502,
+    "provider_error": 503,
+    "no_provider": 503,
+}
+
+
+def _sql_candidate_status(exc: BaseException) -> int:
+    return _SQL_CANDIDATE_STATUS.get(getattr(exc, "code", ""), 503)
+
+
+def _sql_candidate_message(exc: BaseException) -> str:
+    """The refusal, plus the guard's or provider's code when there is one."""
+    code = str(getattr(exc, "code", "error"))
+    detail = (
+        getattr(exc, "guard_code", None)
+        or getattr(exc, "provider_code", None)
+    )
+    return f"SQL candidate rejected ({code}: {detail})" if detail else (
+        f"SQL candidate rejected ({code})"
+    )
 
 
 def create_app(settings: Settings | None = None) -> Flask:
@@ -724,6 +764,42 @@ def create_app(settings: Settings | None = None) -> Flask:
             ),
             200,
         )
+
+    # --- Candidate SQL (P4-F04) -----------------------------------------
+
+    @app.post("/ai/sql/candidate")
+    @require_admin_token
+    def sql_candidate_generate():
+        """Generate one candidate against the authorized slice and guard it.
+
+        The slice arrives with the request because Superset resolved it for this
+        principal; the SQL never leaves unvalidated.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        slice_ = schema_slice.SchemaSlice.from_payload(payload)
+        database = str(payload.get("database") or "").strip() or None
+        dialect = str(payload.get("dialect") or "").strip() or None
+        try:
+            candidate = sql_candidate.generate(
+                resolved_settings,
+                question=str(payload.get("question") or ""),
+                schema=slice_,
+                tenant_key=str(
+                    payload.get("tenant") or registry.DEFAULT_TENANT_KEY
+                ),
+                database=database,
+                dialect=dialect,
+                max_rows=payload.get("max_rows") or sql_guard.MAX_ROWS,
+            )
+        except sql_candidate.SqlCandidateError as exc:
+            return _admin_error(_sql_candidate_message(exc), _sql_candidate_status(exc))
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not generate SQL ({_error_class(exc)})", 503)
+        response = candidate.to_public_dict()
+        response["guard_code"] = None
+        return jsonify(response), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

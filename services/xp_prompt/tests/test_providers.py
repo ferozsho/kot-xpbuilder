@@ -157,6 +157,55 @@ class ProviderAdapterTest(unittest.TestCase):
 
         self.assertEqual(provider.model, "gemini-test")
 
+    def gemini_payload(self, model: str, budget: int | None) -> dict[str, Any]:
+        transport = FakeTransport(
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": "{}"}]}, "finishReason": "stop"}
+                ]
+            }
+        )
+        provider = GeminiProvider(
+            credentials=ProviderCredentials("secret-key"),
+            model=model,
+            transport=transport,
+        )
+        provider.generate(
+            ProviderRequest(
+                operation="sql.candidate",
+                messages=(Message("user", "q"),),
+                max_output_tokens=256,
+                json_output=True,
+                reasoning_budget_tokens=budget,
+            )
+        )
+        return transport.calls[0]["payload"]["generationConfig"]
+
+    def test_reasoning_budget_is_sent_to_flash_models(self) -> None:
+        config = self.gemini_payload("gemini-2.5-flash", 0)
+
+        self.assertEqual(config["thinkingConfig"], {"thinkingBudget": 0})
+
+    def test_reasoning_budget_is_omitted_when_not_requested(self) -> None:
+        config = self.gemini_payload("gemini-2.5-flash", None)
+
+        self.assertNotIn("thinkingConfig", config)
+
+    def test_reasoning_budget_is_not_sent_where_it_is_unsupported(self) -> None:
+        for model in ("gemini-1.5-flash", "gemini-2.5-pro"):
+            with self.subTest(model=model):
+                self.assertNotIn("thinkingConfig", self.gemini_payload(model, 0))
+
+    def test_reasoning_budget_is_validated(self) -> None:
+        for value in (-1, 32_769):
+            with self.assertRaises(ValueError):
+                ProviderRequest(
+                    operation="op",
+                    messages=(Message("user", "q"),),
+                    max_output_tokens=64,
+                    reasoning_budget_tokens=value,
+                )
+
     def test_deepseek_request_and_usage_are_normalized(self) -> None:
         transport = FakeTransport(
             {
