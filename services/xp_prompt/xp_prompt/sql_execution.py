@@ -69,6 +69,7 @@ def validate(
         dialect=resolved,
         allowed_tables=schema.allowed_tables(database=database),
         max_rows=max_rows,
+        connection_names=schema.connection_names(),
     )
     return {
         "sql": guarded.sql,

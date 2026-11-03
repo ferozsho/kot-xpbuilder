@@ -106,6 +106,65 @@ class AllowedQueryTest(unittest.TestCase):
         self.assertEqual(result.tables, ("mdl_course", "mdl_user"))
 
 
+class ConnectionLabelTest(unittest.TestCase):
+    """A Superset connection name is metadata, never a SQL catalog (P4-F23).
+
+    Live evidence: a question about a dataset on the ``File uploads`` connection
+    produced ``FROM "File uploads".public."Student Overview"``, which PostgreSQL
+    refuses with ``feature_not_supported: cross-database references are not
+    implemented``. The label has to be removed before execution.
+    """
+
+    def test_a_connection_label_is_stripped_from_the_reference(self) -> None:
+        result = sql_guard.check(
+            'SELECT COUNT(*) FROM "File uploads".public."Student Overview"',
+            allowed_tables={'public.student overview'},
+            connection_names=('File uploads',),
+        )
+
+        self.assertEqual(result.tables, ('public.student overview',))
+        self.assertNotIn('File uploads', result.sql)
+        self.assertIn('Student Overview', result.sql)
+
+    def test_the_label_is_only_stripped_when_it_is_known(self) -> None:
+        with self.assertRaises(sql_guard.SqlPolicyError) as raised:
+            sql_guard.check(
+                'SELECT COUNT(*) FROM "File uploads".public."Student Overview"',
+                allowed_tables={'public.student overview'},
+            )
+
+        self.assertEqual(raised.exception.code, 'unknown_table')
+
+    def test_a_real_catalog_is_kept(self) -> None:
+        result = sql_guard.check(
+            'select * from proj.ds.orders',
+            dialect='bigquery',
+            allowed_tables={'proj.ds.orders', 'orders'},
+            connection_names=('File uploads',),
+        )
+
+        self.assertEqual(result.tables, ('proj.ds.orders',))
+
+    def test_a_label_cannot_widen_the_authorized_set(self) -> None:
+        with self.assertRaises(sql_guard.SqlPolicyError) as raised:
+            sql_guard.check(
+                'select * from "File uploads".public.secret_table',
+                allowed_tables={'public.student overview'},
+                connection_names=('File uploads',),
+            )
+
+        self.assertEqual(raised.exception.code, 'unknown_table')
+
+    def test_the_case_of_the_label_does_not_matter(self) -> None:
+        result = sql_guard.check(
+            'select * from "file uploads".public."Student Overview"',
+            allowed_tables={'public.student overview'},
+            connection_names=('FILE UPLOADS',),
+        )
+
+        self.assertEqual(result.tables, ('public.student overview',))
+
+
 class LimitTest(unittest.TestCase):
     def test_missing_limit_is_added(self) -> None:
         result = sql_guard.check("select id from mdl_user", max_rows=25)

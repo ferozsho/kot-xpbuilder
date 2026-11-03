@@ -52,6 +52,9 @@ SYSTEM_PROMPT = (
     "You write read-only analytical SQL for a Superset deployment.\n"
     "Rules:\n"
     "- Use only the tables and columns listed by the user. Never invent a name.\n"
+    "- Reference a table exactly as written before the bracket: table or\n"
+    "  schema.table. A 'connection' in the bracket is a Superset label, not a SQL\n"
+    "  catalog — never prefix a table with it.\n"
     "- Emit exactly one SELECT statement (CTEs are allowed). No DDL, no DML, no\n"
     "  comments, no multiple statements.\n"
     "- Always include a LIMIT of {max_rows} rows or fewer.\n"
@@ -303,6 +306,7 @@ def _guard(
             dialect=dialect,
             allowed_tables=allowlist,
             max_rows=max_rows,
+            connection_names=schema.connection_names(),
         )
     except sql_guard.SqlPolicyError as exc:
         logger.info("sql_candidate outcome=blocked guard_code=%s", exc.code)

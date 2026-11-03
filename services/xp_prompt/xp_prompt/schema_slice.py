@@ -94,8 +94,21 @@ class Dataset:
         return f"{self.schema}.{self.name}" if self.schema else self.name
 
     def render(self) -> str:
+        """One prompt line: the referencable name first, the label afterwards.
+
+        ``database`` is a Superset connection *name* (``File uploads``), not a SQL
+        catalog: putting it in front of the table teaches a model to write a
+        cross-database reference that the server then refuses. It is therefore
+        reported as metadata, and ``sql_name`` is what the model is told to use.
+        """
         columns = ", ".join(column.render() for column in self.columns)
-        return f"{self.qualified_name} [{self.dialect}] ({columns})"
+        origin = f"dialect: {self.dialect}" if self.dialect else ""
+        if self.database:
+            origin = f"{origin}, connection: {self.database}" if origin else (
+                f"connection: {self.database}"
+            )
+        suffix = f" [{origin}]" if origin else ""
+        return f"{self.sql_name}{suffix} ({columns})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +170,12 @@ class SchemaSlice:
 
     def dialects(self) -> tuple[str, ...]:
         return tuple(sorted({dataset.dialect for dataset in self.datasets if dataset.dialect}))
+
+    def connection_names(self) -> tuple[str, ...]:
+        """Superset connection labels in this slice — metadata, not SQL catalogs."""
+        return tuple(
+            sorted({dataset.database for dataset in self.datasets if dataset.database})
+        )
 
     def prompt_text(self) -> str:
         """The schema block a prompt may include — validated names only."""

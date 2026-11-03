@@ -204,12 +204,20 @@ def check(
     dialect: str = "postgres",
     allowed_tables: Any = None,
     max_rows: int = MAX_ROWS,
+    connection_names: Any = None,
 ) -> GuardResult:
     """Validate one candidate statement and return a safe, limit-enforced SQL.
 
     ``allowed_tables`` is an optional iterable of authorized ``table`` or
     ``schema.table`` names (lower-cased here). When supplied, an unknown reference
     is refused — that is how the authorized schema slice of P4-F02 is enforced.
+
+    ``connection_names`` are Superset connection *labels* (``File uploads``). They
+    are not SQL catalogs, so a reference that qualifies a table with one is
+    rewritten to its ``schema.table`` form instead of being executed as a
+    cross-database read — which PostgreSQL refuses with
+    ``feature_not_supported``. Removing the label can only narrow the reference to
+    the same authorized table, never widen it.
     """
     text = (sql or "").strip()
     if not text:
@@ -236,6 +244,7 @@ def check(
 
     _reject_mutating_nodes(statement)
     _reject_denied_functions(statement)
+    _strip_connection_catalog(statement, connection_names)
     tables = _collect_tables(statement)
     _reject_system_schemas(tables)
     if allowed_tables is not None:
@@ -295,11 +304,38 @@ def _function_name(node: exp.Expression) -> str:
     return name.strip().upper()
 
 
+def _strip_connection_catalog(statement: exp.Expression, connection_names: Any) -> None:
+    """Drop a Superset connection label from a table reference.
+
+    A connection name is metadata, not a catalog: ``"File uploads".public.orders``
+    is a cross-database reference and PostgreSQL answers ``feature_not_supported``.
+    Models write it because the label appears next to the table in the prompt, so
+    the reference is normalized rather than refused — the remaining
+    ``schema.table`` still has to pass the allowlist.
+    """
+    labels = {
+        str(name).strip().lower()
+        for name in (connection_names or ())
+        if str(name).strip()
+    }
+    if not labels:
+        return
+    for table in statement.find_all(exp.Table):
+        catalog = table.args.get("catalog")
+        if catalog is None:
+            continue
+        label = catalog if isinstance(catalog, str) else getattr(catalog, "name", "")
+        if str(label).strip().lower() in labels:
+            table.set("catalog", None)
+
+
 def _collect_tables(statement: exp.Expression) -> set[str]:
     """Referenced table names, excluding CTE aliases (they are not tables).
 
     A catalog-qualified reference keeps its catalog (``proj.ds.table`` in
-    BigQuery), so a cross-project read cannot pass as the same dataset name.
+    BigQuery), so a cross-project read cannot pass as the same dataset name. A
+    connection label has already been removed by
+    :func:`_strip_connection_catalog`.
     """
     cte_names = {
         cte.alias_or_name.lower()

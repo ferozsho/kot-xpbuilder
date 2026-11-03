@@ -189,10 +189,34 @@ class PromptTest(unittest.TestCase):
 
         prompt = slice_.prompt_text()
 
-        self.assertIn("lms.public.mdl_user", prompt)
+        self.assertIn("public.mdl_user", prompt)
         self.assertIn("id int", prompt)
         self.assertIn("deleted int", prompt)
         self.assertNotIn("drop", prompt)
+
+    def test_the_connection_is_a_label_not_a_qualifier(self) -> None:
+        """A prompt that teaches ``connection.schema.table`` produces SQL that
+        PostgreSQL refuses (cross-database reference), so the label is reported
+        as metadata and the reference starts with the schema."""
+        slice_ = schema_slice.SchemaSlice.from_payload({"datasets": [dataset()]})
+
+        prompt = slice_.prompt_text()
+
+        self.assertIn("public.mdl_user", prompt)
+        self.assertIn("connection: lms", prompt)
+        self.assertNotIn("lms.public.mdl_user", prompt)
+
+    def test_connection_names_are_exposed_for_the_guard(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {
+                "datasets": [
+                    dataset(),
+                    dataset(name="wp_post", database="blog"),
+                ]
+            }
+        )
+
+        self.assertEqual(slice_.connection_names(), ("blog", "lms"))
 
     def test_prompt_is_bounded(self) -> None:
         datasets = [
