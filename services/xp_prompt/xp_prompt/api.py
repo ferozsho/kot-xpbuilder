@@ -32,6 +32,7 @@ from xp_prompt import (
     chat,
     conversations,
     jobs,
+    result_validation,
     schema_slice,
     sql_candidate,
     sql_execution,
@@ -828,6 +829,32 @@ def create_app(settings: Settings | None = None) -> Flask:
             status = 400 if exc.code in {"dialect_ambiguous", "unsupported_dialect"} else 422
             return _admin_error(f"SQL candidate rejected (sql_blocked: {exc.code})", status)
         return jsonify(result), 200
+
+    @app.post("/ai/sql/result")
+    @require_admin_token
+    def sql_result_validate():
+        """Decide whether a result is usable and build its preview blocks (P4-F10).
+
+        The proxy executes SQL in Superset; this endpoint is the only place that
+        decides what a caller may see of the result and how it renders.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            verdict = result_validation.validate_result(
+                payload.get("columns"),
+                payload.get("rows"),
+                row_count=payload.get("row_count")
+                if isinstance(payload.get("row_count"), int)
+                else None,
+                truncated=bool(payload.get("truncated")),
+                intent=str(payload.get("intent") or "") or None,
+                max_rows=payload.get("max_rows") or result_validation.MAX_PREVIEW_ROWS,
+            )
+        except result_validation.ResultValidationError as exc:
+            return _admin_error(f"Result rejected ({exc.code})", 422)
+        return jsonify(verdict.to_public_dict()), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

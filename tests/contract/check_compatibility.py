@@ -640,6 +640,24 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if 'sql_guard.check(' not in execution.read_text(encoding='utf-8'):
         raise AssertionError('execution-time validation must call sql_guard.check')
 
+    # P4-F10: the service decides what a caller may see of a result; the proxy must
+    # not shape or mask results itself.
+    validation_path = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'result_validation.py'
+    )
+    if not validation_path.exists():
+        raise AssertionError('result_validation.py must exist')
+    validation = validation_path.read_text(encoding='utf-8')
+    for marker in ('def validate_result', 'SENSITIVE_HEADER', 'RESULT_PREVIEW'):
+        if marker not in validation:
+            raise AssertionError(f'result validation lost {marker}')
+    if '/ai/sql/result' not in service:
+        raise AssertionError('the service must expose /ai/sql/result')
+    if '/ai/sql/result' not in proxy_source:
+        raise AssertionError(
+            'the execution route must ask the service to validate the result'
+        )
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

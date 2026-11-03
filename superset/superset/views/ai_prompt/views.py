@@ -336,16 +336,29 @@ class AIPromptView(BaseSupersetView):
         preview = frame.head(max_rows)
         columns = [str(column) for column in preview.columns]
         rows = [
-            _cell(value)
-            for value in preview.itertuples(index=False, name=None)
+            list(row) for row in preview.itertuples(index=False, name=None)
         ]
+        # The service owns masking and the preview block (P4-F10): this view must
+        # not decide what a caller may see of a result.
+        result_status, verdict = call_xp_prompt(
+            "POST",
+            "/ai/sql/result",
+            payload={
+                "superset_user_id": owner,
+                "columns": columns,
+                "rows": rows,
+                "row_count": int(len(frame)),
+                "truncated": len(frame) > len(preview),
+                "intent": payload.get("intent"),
+                "max_rows": max_rows,
+            },
+        )
+        if result_status != 200:
+            return self.json_response(verdict, result_status)
+
         return self.json_response(
             {
-                "columns": columns,
-                "rows": [list(row) for row in rows],
-                "row_count": int(len(frame)),
-                "returned": int(len(preview)),
-                "truncated": len(frame) > len(preview),
+                **verdict,
                 "duration_ms": duration_ms,
                 "limit": validated["limit"],
                 "tables": validated["tables"],
