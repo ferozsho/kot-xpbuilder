@@ -288,7 +288,17 @@ class ProviderAdapterTest(unittest.TestCase):
 
 
 class ProviderRouterTest(unittest.TestCase):
-    def test_retryable_primary_failure_uses_one_fallback(self) -> None:
+    @staticmethod
+    def router(primary, fallback, **kwargs):
+        return ProviderRouter(
+            primary,
+            fallback,
+            sleep=lambda _seconds: None,
+            jitter=lambda: 0.5,
+            **kwargs,
+        )
+
+    def test_retryable_primary_failure_retries_once_then_falls_back(self) -> None:
         primary = StubProvider(
             "gemini",
             "gemini-test",
@@ -304,11 +314,15 @@ class ProviderRouterTest(unittest.TestCase):
             "deepseek", "deepseek-flash", response("deepseek", "deepseek-flash")
         )
 
-        routed = ProviderRouter(primary, fallback).generate(request())
+        routed = self.router(primary, fallback).generate(request())
 
         self.assertEqual(routed.response.provider, "deepseek")
-        self.assertEqual([a.outcome for a in routed.attempts], ["failed", "succeeded"])
-        self.assertEqual(primary.calls, 1)
+        self.assertEqual(
+            [a.outcome for a in routed.attempts],
+            ["failed", "failed", "succeeded"],
+        )
+        self.assertEqual([a.attempt for a in routed.attempts], [1, 2, 1])
+        self.assertEqual(primary.calls, 2)
         self.assertEqual(fallback.calls, 1)
 
     def test_nonretryable_failure_does_not_fallback(self) -> None:
@@ -327,12 +341,13 @@ class ProviderRouterTest(unittest.TestCase):
         )
 
         with self.assertRaises(ProviderRoutingError) as raised:
-            ProviderRouter(primary, fallback).generate(request())
+            self.router(primary, fallback).generate(request())
 
         self.assertEqual(len(raised.exception.attempts), 1)
+        self.assertEqual(primary.calls, 1)
         self.assertEqual(fallback.calls, 0)
 
-    def test_failed_fallback_retains_both_attempts(self) -> None:
+    def test_failed_fallback_retains_every_attempt(self) -> None:
         primary = StubProvider(
             "gemini",
             "gemini-test",
@@ -355,10 +370,26 @@ class ProviderRouterTest(unittest.TestCase):
         )
 
         with self.assertRaises(ProviderRoutingError) as raised:
-            ProviderRouter(primary, fallback).generate(request())
+            self.router(primary, fallback).generate(request())
 
-        self.assertEqual(len(raised.exception.attempts), 2)
+        self.assertEqual(len(raised.exception.attempts), 4)
         self.assertEqual(raised.exception.attempts[-1].provider, "deepseek")
+
+    def test_reporting_failures_do_not_break_the_call(self) -> None:
+        seen: list[tuple[str, str | None]] = []
+
+        def report(name: str, error) -> None:
+            seen.append((name, error.code if error else None))
+            raise RuntimeError("health store unavailable")
+
+        primary = StubProvider(
+            "gemini", "gemini-test", response("gemini", "gemini-test")
+        )
+
+        routed = self.router(primary, None, on_attempt=report).generate(request())
+
+        self.assertEqual(routed.response.provider, "gemini")
+        self.assertEqual(seen, [("gemini", None)])
 
 
 if __name__ == "__main__":

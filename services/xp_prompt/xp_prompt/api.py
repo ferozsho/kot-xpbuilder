@@ -12,6 +12,7 @@ Three route groups live here:
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -30,6 +31,8 @@ ADMIN_TOKEN_HEADER = "X-XP-Prompt-Token"
 TEST_PROMPT = "Reply with the single word OK."
 TEST_MAX_TOKENS = 16
 
+logger = logging.getLogger(__name__)
+
 
 def _admin_error(message: str, status: int) -> tuple[Response, int]:
     return jsonify({"message": message, "severity": "danger"}), status
@@ -43,6 +46,21 @@ def create_app(settings: Settings | None = None) -> Flask:
     """Create the XP Prompt API application."""
     app = Flask(__name__)
     resolved_settings = settings or Settings.from_env()
+
+    def _record_health(provider_id: str, error: ProviderError | None) -> None:
+        """Best-effort passive health write; never fails the probe response."""
+        try:
+            if error is None:
+                registry.record_attempt_success(resolved_settings, provider_id)
+            else:
+                registry.record_attempt_failure(
+                    resolved_settings,
+                    provider_id,
+                    error_code=error.code,
+                    retryable=error.retryable,
+                )
+        except Exception:  # pragma: no cover - bookkeeping only
+            logger.warning("Could not persist provider health", exc_info=True)
 
     def require_admin_token(view: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(view)
@@ -187,6 +205,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                 status="failed",
                 error=exc.code,
             )
+            _record_health(provider_id, exc)
             return (
                 jsonify(
                     {
@@ -218,6 +237,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
         duration_ms = round((time.monotonic() - started) * 1000)
         registry.record_test_result(resolved_settings, provider_id, status="succeeded")
+        _record_health(provider_id, None)
         return (
             jsonify(
                 {

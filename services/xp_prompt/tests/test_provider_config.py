@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from xp_prompt.config import Settings
@@ -425,6 +425,71 @@ class ResolveRouterTest(unittest.TestCase):
         ):
             with self.assertRaises(registry.ProviderConfigError):
                 registry.resolve_router(self.settings)
+
+    def test_open_circuit_provider_is_skipped(self) -> None:
+        """A row whose breaker is open must not consume the attempt budget."""
+        broken = provider_record(
+            name="Broken (open circuit)",
+            consecutive_failures=5,
+            circuit_open_until=datetime.now(timezone.utc) + timedelta(minutes=5),
+            last_error_code="http_503",
+        )
+        healthy = provider_record(
+            id="9c5c1b2e-3d4f-4a61-8b7c-0d1e2f3a4b5c",
+            name="Healthy",
+            provider_type="anthropic",
+            base_url="https://api.anthropic.com/v1",
+            default_model="claude-3-5-sonnet-latest",
+            is_default=False,
+            priority=10,
+        )
+
+        with mock.patch.object(
+            registry, "list_providers", return_value=[broken, healthy]
+        ), mock.patch.object(
+            registry, "decrypt_api_key", return_value="sealed-key-value"
+        ):
+            router = registry.resolve_router(self.settings)
+
+        self.assertEqual(router.primary.name, "Healthy")
+        self.assertIsNone(router.fallback)
+
+    def test_closed_circuit_provider_is_routed_again(self) -> None:
+        recovered = provider_record(
+            name="Recovered",
+            consecutive_failures=5,
+            circuit_open_until=datetime.now(timezone.utc) - timedelta(minutes=5),
+            last_error_code="http_503",
+        )
+
+        with mock.patch.object(
+            registry, "list_providers", return_value=[recovered]
+        ), mock.patch.object(
+            registry, "decrypt_api_key", return_value="sealed-key-value"
+        ):
+            router = registry.resolve_router(self.settings)
+
+        self.assertEqual(router.primary.name, "Recovered")
+
+    def test_health_is_reported_for_database_providers(self) -> None:
+        record = provider_record(name="Gemini (team)")
+        calls: list[tuple[str, object]] = []
+
+        def fake_success(settings, provider_id):
+            calls.append(("success", provider_id))
+
+        with mock.patch.object(
+            registry, "list_providers", return_value=[record]
+        ), mock.patch.object(
+            registry, "decrypt_api_key", return_value="sealed-key-value"
+        ), mock.patch.object(
+            registry, "record_attempt_success", side_effect=fake_success
+        ):
+            router = registry.resolve_router(self.settings)
+            router._report("Gemini (team)", None)
+            router._report("gemini (.env)", None)
+
+        self.assertEqual(calls, [("success", record.id)])
 
 
 if __name__ == "__main__":

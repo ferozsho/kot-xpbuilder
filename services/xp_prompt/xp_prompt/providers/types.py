@@ -64,6 +64,8 @@ class AttemptSummary:
     outcome: Literal["succeeded", "failed"]
     error_code: str | None = None
     retryable: bool = False
+    #: 1-based ordinal of this attempt against the same provider.
+    attempt: int = 1
 
 
 @dataclass(frozen=True, slots=True)

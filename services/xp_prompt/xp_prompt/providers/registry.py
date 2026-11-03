@@ -19,6 +19,11 @@ from xp_prompt.db import connect
 from xp_prompt.providers.anthropic import AnthropicProvider
 from xp_prompt.providers.deepseek import DeepSeekProvider
 from xp_prompt.providers.gemini import GeminiProvider
+from xp_prompt.providers.health import (
+    ProviderHealth,
+    after_failure,
+    after_success,
+)
 from xp_prompt.providers.openai_compatible import (
     AzureOpenAIProvider,
     OpenAICompatibleProvider,
@@ -27,6 +32,7 @@ from xp_prompt.providers.router import ProviderRouter
 from xp_prompt.providers.transport import validate_provider_endpoint
 from xp_prompt.providers.types import (
     ProviderCredentials,
+    ProviderError,
     ProviderRequest,
     ProviderResponse,
 )
@@ -250,11 +256,24 @@ class ProviderRecord:
     last_test_error: str | None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    consecutive_failures: int = 0
+    circuit_open_until: datetime | None = None
+    last_failure_at: datetime | None = None
+    last_error_code: str | None = None
 
     @property
     def label(self) -> str:
         spec = PROVIDER_TYPES.get(self.provider_type)
         return spec.label if spec else self.provider_type
+
+    @property
+    def health(self) -> ProviderHealth:
+        return ProviderHealth(
+            consecutive_failures=self.consecutive_failures,
+            circuit_open_until=self.circuit_open_until,
+            last_error_code=self.last_error_code,
+            last_failure_at=self.last_failure_at,
+        )
 
     def to_public_dict(self) -> dict[str, Any]:
         """Serialize for the admin API — never includes the API key."""
@@ -280,6 +299,7 @@ class ProviderRecord:
                 "error": self.last_test_error,
                 "at": _isoformat(self.last_tested_at),
             },
+            "health": self.health.to_public_dict(),
             "created_at": _isoformat(self.created_at),
             "updated_at": _isoformat(self.updated_at),
         }
@@ -547,6 +567,81 @@ def record_test_result(
             )
 
 
+def record_attempt_success(settings: Settings, provider_id: str) -> ProviderHealth:
+    """Clear the failure streak after a successful call."""
+    state = after_success()
+    _write_health(settings, provider_id, state)
+    return state
+
+
+def record_attempt_failure(
+    settings: Settings,
+    provider_id: str,
+    *,
+    error_code: str,
+    retryable: bool,
+) -> ProviderHealth:
+    """Fold one failed attempt into the stored health state."""
+    state = after_failure(
+        get_health(settings, provider_id),
+        error_code=error_code[:64],
+        retryable=retryable,
+    )
+    _write_health(settings, provider_id, state)
+    return state
+
+
+def get_health(settings: Settings, provider_id: str) -> ProviderHealth:
+    """Read the current health state for one provider."""
+    with connect(settings) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT consecutive_failures, circuit_open_until,
+                       last_failure_at, last_error_code
+                FROM ai_provider
+                WHERE id = %s
+                """,
+                (provider_id,),
+            )
+            row = cursor.fetchone()
+    if row is None:
+        raise LookupError("provider not found")
+    return ProviderHealth(
+        consecutive_failures=int(row["consecutive_failures"] or 0),
+        circuit_open_until=row["circuit_open_until"],
+        last_error_code=row["last_error_code"],
+        last_failure_at=row["last_failure_at"],
+    )
+
+
+def _write_health(
+    settings: Settings,
+    provider_id: str,
+    state: ProviderHealth,
+) -> None:
+    with connect(settings) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE ai_provider
+                SET consecutive_failures = %s,
+                    circuit_open_until = %s,
+                    last_failure_at = %s,
+                    last_error_code = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (
+                    state.consecutive_failures,
+                    state.circuit_open_until,
+                    state.last_failure_at,
+                    state.last_error_code,
+                    provider_id,
+                ),
+            )
+
+
 def decrypt_api_key(settings: Settings, provider_id: str) -> str:
     """Read and decrypt the stored key for one provider."""
     with connect(settings) as connection:
@@ -611,7 +706,12 @@ def resolve_router(
     the broken row in the settings page.
     """
     providers: list[NamedProvider] = []
+    provider_ids: dict[str, str] = {}
     for record in _enabled_records(settings, tenant_key):
+        if record.health.is_open():
+            # The breaker is still cooling down: skip this row instead of
+            # spending the request's attempt budget on a known-bad provider.
+            continue
         try:
             api_key = decrypt_api_key(settings, record.id)
         except (LookupError, RuntimeError):
@@ -623,6 +723,7 @@ def resolve_router(
                 adapter=build_provider(record, api_key),
             )
         )
+        provider_ids[record.name] = record.id
     if not providers:
         providers = _env_fallback_providers(settings)
     if not providers:
@@ -633,7 +734,41 @@ def resolve_router(
     fallback = next(
         (item for item in providers[1:] if item.name != providers[0].name), None
     )
-    return ProviderRouter(primary=providers[0], fallback=fallback)
+    return ProviderRouter(
+        primary=providers[0],
+        fallback=fallback,
+        on_attempt=_health_reporter(settings, provider_ids),
+    )
+
+
+def _health_reporter(
+    settings: Settings,
+    provider_ids: dict[str, str],
+) -> Any:
+    """Persist passive health for providers that have a database row.
+
+    ``.env`` fallback providers carry a ``(.env)`` suffix and no row, so they
+    are intentionally not tracked; losing a health write never fails the call.
+    """
+
+    def report(name: str, error: ProviderError | None) -> None:
+        provider_id = provider_ids.get(name)
+        if provider_id is None:
+            return
+        try:
+            if error is None:
+                record_attempt_success(settings, provider_id)
+            else:
+                record_attempt_failure(
+                    settings,
+                    provider_id,
+                    error_code=error.code,
+                    retryable=error.retryable,
+                )
+        except Exception:  # pragma: no cover - best effort bookkeeping
+            return
+
+    return report
 
 
 def _enabled_records(
@@ -752,6 +887,10 @@ def _record_from_row(row: dict[str, Any]) -> ProviderRecord:
         last_test_error=row.get("last_test_error"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        consecutive_failures=int(row.get("consecutive_failures") or 0),
+        circuit_open_until=row.get("circuit_open_until"),
+        last_failure_at=row.get("last_failure_at"),
+        last_error_code=row.get("last_error_code"),
     )
 
 

@@ -176,6 +176,34 @@ const StyledRow = styled.div`
   gap: ${({ theme }) => theme.sizeUnit * 3}px;
 `;
 
+/**
+ * Superset's Card sets a 4px body padding while its head keeps the antd 24px,
+ * which leaves the title indented far more than the content. Pinning both to
+ * the same gutter keeps the side cards aligned with the form card.
+ */
+const StyledCard = styled(Card)`
+  .ant-card-body {
+    padding: ${({ theme }) => theme.sizeUnit * 4}px;
+  }
+`;
+
+const StyledTableCard = styled(Card)`
+  .ant-card-body {
+    padding: 0;
+  }
+`;
+
+const StyledSubLabel = styled.div`
+  display: block;
+  margin-bottom: ${({ theme }) => theme.sizeUnit}px;
+`;
+
+const StyledSubtitle = styled.div`
+  margin-top: ${({ theme }) => theme.sizeUnit}px;
+  color: ${({ theme }) => theme.colorTextSecondary};
+  font-size: ${({ theme }) => theme.fontSizeSM}px;
+`;
+
 const StyledSwitchRow = styled.div`
   display: flex;
   align-items: center;
@@ -376,6 +404,7 @@ export default function AIProviderPage() {
         dataIndex: 'priority',
         key: 'priority',
         width: 90,
+        align: 'center' as const,
       },
       {
         title: t('Last test'),
@@ -443,30 +472,29 @@ export default function AIProviderPage() {
       <StyledHeader>
         <div>
           <StyledTitle>
-            {formOpen && !editing ? t('Connect a provider') : t('AI Provider')}
+            {formOpen
+              ? editing
+                ? t('Edit provider')
+                : t('Connect a provider')
+              : t('AI Provider')}
           </StyledTitle>
-          <StyledNotice>
+          <StyledSubtitle>
             {t(
               'Keys are encrypted at rest in the XP Prompt database and are ' +
                 'never returned by the API after saving.',
             )}
-          </StyledNotice>
+          </StyledSubtitle>
         </div>
-        <Space>
-          {formOpen && (
-            <Button buttonStyle="tertiary" onClick={() => setFormOpen(false)}>
-              {t('Cancel')}
-            </Button>
-          )}
+        {!formOpen && (
           <Button buttonStyle="primary" onClick={openCreate}>
             {t('Connect a provider')}
           </Button>
-        </Space>
+        )}
       </StyledHeader>
 
       {formOpen ? (
         <StyledLayout>
-          <Card>
+          <StyledCard>
             <StyledField>
               <label htmlFor="provider-name">{t('Display name')} *</label>
               <Input
@@ -486,6 +514,7 @@ export default function AIProviderPage() {
                   id="provider-type"
                   value={form.provider_type}
                   options={typeOptions}
+                  style={{ width: '100%' }}
                   onChange={changeType}
                 />
               </StyledField>
@@ -544,7 +573,7 @@ export default function AIProviderPage() {
               <label>{t('Advanced (config)')}</label>
               <StyledRow>
                 <div>
-                  {t('Temperature')}
+                  <StyledSubLabel>{t('Temperature')}</StyledSubLabel>
                   <InputNumber
                     min={0}
                     max={2}
@@ -557,7 +586,7 @@ export default function AIProviderPage() {
                   />
                 </div>
                 <div>
-                  {t('Max tokens')}
+                  <StyledSubLabel>{t('Max tokens')}</StyledSubLabel>
                   <InputNumber
                     min={1}
                     max={131072}
@@ -569,7 +598,7 @@ export default function AIProviderPage() {
                   />
                 </div>
                 <div>
-                  {t('Timeout (s)')}
+                  <StyledSubLabel>{t('Timeout (s)')}</StyledSubLabel>
                   <InputNumber
                     min={1}
                     max={600}
@@ -585,7 +614,7 @@ export default function AIProviderPage() {
                 </div>
                 {selectedType?.supports_api_version && (
                   <div>
-                    {t('API version')}
+                    <StyledSubLabel>{t('API version')}</StyledSubLabel>
                     <Input
                       value={form.api_version}
                       placeholder="2024-10-21"
@@ -597,18 +626,18 @@ export default function AIProviderPage() {
                 )}
               </StyledRow>
             </StyledField>
-          </Card>
+          </StyledCard>
 
           <div>
-            <Card title={t('Tenant')}>
+            <StyledCard title={t('Tenant')}>
               <StyledField>
                 <Input value={TENANT_LABEL} disabled />
                 <span className="helper">
                   {t('Global configures every tenant.')}
                 </span>
               </StyledField>
-            </Card>
-            <Card title={t('Status')} style={{ marginTop: 16 }}>
+            </StyledCard>
+            <StyledCard title={t('Status')} style={{ marginTop: 16 }}>
               <StyledSwitchRow>
                 <span>{t('Enabled')}</span>
                 <Switch
@@ -625,7 +654,7 @@ export default function AIProviderPage() {
                   }
                 />
               </StyledSwitchRow>
-              <StyledField>
+              <StyledField style={{ marginTop: 12, marginBottom: 0 }}>
                 <label htmlFor="provider-priority">{t('Priority')}</label>
                 <InputNumber
                   id="provider-priority"
@@ -639,13 +668,13 @@ export default function AIProviderPage() {
                 />
               </StyledField>
             </Card>
-            <Card title={t('Connection test')} style={{ marginTop: 16 }}>
+            <StyledCard title={t('Connection test')} style={{ marginTop: 16 }}>
               <span className="helper">
                 {editing
                   ? t('Use “Test connection” in the table after saving.')
                   : t('Save the provider first to test its connection.')}
               </span>
-            </Card>
+            </StyledCard>
             {formError && <StyledError>{formError}</StyledError>}
             <div style={{ marginTop: 16, textAlign: 'right' }}>
               <Space>
@@ -673,14 +702,17 @@ export default function AIProviderPage() {
               )}
             </StyledNotice>
           ) : null}
-          <Table
-            loading={loading}
-            dataSource={providers}
-            columns={columns}
-            rowKey="id"
-            pagination={false}
-            locale={{ emptyText: t('No AI providers configured yet.') }}
-          />
+          <StyledTableCard>
+            <Table
+              loading={loading}
+              dataSource={providers}
+              columns={columns}
+              rowKey="id"
+              size="middle"
+              pagination={false}
+              locale={{ emptyText: t('No AI providers configured yet.') }}
+            />
+          </StyledTableCard>
         </>
       )}
     </StyledWrapper>

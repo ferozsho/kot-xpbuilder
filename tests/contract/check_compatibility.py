@@ -152,6 +152,32 @@ def check_ai_provider_wiring(compatibility: dict) -> None:
             'initialize.sh must grant the AI Provider permissions'
         )
 
+    # Health/retry policy: the routing constants are mirrored in the manifest so
+    # the settings page, docs, and tests cannot drift from the service.
+    health_module = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'providers' / 'health.py'
+    ).read_text(encoding='utf-8')
+    retry_policy = settings_page.get('retry_policy', {})
+    for key, constant in (
+        ('max_attempts_per_provider', 'MAX_ATTEMPTS_PER_PROVIDER'),
+        ('failure_threshold', 'FAILURE_THRESHOLD'),
+        ('max_open_seconds', 'MAX_OPEN_SECONDS'),
+    ):
+        expected = retry_policy.get(key)
+        if expected is None:
+            raise AssertionError(f'retry_policy.{key} must be declared')
+        if not re.search(rf'^{constant}\s*=\s*{expected}\b', health_module, re.MULTILINE):
+            raise AssertionError(
+                f'{constant} drifted from compatibility.json retry_policy.{key}'
+            )
+
+    migrations = ROOT / 'services' / 'xp_prompt' / 'migrations' / 'versions'
+    revision = settings_page.get('health_migration')
+    if not revision or not list(migrations.glob(f'{revision}_*.py')):
+        raise AssertionError(
+            'health_migration must name an existing XP Prompt migration'
+        )
+
 
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()

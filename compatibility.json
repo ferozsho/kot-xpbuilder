@@ -22,7 +22,13 @@
       "internal_token_salt": "xp-prompt-internal-admin-v1",
       "api_endpoint": "/ai/providers",
       "proxy": "superset/superset/views/ai_provider/views.py",
-      "service": "services/xp_prompt/xp_prompt/api.py"
+      "service": "services/xp_prompt/xp_prompt/api.py",
+      "health_migration": "20261103_03",
+      "retry_policy": {
+        "max_attempts_per_provider": 2,
+        "failure_threshold": 3,
+        "max_open_seconds": 900
+      }
     }
   },
   "superset": {
