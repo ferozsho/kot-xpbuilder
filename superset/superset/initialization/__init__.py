@@ -188,6 +188,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.sqllab.permalink.api import SqlLabPermalinkRestApi
         from superset.tags.api import TagRestApi
         from superset.themes.api import ThemeRestApi
+        from superset.views.ai_provider.views import AIProviderView
         from superset.views.alerts import AlertView, ReportView
         from superset.views.all_entities import TaggedObjectsModelView
         from superset.views.annotations import AnnotationLayerView
@@ -341,6 +342,20 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             category_icon="",
         )
 
+        # XP Prompt provider configuration. Lives in the Settings menu under
+        # "Manage". The link name must equal the view's class_permission_name so
+        # FAB's own menu filtering hides it from roles without ``menu_access``
+        # on ``AIProvider``; ``docker/ensure_ai_provider_permissions.py`` grants
+        # that permission to Admin only, because this page holds API keys.
+        appbuilder.add_link(
+            "AIProvider",
+            label=_("AI Provider"),
+            href=f"{app_root}/aiprovider/",
+            icon="fa-robot",
+            category="Manage",
+            category_label=_("Manage"),
+        )
+
         appbuilder.add_view(
             RolesListView,
             "List Roles",
@@ -449,6 +464,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_view_no_menu(ExploreView)
         appbuilder.add_view_no_menu(ExplorePermalinkView)
         appbuilder.add_view_no_menu(ReportDesignerView)
+        appbuilder.add_view_no_menu(AIProviderView)
         appbuilder.add_view_no_menu(SavedQueryView)
         appbuilder.add_view_no_menu(SqllabView)
         appbuilder.add_view_no_menu(Superset)

@@ -8,6 +8,11 @@ from typing import Any
 
 from xp_prompt.providers.deepseek import DeepSeekProvider
 from xp_prompt.providers.gemini import GeminiProvider
+from xp_prompt.providers.anthropic import AnthropicProvider
+from xp_prompt.providers.openai_compatible import (
+    AzureOpenAIProvider,
+    OpenAICompatibleProvider,
+)
 from xp_prompt.providers.router import ProviderRouter
 from xp_prompt.providers.types import (
     Message,
@@ -182,6 +187,104 @@ class ProviderAdapterTest(unittest.TestCase):
         call = transport.calls[0]
         self.assertEqual(call["headers"]["Authorization"], "Bearer secret-key")
         self.assertEqual(call["payload"]["stream"], False)
+
+    def test_openai_compatible_uses_bearer_auth(self) -> None:
+        transport = FakeTransport(
+            {
+                "id": "chatcmpl-1",
+                "model": "gpt-4o-mini",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "OK"},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 1,
+                    "total_tokens": 6,
+                    "prompt_tokens_details": {"cached_tokens": 2},
+                },
+            }
+        )
+        provider = OpenAICompatibleProvider(
+            credentials=ProviderCredentials("secret-key"),
+            model="gpt-4o-mini",
+            transport=transport,
+        )
+
+        result = provider.generate(request(json_output=True))
+
+        self.assertEqual(result.request_id, "chatcmpl-1")
+        self.assertEqual(result.usage.cached_input_tokens, 2)
+        call = transport.calls[0]
+        self.assertEqual(call["url"], "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(call["headers"]["Authorization"], "Bearer secret-key")
+        self.assertEqual(call["payload"]["response_format"], {"type": "json_object"})
+
+    def test_azure_openai_uses_deployment_url_and_api_key_header(self) -> None:
+        transport = FakeTransport(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "OK"},
+                    }
+                ]
+            }
+        )
+        provider = AzureOpenAIProvider(
+            credentials=ProviderCredentials("secret-key"),
+            model="prod-deployment",
+            endpoint="https://example.openai.azure.com",
+            api_version="2024-10-21",
+            transport=transport,
+        )
+
+        provider.generate(request())
+
+        call = transport.calls[0]
+        self.assertEqual(
+            call["url"],
+            "https://example.openai.azure.com/openai/deployments/prod-deployment/"
+            "chat/completions?api-version=2024-10-21",
+        )
+        self.assertEqual(call["headers"]["api-key"], "secret-key")
+        self.assertNotIn("Authorization", call["headers"])
+
+    def test_anthropic_request_and_usage_are_normalized(self) -> None:
+        transport = FakeTransport(
+            {
+                "id": "msg_1",
+                "model": "claude-3-5-sonnet-latest",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "SELECT 1"}],
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 4,
+                    "cache_read_input_tokens": 3,
+                },
+            }
+        )
+        provider = AnthropicProvider(
+            credentials=ProviderCredentials("secret-key"),
+            model="claude-3-5-sonnet-latest",
+            transport=transport,
+        )
+
+        result = provider.generate(request())
+
+        self.assertEqual(result.content, "SELECT 1")
+        self.assertEqual(result.usage.cached_input_tokens, 3)
+        call = transport.calls[0]
+        self.assertEqual(call["url"], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(call["headers"]["x-api-key"], "secret-key")
+        self.assertEqual(call["headers"]["anthropic-version"], "2023-06-01")
+        self.assertNotIn("secret-key", str(call["payload"]))
+        self.assertEqual(
+            call["payload"]["system"], "Return a safe query."
+        )
+        self.assertEqual(len(call["payload"]["messages"]), 1)
 
 
 class ProviderRouterTest(unittest.TestCase):

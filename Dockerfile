@@ -274,6 +274,7 @@ COPY --chown=superset:superset services/xp_prompt/alembic.ini /app/xp_prompt/ale
 COPY --chown=superset:superset docker/initialize.sh /opt/xpbuilder/bin/initialize.sh
 COPY --chown=superset:superset docker/ensure_uploads_db.py /opt/xpbuilder/bin/ensure_uploads_db.py
 COPY --chown=superset:superset docker/ensure_report_designer_permissions.py /opt/xpbuilder/bin/ensure_report_designer_permissions.py
+COPY --chown=superset:superset docker/ensure_ai_provider_permissions.py /opt/xpbuilder/bin/ensure_ai_provider_permissions.py
 COPY customizations/templates/tail_js_custom_extra.html /app/superset/templates/tail_js_custom_extra.html
 COPY customizations/images/superset-logo-horiz.png /app/superset/static/assets/images/superset-logo-horiz.png
 COPY customizations/images/advance-bi-logo.png /app/superset/static/assets/images/advance-bi-logo.png
@@ -286,6 +287,7 @@ COPY customizations/images/xp-favicon-64.png /app/superset/static/assets/images/
 RUN chmod 0555 /opt/xpbuilder/bin/initialize.sh \
         /opt/xpbuilder/bin/ensure_uploads_db.py \
         /opt/xpbuilder/bin/ensure_report_designer_permissions.py \
+        /opt/xpbuilder/bin/ensure_ai_provider_permissions.py \
     && chmod 0444 /app/xpbuilder/superset_config.py \
         /app/superset/templates/tail_js_custom_extra.html \
         /app/superset/static/assets/images/superset-logo-horiz.png \

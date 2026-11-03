@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import urllib.error
 import urllib.request
@@ -11,12 +12,46 @@ from urllib.parse import urlparse
 
 from xp_prompt.providers.types import ProviderError
 
+#: Host suffixes that can only resolve inside a private deployment.
+_LOCAL_HOST_SUFFIXES = (".local", ".internal", ".localhost", ".lan", ".home.arpa")
+_LOCAL_HOST_NAMES = frozenset(
+    {"localhost", "host.docker.internal", "gateway.docker.internal"}
+)
 
-def validate_provider_endpoint(value: str, provider: str) -> str:
+
+def _is_local_host(host: str) -> bool:
+    """Is this host loopback, private, or a single-label container name?
+
+    A local model server (Ollama, LM Studio, vLLM) is a supported deployment:
+    it cannot present a certificate, so plain HTTP is allowed for hosts that
+    never leave the private network. Public hosts stay HTTPS-only because their
+    credentials would otherwise cross the internet in clear text.
+    """
+    name = host.lower().rstrip(".")
+    if name in _LOCAL_HOST_NAMES or name.endswith(_LOCAL_HOST_SUFFIXES):
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        # A single-label name such as "ollama" resolves only via Docker DNS.
+        return "." not in name
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
+def validate_provider_endpoint(
+    value: str,
+    provider: str,
+    *,
+    allow_local_http: bool = False,
+) -> str:
     """Validate a provider base URL without logging credentials or query data."""
     endpoint = value.strip().rstrip("/")
     parsed = urlparse(endpoint)
-    if parsed.scheme != "https" or not parsed.hostname:
+    if not parsed.hostname:
+        raise ValueError(f"{provider} endpoint must be an absolute HTTPS URL")
+    if parsed.scheme != "https" and not (
+        allow_local_http and parsed.scheme == "http" and _is_local_host(parsed.hostname)
+    ):
         raise ValueError(f"{provider} endpoint must be an absolute HTTPS URL")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError(

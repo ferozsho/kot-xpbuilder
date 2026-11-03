@@ -29,6 +29,7 @@ class GeminiProvider:
         endpoint: str = "https://generativelanguage.googleapis.com/v1beta",
         timeout_seconds: int = 45,
         transport: JsonTransport | None = None,
+        allow_local_http: bool = False,
     ) -> None:
         if not credentials.api_key.strip():
             raise ValueError("Gemini API key is required")
@@ -41,7 +42,9 @@ class GeminiProvider:
             if normalized_model.startswith("models/")
             else normalized_model
         )
-        self.endpoint = validate_provider_endpoint(endpoint, self.name)
+        self.endpoint = validate_provider_endpoint(
+            endpoint, self.name, allow_local_http=allow_local_http
+        )
         self.timeout_seconds = timeout_seconds
         self._transport = transport or UrlLibJsonTransport()
 

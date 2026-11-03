@@ -106,6 +106,53 @@ def check_build_inputs(dockerfile: str) -> None:
                 raise AssertionError(f'COPY source missing: {source}')
 
 
+def check_ai_provider_wiring(compatibility: dict) -> None:
+    """The AI Provider settings page spans two services; keep them in sync.
+
+    Provider API keys are typed into a Superset settings page but sealed in the
+    XP Prompt database, so the two sides share one token derivation and one
+    routing contract. A silent drift here would break every provider save with a
+    401 that is hard to diagnose from the UI.
+    """
+    settings_page = compatibility.get('optional_features', {}).get(
+        'ai_provider_settings'
+    )
+    if not isinstance(settings_page, dict):
+        raise AssertionError(
+            'ai_provider_settings must be declared under optional_features'
+        )
+
+    secret_module = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'security.py'
+    ).read_text(encoding='utf-8')
+    proxy_view = (
+        ROOT / 'superset' / 'superset' / 'views' / 'ai_provider' / 'views.py'
+    ).read_text(encoding='utf-8')
+
+    salt = settings_page['internal_token_salt']
+    pattern = re.compile(rf'xp-prompt-internal-admin-v1')
+    if not pattern.search(secret_module):
+        raise AssertionError('XP Prompt security module lost the token salt')
+    if f'"{salt}"'.replace('"', "'") not in proxy_view.replace('"', "'"):
+        raise AssertionError(
+            'AI Provider proxy token salt drifted from the XP Prompt service'
+        )
+
+    compose = (ROOT / 'compose.yml').read_text(encoding='utf-8')
+    for marker in (
+        'XP_PROMPT_SERVICE_SECRET',
+        'XP_PROMPT_API_URL',
+    ):
+        if marker not in compose:
+            raise AssertionError(f'compose.yml must pass {marker} to the services')
+
+    initialize = (ROOT / 'docker' / 'initialize.sh').read_text(encoding='utf-8')
+    if 'ensure_ai_provider_permissions.py' not in initialize:
+        raise AssertionError(
+            'initialize.sh must grant the AI Provider permissions'
+        )
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -187,6 +234,8 @@ def main():
             raise AssertionError(f'{MOODLE_FLAG} must be passed through by compose.yml')
 
     check_build_inputs(dockerfile)
+
+    check_ai_provider_wiring(compatibility)
 
     print('Compatibility contract checks passed')
 

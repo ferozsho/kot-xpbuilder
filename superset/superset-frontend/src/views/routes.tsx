@@ -153,6 +153,13 @@ const ReportDesigner = lazy(
     ),
 );
 
+const AIProviderSettings = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "AIProviderSettings" */ 'src/features/aiProvider/AIProviderPage'
+    ),
+);
+
 const TaskList = lazy(
   () => import(/* webpackChunkName: "TaskList" */ 'src/pages/TaskList'),
 );
@@ -338,6 +345,14 @@ export const routes: Routes = [
   {
     path: '/reportdesigner/designer/',
     Component: ReportDesigner,
+  },
+  {
+    path: '/aiprovider/',
+    Component: AIProviderSettings,
+  },
+  {
+    path: '/aiprovider/list/',
+    Component: AIProviderSettings,
   },
   {
     path: '/tasks/list/',

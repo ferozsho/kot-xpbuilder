@@ -27,6 +27,7 @@ class DeepSeekProvider:
         endpoint: str = "https://api.deepseek.com",
         timeout_seconds: int = 45,
         transport: JsonTransport | None = None,
+        allow_local_http: bool = False,
     ) -> None:
         if not credentials.api_key.strip():
             raise ValueError("DeepSeek API key is required")
@@ -34,7 +35,9 @@ class DeepSeekProvider:
             raise ValueError("DeepSeek model is required")
         self._credentials = credentials
         self.model = model.strip()
-        self.endpoint = validate_provider_endpoint(endpoint, self.name)
+        self.endpoint = validate_provider_endpoint(
+            endpoint, self.name, allow_local_http=allow_local_http
+        )
         self.timeout_seconds = timeout_seconds
         self._transport = transport or UrlLibJsonTransport()
 

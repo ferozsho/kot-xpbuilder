@@ -52,6 +52,10 @@ x-superset-environment: &x-superset-environment
   # same-origin behind Moodle's reverse proxy; set it when Superset runs on its
   # own host so the SPA's Moodle sync actions target the Moodle origin.
   XPBUILDER_MOODLE_URL: "${XPBUILDER_MOODLE_URL:-}"
+  # Origin of the dedicated XP Prompt AI service. The AI Provider settings page
+  # (Settings -> Manage -> AI Provider) proxies through this address after
+  # checking Superset permissions; the service is never published on the host.
+  XP_PROMPT_API_URL: ${XP_PROMPT_API_URL:-http://xp-prompt-api:8090}
 
 x-xp-prompt-environment: &x-xp-prompt-environment
   PYTHONPATH: /app/xp_prompt:/app/pythonpath
@@ -69,6 +73,11 @@ x-xp-prompt-environment: &x-xp-prompt-environment
   XP_PROMPT_REDIS_DB: "2"
   XP_PROMPT_QDRANT_URL: http://xp-prompt-qdrant:6333
   XP_PROMPT_DEPENDENCY_TIMEOUT_SECONDS: "3"
+  # Root secret used to seal provider API keys at rest and to authenticate the
+  # Superset -> XP Prompt provider-admin proxy. Reuses the Superset secret so
+  # no extra .env key is required; rotating it invalidates stored provider keys
+  # (they must be re-entered in Settings -> AI Provider).
+  XP_PROMPT_SERVICE_SECRET: ${XP_PROMPT_SERVICE_SECRET:-${SUPERSET_SECRET_KEY:?SUPERSET_SECRET_KEY is required}}
   GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY:-}
   XP_PROMPT_GEMINI_MODEL: ${XP_PROMPT_GEMINI_MODEL:-}
   XP_PROMPT_GEMINI_ENDPOINT: ${XP_PROMPT_GEMINI_ENDPOINT:-https://generativelanguage.googleapis.com/v1beta}

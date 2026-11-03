@@ -13,6 +13,16 @@
       "flag": "XPBUILDER_MOODLE_INTEGRATION",
       "default": false,
       "description": "Report Designer 'Sync tables' API plus the 'Sync to Moodle' actions. A single built image serves both modes; off keeps the standalone runtime."
+    },
+    "ai_provider_settings": {
+      "flag": "XP_PROMPT_SERVICE_SECRET",
+      "default": true,
+      "description": "Settings -> Manage -> AI Provider. Provider API keys are typed in Superset, sealed with Fernet in the XP Prompt database, and used by the XP Prompt AI service; no provider key is read from .env.",
+      "page": "/aiprovider/",
+      "internal_token_salt": "xp-prompt-internal-admin-v1",
+      "api_endpoint": "/ai/providers",
+      "proxy": "superset/superset/views/ai_provider/views.py",
+      "service": "services/xp_prompt/xp_prompt/api.py"
     }
   },
   "superset": {

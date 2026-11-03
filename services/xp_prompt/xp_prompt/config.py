@@ -67,6 +67,7 @@ class Settings:
     redis_database: int
     qdrant_url: str
     dependency_timeout_seconds: int
+    service_secret: str | None = field(default=None, repr=False)
     gemini_api_key: str | None = field(default=None, repr=False)
     gemini_model: str | None = None
     gemini_endpoint: str = "https://generativelanguage.googleapis.com/v1beta"
@@ -113,6 +114,10 @@ class Settings:
                 minimum=1,
                 maximum=30,
             ),
+            service_secret=(
+                _optional(source, "XP_PROMPT_SERVICE_SECRET")
+                or _optional(source, "SUPERSET_SECRET_KEY")
+            ),
             gemini_api_key=_optional(source, "GOOGLE_GEMINI_API_KEY"),
             gemini_model=_optional(source, "XP_PROMPT_GEMINI_MODEL"),
             gemini_endpoint=(
@@ -142,6 +147,7 @@ class Settings:
             "redis_database": self.redis_database,
             "qdrant_url": self.qdrant_url,
             "dependency_timeout_seconds": self.dependency_timeout_seconds,
+            "provider_admin_ready": bool(self.service_secret),
             "gemini_configured": bool(self.gemini_api_key and self.gemini_model),
             "gemini_model": self.gemini_model,
             "gemini_endpoint": self.gemini_endpoint,
