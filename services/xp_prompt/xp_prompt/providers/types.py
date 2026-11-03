@@ -25,6 +25,10 @@ class ProviderRequest:
     max_output_tokens: int
     temperature: float = 0.0
     json_output: bool = False
+    #: Keys a ``json_output`` response must contain. An absent key is treated
+    #: as a non-retryable validation failure, so a caller never starts acting on
+    #: a half-populated document.
+    json_required_keys: tuple[str, ...] = ()
     #: Caller-supplied correlation id. The router stamps a generated one when
     #: the caller has no request/job identity yet, so every attempt of one
     #: logical request can be joined in logs and in the future usage ledger.
@@ -39,6 +43,18 @@ class ProviderRequest:
             raise ValueError("max_output_tokens is outside the platform range")
         if not 0.0 <= self.temperature <= 2.0:
             raise ValueError("temperature must be between 0 and 2")
+        if self.json_required_keys and not self.json_output:
+            raise ValueError(
+                "json_required_keys is only meaningful when json_output is set"
+            )
+        if len(self.json_required_keys) > 32:
+            raise ValueError("json_required_keys accepts at most 32 keys")
+        for key in self.json_required_keys:
+            if not key.strip() or len(key) > 64:
+                raise ValueError(
+                    "json_required_keys entries must be non-blank and at most "
+                    "64 characters"
+                )
         if self.correlation_id is not None:
             if not self.correlation_id.strip():
                 raise ValueError("correlation_id must not be blank when provided")

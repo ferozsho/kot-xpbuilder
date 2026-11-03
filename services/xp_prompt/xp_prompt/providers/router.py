@@ -26,6 +26,10 @@ from xp_prompt.providers.health import (
     MAX_ATTEMPTS_PER_PROVIDER,
     retry_delay_seconds,
 )
+from xp_prompt.providers.structured import (
+    StructuredOutputError,
+    parse_json_object,
+)
 from xp_prompt.providers.types import (
     AttemptSummary,
     ProviderError,
@@ -106,6 +110,7 @@ class ProviderRouter:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 response = provider.generate(request)
+                self._validate_structured_output(provider, request, response)
             except ProviderError as error:
                 attempts.append(
                     AttemptSummary(
@@ -157,6 +162,33 @@ class ProviderRouter:
             )
             return response
         raise AssertionError("retry loop exited without a result")  # pragma: no cover
+
+    def _validate_structured_output(
+        self,
+        provider: Provider,
+        request: ProviderRequest,
+        response: ProviderResponse,
+    ) -> None:
+        """Reject a non-object JSON answer before the caller can trust it.
+
+        Validation failures are deliberately **not** retryable: the plan forbids
+        a blind fallback on validation errors, because the defect may be in the
+        prompt, and retrying would spend tokens without changing the outcome.
+        """
+        if not request.json_output:
+            return
+        try:
+            parse_json_object(
+                response.content,
+                required_keys=request.json_required_keys,
+            )
+        except StructuredOutputError as error:
+            raise ProviderError(
+                provider=provider.name,
+                code=error.code,
+                message=error.reason,
+                retryable=False,
+            ) from error
 
     def _log(
         self,
