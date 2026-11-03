@@ -262,6 +262,10 @@ def create_app(settings: Settings | None = None) -> Flask:
                     "answer": turn.answer,
                     "provider": turn.provider,
                     "model": turn.model,
+                    "intent": turn.intent,
+                    "clarification": turn.clarification,
+                    "target_intent": turn.target_intent,
+                    "intent_reasons": list(turn.intent_reasons),
                     "usage": turn.usage,
                     "attempts": list(turn.attempts),
                 }

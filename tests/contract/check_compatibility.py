@@ -130,7 +130,7 @@ def check_ai_provider_wiring(compatibility: dict) -> None:
     ).read_text(encoding='utf-8')
 
     salt = settings_page['internal_token_salt']
-    pattern = re.compile(rf'xp-prompt-internal-admin-v1')
+    pattern = re.compile(r'xp-prompt-internal-admin-v1')
     if not pattern.search(secret_module):
         raise AssertionError('XP Prompt security module lost the token salt')
     if f'"{salt}"'.replace('"', "'") not in proxy_view.replace('"', "'"):
@@ -220,6 +220,33 @@ def check_ai_prompt_wiring(compatibility: dict) -> None:
     if 'resolve_router' not in turn:
         raise AssertionError(
             'the chat turn must go through resolve_router so routing policy applies'
+        )
+
+    # Intent routing (P2-F04) runs before any provider cost is spent, so the
+    # classifier and the clarification outcome must stay wired into the turn.
+    intent_router = workspace.get('intent_router')
+    if not intent_router:
+        raise AssertionError(
+            'ai_prompt_workspace.intent_router must be declared'
+        )
+    router_source = (ROOT / intent_router).read_text(encoding='utf-8')
+    intent_names = workspace.get('intents') or []
+    if len(intent_names) != 7:
+        raise AssertionError(
+            'ai_prompt_workspace.intents must list the seven routable outcomes'
+        )
+    for name in intent_names:
+        if f'{name.upper()} = "{name}"' not in router_source:
+            raise AssertionError(
+                f'intent "{name}" is missing from {intent_router}'
+            )
+    if 'intents.classify(' not in turn:
+        raise AssertionError(
+            'the chat turn must route every message through intents.classify'
+        )
+    if '"kind": "clarification"' not in turn:
+        raise AssertionError(
+            'a clarification turn must be stored with kind=clarification'
         )
 
     initialize = (ROOT / 'docker' / 'initialize.sh').read_text(encoding='utf-8')

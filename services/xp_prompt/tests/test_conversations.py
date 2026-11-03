@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
-from xp_prompt import chat, conversations
+from xp_prompt import chat, conversations, intents
 from xp_prompt.config import Settings
 from xp_prompt.providers.types import (
     AttemptSummary,
@@ -207,7 +207,7 @@ class RunTurnTest(unittest.TestCase):
                 conversation_id="c-1",
                 tenant_key="default",
                 superset_user_id=1,
-                content="hello",
+                content="show monthly enrollment trends",
             )
 
         self.assertEqual([entry["role"] for entry in stored], ["user", "assistant"])
@@ -217,6 +217,9 @@ class RunTurnTest(unittest.TestCase):
         structure = stored[1]["structured_content"]
         self.assertEqual(structure["correlation_id"], "corr-1")
         self.assertEqual(structure["kind"], "answer")
+        self.assertEqual(structure["intent"], "query")
+        self.assertEqual(turn.intent, "query")
+        self.assertFalse(turn.clarification)
 
     def test_provider_failure_is_stored_then_raised(self) -> None:
         stored: list[dict] = []
@@ -250,7 +253,7 @@ class RunTurnTest(unittest.TestCase):
                     conversation_id="c-1",
                     tenant_key="default",
                     superset_user_id=1,
-                    content="hello",
+                    content="how many learners are active",
                 )
 
         self.assertEqual(raised.exception.code, "http_503")
@@ -272,7 +275,7 @@ class RunTurnTest(unittest.TestCase):
                     conversation_id="c-1",
                     tenant_key="default",
                     superset_user_id=1,
-                    content="hello",
+                    content="how many learners are active",
                 )
 
         self.assertEqual(raised.exception.code, "no_provider")
@@ -291,6 +294,111 @@ class RunTurnTest(unittest.TestCase):
                 )
 
         append.assert_not_called()
+
+    def test_ambiguous_request_asks_a_question_without_a_provider_call(self) -> None:
+        stored: list[dict] = []
+        resolve = mock.Mock()
+
+        with mock.patch.object(conversations, "get_conversation", return_value=object()), \
+             mock.patch.object(
+                 conversations,
+                 "append_message",
+                 side_effect=lambda *args, **kwargs: stored.append(kwargs) or message(),
+             ), \
+             mock.patch.object(
+                 conversations,
+                 "list_messages",
+                 return_value=[message(id="m-1")],
+             ), \
+             mock.patch.object(chat.registry, "resolve_router", resolve):
+            turn = chat.run_turn(
+                settings(),
+                conversation_id="c-1",
+                tenant_key="default",
+                superset_user_id=1,
+                content="hello",
+            )
+
+        resolve.assert_not_called()
+        self.assertTrue(turn.clarification)
+        self.assertEqual(turn.intent, "clarification")
+        self.assertEqual(turn.provider, "")
+        self.assertEqual(turn.answer, intents.NO_SIGNAL_QUESTION)
+        self.assertEqual([entry["role"] for entry in stored], ["user", "assistant"])
+        self.assertEqual(stored[1]["content"], intents.NO_SIGNAL_QUESTION)
+        self.assertEqual(stored[1]["structured_content"]["kind"], "clarification")
+
+    def test_modification_without_history_parks_the_target_intent(self) -> None:
+        stored: list[dict] = []
+        resolve = mock.Mock()
+
+        with mock.patch.object(conversations, "get_conversation", return_value=object()), \
+             mock.patch.object(
+                 conversations,
+                 "append_message",
+                 side_effect=lambda *args, **kwargs: stored.append(kwargs) or message(),
+             ), \
+             mock.patch.object(
+                 conversations,
+                 "list_messages",
+                 return_value=[message(id="m-1", content="make it a line chart")],
+             ), \
+             mock.patch.object(chat.registry, "resolve_router", resolve):
+            turn = chat.run_turn(
+                settings(),
+                conversation_id="c-1",
+                tenant_key="default",
+                superset_user_id=1,
+                content="make it a line chart",
+            )
+
+        resolve.assert_not_called()
+        self.assertTrue(turn.clarification)
+        self.assertEqual(turn.target_intent, "chart")
+        structure = stored[1]["structured_content"]
+        self.assertEqual(structure["kind"], "clarification")
+        self.assertEqual(structure["pending_intent"], "chart")
+
+    def test_follow_up_reply_reuses_the_parked_intent(self) -> None:
+        stored: list[dict] = []
+        router = mock.Mock()
+        router.generate.return_value = self.routed()
+        clarification = conversations.MessageRecord(
+            id="m-2",
+            conversation_id="c-1",
+            role="assistant",
+            content=intents.NO_CONTEXT_QUESTION.format(target="a chart"),
+            structured_content={
+                "kind": "clarification",
+                "pending_intent": "chart",
+            },
+            created_at=datetime(2026, 11, 3, tzinfo=timezone.utc),
+        )
+
+        with mock.patch.object(conversations, "get_conversation", return_value=object()), \
+             mock.patch.object(
+                 conversations,
+                 "append_message",
+                 side_effect=lambda *args, **kwargs: stored.append(kwargs) or message(),
+             ), \
+             mock.patch.object(
+                 conversations,
+                 "list_messages",
+                 return_value=[clarification, message(id="m-3", content="yes")],
+             ), \
+             mock.patch.object(chat.registry, "resolve_router", return_value=router):
+            turn = chat.run_turn(
+                settings(),
+                conversation_id="c-1",
+                tenant_key="default",
+                superset_user_id=1,
+                content="yes",
+            )
+
+        self.assertFalse(turn.clarification)
+        self.assertEqual(turn.intent, "chart")
+        system_prompt = router.generate.call_args[0][0].messages[0].content
+        self.assertIn("chart", system_prompt)
 
 
 if __name__ == "__main__":

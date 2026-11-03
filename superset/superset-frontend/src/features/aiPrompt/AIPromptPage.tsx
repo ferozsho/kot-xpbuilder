@@ -183,6 +183,12 @@ const StyledNotice = styled.div`
 const isAssistantError = (message: MessageRecord) =>
   message.structured_content?.kind === 'error';
 
+const isClarification = (message: MessageRecord) =>
+  message.structured_content?.kind === 'clarification';
+
+const intentLabel = (intent?: string | null) =>
+  intent ? t(intent.charAt(0).toUpperCase() + intent.slice(1)) : '';
+
 export default function AIPromptPage() {
   const { addDangerToast, addSuccessToast } = useToasts();
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
@@ -300,7 +306,9 @@ export default function AIPromptPage() {
         ),
       );
       addSuccessToast(
-        `${t('Answered by')} ${turn.provider} · ${turn.model}`,
+        turn.clarification
+          ? t('XP Prompt needs one more detail')
+          : `${t('Answered by')} ${turn.provider} · ${turn.model}`,
       );
     } catch (caught) {
       setError(await describeError(caught));
@@ -418,10 +426,16 @@ export default function AIPromptPage() {
                   {isAssistantError(message) && (
                     <Tag color="red">{t('Provider error')}</Tag>
                   )}
+                  {isClarification(message) && (
+                    <Tag color="gold">{t('Needs clarification')}</Tag>
+                  )}
                   <div>{message.content ?? t('(content unavailable)')}</div>
                   {message.role === 'assistant' &&
                     message.structured_content?.model && (
                       <StyledMeta>
+                        {message.structured_content.intent
+                          ? `${intentLabel(message.structured_content.intent)} · `
+                          : ''}
                         {message.structured_content.provider}{' '}
                         {message.structured_content.model}
                         {message.structured_content.usage?.total_tokens

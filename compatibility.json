@@ -39,6 +39,16 @@
       "service": "services/xp_prompt/xp_prompt/api.py",
       "store": "services/xp_prompt/xp_prompt/conversations.py",
       "turn": "services/xp_prompt/xp_prompt/chat.py",
+      "intent_router": "services/xp_prompt/xp_prompt/intents.py",
+      "intents": [
+        "query",
+        "dataset",
+        "chart",
+        "dashboard",
+        "explanation",
+        "modification",
+        "clarification"
+      ],
       "permission_script": "docker/ensure_ai_prompt_permissions.py",
       "roles": [
         "Admin",

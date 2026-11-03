@@ -6,11 +6,15 @@ boring and auditable:
 
 1. the user message is stored first, so a provider failure never loses input;
 2. history is read back from the database (sealed bodies), not from the client;
-3. a single correlated provider call goes through
+3. :mod:`xp_prompt.intents` routes the turn to an intent before any provider
+   cost is spent, and an unclear request is answered with a focused question
+   instead of a guess;
+4. a single correlated provider call goes through
    :func:`xp_prompt.providers.registry.resolve_router`, which already applies
    routing, retries, the circuit breaker, and structured-output validation;
-4. the answer is stored with its correlation id, provider, model, and usage so a
-   later usage ledger (Phase 9) can reconcile without re-reading the transcript.
+5. the answer is stored with its correlation id, provider, model, intent, and
+   usage so a later usage ledger (Phase 9) can reconcile without re-reading the
+   transcript.
 
 No prompt or completion is logged; only the correlation id, provider, model, and
 token counts, which are already normalized and free of user content.
@@ -23,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from xp_prompt import conversations
+from xp_prompt import conversations, intents
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.types import (
@@ -65,13 +69,22 @@ class ChatError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ChatTurn:
-    """Result of one user turn."""
+    """Result of one user turn.
+
+    ``provider``/``model`` are empty on a clarification turn: the router answered
+    from its own routing table, so no provider was called and no tokens were
+    spent.
+    """
 
     conversation_id: str
     correlation_id: str
     answer: str
     provider: str
     model: str
+    intent: str
+    clarification: bool = False
+    target_intent: str | None = None
+    intent_reasons: tuple[str, ...] = ()
     usage: dict[str, Any] = field(default_factory=dict)
     attempts: tuple[dict[str, Any], ...] = ()
 
@@ -110,7 +123,22 @@ def run_turn(
         superset_user_id=superset_user_id,
         limit=MAX_HISTORY_MESSAGES,
     )
-    request = _build_request(history, user_message.id)
+
+    decision = intents.classify(
+        content,
+        has_prior_answer=_has_prior_answer(history, user_message.id),
+        pending_intent=_pending_intent(history, user_message.id),
+    )
+    if decision.is_clarification:
+        return _clarification_turn(
+            settings,
+            conversation_id=conversation_id,
+            tenant_key=tenant_key,
+            superset_user_id=superset_user_id,
+            decision=decision,
+        )
+
+    request = _build_request(history, user_message.id, intent=decision.intent)
 
     try:
         router = registry.resolve_router(settings, tenant_key=tenant_key)
@@ -168,6 +196,10 @@ def run_turn(
         content=routed.response.content,
         structured_content={
             "kind": "answer",
+            "intent": decision.intent,
+            "target_intent": decision.target_intent,
+            "intent_reasons": list(decision.reasons),
+            "intent_confidence": decision.confidence,
             "correlation_id": correlation_id,
             "provider": routed.response.provider,
             "model": routed.response.model,
@@ -178,10 +210,11 @@ def run_turn(
     )
 
     logger.info(
-        "chat_turn correlation_id=%s conversation=%s provider=%s model=%s "
-        "attempts=%d outcome=succeeded",
+        "chat_turn correlation_id=%s conversation=%s intent=%s provider=%s "
+        "model=%s attempts=%d outcome=succeeded",
         correlation_id,
         conversation_id,
+        decision.intent,
         routed.response.provider,
         routed.response.model,
         len(routed.attempts),
@@ -193,14 +226,107 @@ def run_turn(
         answer=routed.response.content,
         provider=routed.response.provider,
         model=routed.response.model,
+        intent=decision.intent,
+        target_intent=decision.target_intent,
+        intent_reasons=decision.reasons,
         usage=usage,
         attempts=attempts,
     )
 
 
+def _clarification_turn(
+    settings: Settings,
+    *,
+    conversation_id: str,
+    tenant_key: str,
+    superset_user_id: int,
+    decision: intents.IntentDecision,
+) -> ChatTurn:
+    """Store the router's question and return it without spending a token.
+
+    The question is the assistant's answer for this turn. It carries the
+    ``pending_intent`` so a one-word reply continues where the router left off.
+    """
+    correlation_id = uuid.uuid4().hex
+    question = decision.clarifying_question or intents.NO_SIGNAL_QUESTION
+
+    conversations.append_message(
+        settings,
+        conversation_id,
+        tenant_key=tenant_key,
+        superset_user_id=superset_user_id,
+        role="assistant",
+        content=question,
+        structured_content={
+            "kind": "clarification",
+            "intent": intents.CLARIFICATION,
+            "pending_intent": decision.pending_intent,
+            "target_intent": decision.target_intent,
+            "intent_reasons": list(decision.reasons),
+            "correlation_id": correlation_id,
+        },
+    )
+
+    logger.info(
+        "chat_turn correlation_id=%s conversation=%s intent=clarification "
+        "reasons=%s pending_intent=%s outcome=clarification",
+        correlation_id,
+        conversation_id,
+        ",".join(decision.reasons) or "none",
+        decision.pending_intent or "none",
+    )
+
+    return ChatTurn(
+        conversation_id=conversation_id,
+        correlation_id=correlation_id,
+        answer=question,
+        provider="",
+        model="",
+        intent=intents.CLARIFICATION,
+        clarification=True,
+        target_intent=decision.target_intent,
+        intent_reasons=decision.reasons,
+    )
+
+
+def _has_prior_answer(
+    history: list["conversations.MessageRecord"],
+    current_user_message_id: str,
+) -> bool:
+    """Does this conversation already hold an assistant turn to modify?"""
+    for record in history:
+        if record.id == current_user_message_id:
+            continue
+        if record.role != "assistant" or not (record.content or "").strip():
+            continue
+        if record.structured_content.get("kind") == "error":
+            continue
+        return True
+    return False
+
+
+def _pending_intent(
+    history: list["conversations.MessageRecord"],
+    current_user_message_id: str,
+) -> str | None:
+    """Intent carried by the last clarification, if that was the last answer."""
+    for record in reversed(history):
+        if record.id == current_user_message_id:
+            continue
+        if record.role != "assistant":
+            continue
+        if record.structured_content.get("kind") != "clarification":
+            return None
+        pending = record.structured_content.get("pending_intent")
+        return pending if isinstance(pending, str) else None
+    return None
+
+
 def _build_request(
     history: list["conversations.MessageRecord"],
     last_user_message_id: str,
+    *,
+    intent: str | None = None,
 ) -> ProviderRequest:
     """Turn stored history into one provider request.
 
@@ -232,7 +358,7 @@ def _build_request(
         current = [r for r in usable if r.id == last_user_message_id]
         selected = current or selected
 
-    messages: list[Message] = [Message("system", SYSTEM_PROMPT)]
+    messages: list[Message] = [Message("system", _system_prompt(intent))]
     messages.extend(
         Message(record.role, record.content.strip())
         for record in reversed(selected)
@@ -246,6 +372,12 @@ def _build_request(
         temperature=CHAT_TEMPERATURE,
         correlation_id=uuid.uuid4().hex,
     )
+
+
+def _system_prompt(intent: str | None) -> str:
+    """Base prompt plus the guidance the routed intent implies."""
+    guidance = intents.PROMPT_GUIDANCE.get(intent or "")
+    return f"{SYSTEM_PROMPT}\n\n{guidance}" if guidance else SYSTEM_PROMPT
 
 
 def _usage_dict(usage: Any) -> dict[str, Any]:

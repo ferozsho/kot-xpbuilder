@@ -18,6 +18,19 @@
  */
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
 
+/**
+ * The seven outcomes of the deterministic intent router (P2-F04).
+ * `clarification` means the router asked a question instead of guessing.
+ */
+export type IntentName =
+  | 'query'
+  | 'dataset'
+  | 'chart'
+  | 'dashboard'
+  | 'explanation'
+  | 'modification'
+  | 'clarification';
+
 export interface ConversationRecord {
   id: string;
   tenant: string;
@@ -45,7 +58,12 @@ export interface MessageRecord {
   role: MessageRole;
   content: string | null;
   structured_content: {
-    kind?: 'answer' | 'error';
+    kind?: 'answer' | 'error' | 'clarification';
+    intent?: IntentName;
+    target_intent?: IntentName | null;
+    pending_intent?: IntentName | null;
+    intent_reasons?: string[];
+    intent_confidence?: number;
     correlation_id?: string;
     provider?: string;
     model?: string;
@@ -74,6 +92,10 @@ export interface ChatTurnResponse {
   answer: string;
   provider: string;
   model: string;
+  intent: IntentName;
+  clarification: boolean;
+  target_intent: IntentName | null;
+  intent_reasons: string[];
   usage: MessageUsage;
   attempts: {
     provider: string;
