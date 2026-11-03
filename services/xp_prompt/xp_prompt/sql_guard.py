@@ -365,7 +365,12 @@ def _enforce_limit(
     # whole statement instead of trusting it.
     wrapped = (
         exp.select("*")
-        .from_(exp.Subquery(this=statement, alias=exp.TableAlias(this=exp.to_identifier("xp_capped"))))
+        .from_(
+            exp.Subquery(
+                this=statement,
+                alias=exp.TableAlias(this=exp.to_identifier("xp_capped")),
+            )
+        )
         .limit(cap)
     )
     return wrapped, cap, True

@@ -209,6 +209,74 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    # --- Artifacts (P2-F07) --------------------------------------------
+
+    @expose("/api/conversations/<conversation_id>/artifacts/", methods=("GET",))
+    @has_access_api
+    def api_conversation_artifacts(self, conversation_id: str) -> FlaskResponse:
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        status, body = call_xp_prompt(
+            "GET",
+            f"/ai/conversations/{conversation_id}/artifacts"
+            f"?superset_user_id={owner}",
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/artifacts/<artifact_id>/<action>/", methods=("POST",))
+    @has_access_api
+    def api_artifact_action(self, artifact_id: str, action: str) -> FlaskResponse:
+        """confirm / discard / publish, all backed by one lifecycle."""
+        if action not in _ARTIFACT_ACTIONS:
+            return self.json_response(
+                {"message": _("Unsupported artifact action"), "severity": "danger"},
+                404,
+            )
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        payload["superset_user_id"] = owner
+        status, body = call_xp_prompt(
+            "POST", f"/ai/artifacts/{artifact_id}/{action}", payload=payload
+        )
+        return self.json_response(body, status)
+
+    # --- Authorized schema slice (P4-F02) -------------------------------
+
+    @expose("/api/schema/", methods=("GET",))
+    @has_access_api
+    def api_schema_slice(self) -> FlaskResponse:
+        """The caller's authorized datasets, resolved by Superset, not guessed.
+
+        The slice is built here because Superset is the authorization authority:
+        the service never queries the metadata database for table names, so an
+        unauthorized name cannot reach a prompt.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        try:
+            payload = {
+                "superset_user_id": owner,
+                "datasets": authorized_datasets(),
+            }
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("Could not build the authorized schema slice")
+            return self.json_response(
+                {"message": _("Could not load the schema"), "severity": "danger"},
+                503,
+            )
+        status, body = call_xp_prompt("POST", "/ai/schema", payload=payload)
+        return self.json_response(body, status)
+
 
 #: Browser-facing verb -> XP Prompt endpoint verb. Only these four exist upstream.
 _JOB_ACTIONS = {
@@ -217,6 +285,48 @@ _JOB_ACTIONS = {
     "confirm": "confirm",
     "reject": "reject",
 }
+
+#: Artifact transitions. ``publish`` is driven by a producer phase, not the UI.
+_ARTIFACT_ACTIONS = ("confirm", "discard", "publish")
+
+#: Bounds on the authorized slice: a prompt is not a schema dump.
+MAX_SLICE_DATASETS = 50
+MAX_SLICE_COLUMNS = 60
+
+
+def authorized_datasets() -> list[dict[str, Any]]:
+    """Datasets the current principal may query, straight from the security manager.
+
+    ``get_user_datasources`` already combines explicit dataset permissions with
+    implicit database access, so it is the same authority that gates Explore.
+    """
+    from superset import security_manager
+
+    datasets: list[dict[str, Any]] = []
+    for datasource in security_manager.get_user_datasources():
+        database = getattr(datasource, "database", None)
+        if database is None:
+            continue
+        columns = [
+            {
+                "name": column.column_name,
+                "type": column.type or "",
+                "temporal": bool(column.is_dttm),
+            }
+            for column in (getattr(datasource, "columns", None) or [])[:MAX_SLICE_COLUMNS]
+        ]
+        datasets.append(
+            {
+                "dataset_id": datasource.id,
+                "name": datasource.table_name,
+                "schema": datasource.schema or "",
+                "database": database.database_name,
+                "dialect": (database.backend or "").split("://", 1)[0],
+                "columns": columns,
+            }
+        )
+    datasets.sort(key=lambda item: (str(item["database"]), str(item["name"])))
+    return datasets[:MAX_SLICE_DATASETS]
 
 
 def _current_user_id() -> int | None:

@@ -127,7 +127,9 @@ def routed_response() -> RoutedResponse:
 
 class RedactTest(unittest.TestCase):
     def test_api_key_shape_is_removed(self) -> None:
-        self.assertNotIn("AIzaSyABCDEF1234567890", conversations.redact("key AIzaSyABCDEF1234567890"))
+        redacted = conversations.redact("key AIzaSyABCDEF1234567890")
+
+        self.assertNotIn("AIzaSyABCDEF1234567890", redacted)
 
     def test_assignment_of_a_secret_is_removed(self) -> None:
         redacted = conversations.redact("password=hunter2 and api_key: abc123")

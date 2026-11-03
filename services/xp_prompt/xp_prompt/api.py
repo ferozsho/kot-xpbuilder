@@ -26,7 +26,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from xp_prompt import __version__, artifacts, chat, conversations, jobs
+from xp_prompt import __version__, artifacts, chat, conversations, jobs, schema_slice
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
@@ -699,6 +699,28 @@ def create_app(settings: Settings | None = None) -> Flask:
         return (
             jsonify(
                 {"count": len(records), "result": [r.to_public_dict() for r in records]}
+            ),
+            200,
+        )
+
+    # --- Authorized schema slice (P4-F02) -------------------------------
+
+    @app.post("/ai/schema")
+    @require_admin_token
+    def schema_slice_normalize():
+        """Validate the slice Superset built for this principal.
+
+        Superset resolves the authorization; this endpoint only bounds, validates
+        and fingerprints it. The prompt text is returned only when the caller asks
+        for it, because an internal consumer needs it and a browser does not.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        slice_ = schema_slice.SchemaSlice.from_payload(payload)
+        return (
+            jsonify(
+                slice_.to_public_dict(include_prompt=bool(payload.get("include_prompt")))
             ),
             200,
         )

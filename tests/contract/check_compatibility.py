@@ -585,6 +585,56 @@ def check_ai_sql_guard(compatibility: dict) -> None:
             )
 
 
+def check_ai_schema_slice(compatibility: dict) -> None:
+    """Only Superset may decide which table names an AI prompt can mention.
+
+    If the slice were assembled from a request body, or from the metadata database
+    directly, an unauthorized name could reach a prompt. The check therefore pins
+    the authorization source (``get_user_datasources``) and the bounds.
+    """
+    section = compatibility.get('ai_schema_slice')
+    if not isinstance(section, dict):
+        raise AssertionError('ai_schema_slice must be declared')
+
+    module_path = section.get('module')
+    proxy_path = section.get('proxy')
+    if not module_path or not proxy_path:
+        raise AssertionError('ai_schema_slice.module and .proxy must be declared')
+
+    source = (ROOT / module_path).read_text(encoding='utf-8')
+    for constant, key in (
+        ('MAX_DATASETS', 'max_datasets'),
+        ('MAX_COLUMNS', 'max_columns'),
+        ('MAX_PROMPT_CHARS', 'max_prompt_chars'),
+    ):
+        expected = section.get(key)
+        if expected is None:
+            raise AssertionError(f'ai_schema_slice.{key} must be declared')
+        if (
+            f'{constant} = {expected:_}' not in source
+            and f'{constant} = {expected}' not in source
+        ):
+            raise AssertionError(f'{constant} drifted from ai_schema_slice.{key}')
+
+    for marker in ('def from_payload', 'def allowed_tables', 'def prompt_text', 'def _fingerprint'):
+        if marker not in source:
+            raise AssertionError(f'{module_path} lost {marker}')
+
+    proxy = (ROOT / proxy_path).read_text(encoding='utf-8')
+    if 'security_manager.get_user_datasources' not in proxy:
+        raise AssertionError(
+            'the schema slice must be resolved by Superset security_manager'
+        )
+    if 'def authorized_datasets' not in proxy:
+        raise AssertionError(f'{proxy_path} lost the authorized_datasets helper')
+
+    service = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'api.py'
+    ).read_text(encoding='utf-8')
+    if '/ai/schema' not in service:
+        raise AssertionError('the XP Prompt service must expose /ai/schema')
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -678,6 +728,8 @@ def main():
     check_ai_artifact_wiring(compatibility)
 
     check_ai_sql_guard(compatibility)
+
+    check_ai_schema_slice(compatibility)
 
     print('Compatibility contract checks passed')
 

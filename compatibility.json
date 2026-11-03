@@ -119,6 +119,13 @@
     "guest-token",
     "health"
   ],
+  "ai_schema_slice": {
+    "module": "services/xp_prompt/xp_prompt/schema_slice.py",
+    "proxy": "superset/superset/views/ai_prompt/views.py",
+    "max_datasets": 50,
+    "max_columns": 60,
+    "max_prompt_chars": 12000
+  },
   "ai_sql_guard": {
     "module": "services/xp_prompt/xp_prompt/sql_guard.py",
     "corpus": "services/xp_prompt/tests/test_sql_guard.py",
