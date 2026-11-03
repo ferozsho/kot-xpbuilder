@@ -8,6 +8,10 @@ Three route groups live here:
   after enforcing Flask-AppBuilder authorization and signs each request with the
   internal service token derived from the root secret.
 * ``/ai/providers/<id>/test`` — redacted provider connection test.
+
+The chat workspace (``/ai/conversations``, ``/ai/jobs``, ``/ai/artifacts``) is
+reached the same way: through the Superset proxy, which injects the caller's
+identity from the FAB session.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from xp_prompt import __version__, chat, conversations, jobs
+from xp_prompt import __version__, artifacts, chat, conversations, jobs
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
@@ -570,6 +574,134 @@ def create_app(settings: Settings | None = None) -> Flask:
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not reject job ({_error_class(exc)})", 503)
         return jsonify(record.to_public_dict()), 200
+
+    # --- Artifacts (P2-F07) ---------------------------------------------
+
+    @app.post("/ai/artifacts")
+    @require_admin_token
+    def artifact_create():
+        """Record a draft proposal. Producers (Phases 6–8) and tests call this."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("conversation_id must be a UUID", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        body = payload.get("payload")
+        try:
+            record = artifacts.create_artifact(
+                resolved_settings,
+                conversation_id=conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                artifact_type=str(payload.get("artifact_type") or ""),
+                title=str(payload.get("title") or ""),
+                payload=body if isinstance(body, dict) else {},
+                job_id=str(payload.get("job_id") or "") or None,
+            )
+        except artifacts.ArtifactInputError as exc:
+            return _admin_error(str(exc), 400)
+        except artifacts.ArtifactNotFound:
+            return _admin_error("Conversation not found", 404)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not create artifact ({_error_class(exc)})", 503)
+        return jsonify(record.to_public_dict()), 201
+
+    @app.get("/ai/artifacts/<artifact_id>")
+    @require_admin_token
+    def artifact_detail(artifact_id: str):
+        if not artifacts.is_artifact_id(artifact_id):
+            return _admin_error("Artifact not found", 404)
+        owner = _conversation_owner()
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            record = artifacts.get_artifact(
+                resolved_settings,
+                artifact_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not load artifact ({_error_class(exc)})", 503)
+        if record is None:
+            return _admin_error("Artifact not found", 404)
+        return jsonify(record.to_public_dict()), 200
+
+    @app.post("/ai/artifacts/<artifact_id>/<action>")
+    @require_admin_token
+    def artifact_action(artifact_id: str, action: str):
+        """confirm / discard / publish — one lifecycle, no per-type endpoints."""
+        if not artifacts.is_artifact_id(artifact_id):
+            return _admin_error("Artifact not found", 404)
+        if action not in {"confirm", "discard", "publish"}:
+            return _admin_error("Unsupported artifact action", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            if action == "confirm":
+                record = artifacts.confirm_artifact(
+                    resolved_settings,
+                    artifact_id,
+                    tenant_key=tenant_key,
+                    superset_user_id=owner,
+                )
+            elif action == "discard":
+                record = artifacts.discard_artifact(
+                    resolved_settings,
+                    artifact_id,
+                    tenant_key=tenant_key,
+                    superset_user_id=owner,
+                )
+            else:
+                record = artifacts.publish_artifact(
+                    resolved_settings,
+                    artifact_id,
+                    tenant_key=tenant_key,
+                    superset_user_id=owner,
+                    object_type=str(payload.get("object_type") or ""),
+                    object_id=str(payload.get("object_id") or ""),
+                )
+        except artifacts.ArtifactNotFound:
+            return _admin_error("Artifact not found", 404)
+        except artifacts.ArtifactStateError as exc:
+            return _admin_error(str(exc), 409)
+        except artifacts.ArtifactInputError as exc:
+            return _admin_error(str(exc), 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not update artifact ({_error_class(exc)})", 503)
+        return jsonify(record.to_public_dict()), 200
+
+    @app.get("/ai/conversations/<conversation_id>/artifacts")
+    @require_admin_token
+    def conversation_artifacts(conversation_id: str):
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        owner = _conversation_owner()
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            records = artifacts.list_artifacts(
+                resolved_settings,
+                conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not list artifacts ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {"count": len(records), "result": [r.to_public_dict() for r in records]}
+            ),
+            200,
+        )
 
     @app.get("/ai/providers/types")
     @require_admin_token

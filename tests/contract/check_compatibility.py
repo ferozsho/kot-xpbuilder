@@ -462,6 +462,67 @@ def check_ai_response_blocks(compatibility: dict) -> None:
             raise AssertionError(f'the chat turn must emit blocks via {marker})')
 
 
+def check_ai_artifact_wiring(compatibility: dict) -> None:
+    """Every artifact type shares one lifecycle, and publishing needs confirmation.
+
+    The status/type vocabulary must match the database constraint (a status the
+    schema rejects would fail at runtime), the publish statement must be guarded by
+    ``status = 'confirmed'``, and the API must expose the three transitions.
+    """
+    workspace = compatibility.get('optional_features', {}).get(
+        'ai_prompt_workspace'
+    )
+    if not isinstance(workspace, dict):
+        raise AssertionError(
+            'ai_prompt_workspace must be declared under optional_features'
+        )
+
+    module_path = workspace.get('artifacts_module')
+    migration = workspace.get('artifacts_migration')
+    if not module_path or not migration:
+        raise AssertionError('artifacts_module and artifacts_migration must be declared')
+
+    source = (ROOT / module_path).read_text(encoding='utf-8')
+    for status in workspace.get('artifact_statuses', []):
+        if f'{status.upper()} = "{status}"' not in source:
+            raise AssertionError(f'artifact status "{status}" is missing from {module_path}')
+    for artifact_type in workspace.get('artifact_types', []):
+        if f'"{artifact_type}"' not in source:
+            raise AssertionError(
+                f'artifact type "{artifact_type}" is missing from {module_path}'
+            )
+
+    versions = ROOT / 'services' / 'xp_prompt' / 'migrations' / 'versions'
+    migration_files = list(versions.glob(f'{migration}_*.py'))
+    if not migration_files:
+        raise AssertionError('artifacts_migration must name an existing migration')
+    schema_source = migration_files[0].read_text(encoding='utf-8')
+    for status in workspace.get('artifact_statuses', []):
+        if f"'{status}'" not in schema_source:
+            raise AssertionError(
+                f'artifact status "{status}" is not accepted by ck_ai_artifact_status'
+            )
+    for artifact_type in workspace.get('artifact_types', []):
+        if f"'{artifact_type}'" not in schema_source:
+            raise AssertionError(
+                f'artifact type "{artifact_type}" is not accepted by ck_ai_artifact_type'
+            )
+
+    if "a.status = 'confirmed'" not in source:
+        raise AssertionError(
+            'publish_artifact must only accept a confirmed artifact'
+        )
+    if 'def publish_artifact' not in source or 'def confirm_artifact' not in source:
+        raise AssertionError(f'{module_path} lost a lifecycle transition')
+
+    service = (ROOT / workspace['service']).read_text(encoding='utf-8')
+    for route in ('/ai/artifacts', '/artifacts', '"confirm", "discard", "publish"'):
+        if route not in service:
+            raise AssertionError(
+                f'the XP Prompt service must expose the artifact route {route}'
+            )
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -551,6 +612,8 @@ def main():
     check_ai_job_wiring(compatibility)
 
     check_ai_response_blocks(compatibility)
+
+    check_ai_artifact_wiring(compatibility)
 
     print('Compatibility contract checks passed')
 

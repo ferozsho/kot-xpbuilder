@@ -53,6 +53,19 @@
       "context_migration": "20261103_04",
       "jobs_module": "services/xp_prompt/xp_prompt/jobs.py",
       "jobs_migration": "20261103_05",
+      "artifacts_module": "services/xp_prompt/xp_prompt/artifacts.py",
+      "artifacts_migration": "20261103_06",
+      "artifact_types": [
+        "dataset",
+        "chart",
+        "dashboard"
+      ],
+      "artifact_statuses": [
+        "draft",
+        "confirmed",
+        "published",
+        "discarded"
+      ],
       "response_blocks_module": "services/xp_prompt/xp_prompt/responses.py",
       "response_blocks_types": "superset/superset-frontend/src/features/aiPrompt/types.ts",
       "response_blocks_renderer": "superset/superset-frontend/src/features/aiPrompt/blocks.tsx",
