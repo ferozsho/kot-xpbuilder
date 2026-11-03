@@ -523,6 +523,68 @@ def check_ai_artifact_wiring(compatibility: dict) -> None:
             )
 
 
+def check_ai_sql_guard(compatibility: dict) -> None:
+    """The read-only guard is the only thing standing between a model and a DB.
+
+    The manifest is the acceptance list: every declared dialect must be supported
+    by the guard, every declared denied schema must be in its denylist, the row cap
+    must match, and the adversarial corpus must cover the refusal codes — a guard
+    without its corpus is a guard nobody has tried to break.
+    """
+    guard = compatibility.get('ai_sql_guard')
+    if not isinstance(guard, dict):
+        raise AssertionError('ai_sql_guard must be declared')
+
+    module_path = guard.get('module')
+    corpus_path = guard.get('corpus')
+    if not module_path or not corpus_path:
+        raise AssertionError('ai_sql_guard.module and .corpus must be declared')
+
+    source = (ROOT / module_path).read_text(encoding='utf-8')
+    for dialect in guard.get('dialects', []):
+        if f'"{dialect}"' not in source:
+            raise AssertionError(f'SQL guard must support dialect "{dialect}"')
+    for schema in guard.get('denied_schemas', []):
+        if f'"{schema}"' not in source:
+            raise AssertionError(f'SQL guard must deny schema "{schema}"')
+
+    max_rows = guard.get('max_rows')
+    if max_rows is None or f'MAX_ROWS = {max_rows:_}' not in source and (
+        f'MAX_ROWS = {max_rows}' not in source
+    ):
+        raise AssertionError('MAX_ROWS drifted from compatibility.json ai_sql_guard.max_rows')
+
+    for marker in (
+        'def check(',
+        'DENIED_FUNCTIONS',
+        'DENIED_SCHEMAS',
+        '_EXECUTABLE_COMMENT',
+        'multiple_statements',
+        'not_read_only',
+        'unsafe_function',
+        'system_schema',
+        'unknown_table',
+    ):
+        if marker not in source:
+            raise AssertionError(f'{module_path} lost {marker}')
+
+    corpus = (ROOT / corpus_path).read_text(encoding='utf-8')
+    for code in (
+        'multiple_statements',
+        'not_read_only',
+        'unsafe_function',
+        'system_schema',
+        'unknown_table',
+        'obfuscation',
+        'parse_error',
+        'unsupported_dialect',
+    ):
+        if code not in corpus:
+            raise AssertionError(
+                f'the adversarial corpus must cover the "{code}" refusal'
+            )
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -614,6 +676,8 @@ def main():
     check_ai_response_blocks(compatibility)
 
     check_ai_artifact_wiring(compatibility)
+
+    check_ai_sql_guard(compatibility)
 
     print('Compatibility contract checks passed')
 

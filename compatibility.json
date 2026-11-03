@@ -118,5 +118,31 @@
     "embedded-dashboard-registration",
     "guest-token",
     "health"
-  ]
+  ],
+  "ai_sql_guard": {
+    "module": "services/xp_prompt/xp_prompt/sql_guard.py",
+    "corpus": "services/xp_prompt/tests/test_sql_guard.py",
+    "max_rows": 1000,
+    "max_sql_chars": 20000,
+    "dialects": [
+      "bigquery",
+      "clickhouse",
+      "duckdb",
+      "mysql",
+      "postgres",
+      "redshift",
+      "snowflake",
+      "spark",
+      "sqlite",
+      "trino",
+      "tsql"
+    ],
+    "denied_schemas": [
+      "information_schema",
+      "pg_catalog",
+      "mysql",
+      "performance_schema",
+      "sys"
+    ]
+  }
 }
