@@ -22,7 +22,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from xp_prompt import __version__
+from xp_prompt import __version__, chat, conversations
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
@@ -116,6 +116,181 @@ def create_app(settings: Settings | None = None) -> Flask:
             ),
             200 if ready else 503,
         )
+
+    # --- Conversations (P2-F02) ----------------------------------------
+
+    def _conversation_owner(payload: dict[str, Any] | None = None) -> int | None:
+        """Resolve the owning Superset user id from the body or query string."""
+        raw: Any = None
+        if payload is not None:
+            raw = payload.get("superset_user_id")
+        if raw in (None, ""):
+            raw = request.args.get("superset_user_id")
+        if raw in (None, ""):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @app.post("/ai/conversations")
+    @require_admin_token
+    def conversation_create():
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            record = conversations.create_conversation(
+                resolved_settings,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                title=payload.get("title"),
+            )
+        except conversations.ConversationInputError as exc:
+            return _admin_error(str(exc), 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not create conversation ({_error_class(exc)})", 503)
+        return jsonify(record.to_public_dict()), 201
+
+    @app.get("/ai/conversations")
+    @require_admin_token
+    def conversation_list():
+        owner = _conversation_owner()
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            limit = int(request.args.get("limit") or conversations.DEFAULT_LIST_LIMIT)
+            include_archived = request.args.get("include_archived") == "true"
+            records = conversations.list_conversations(
+                resolved_settings,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                limit=limit,
+                include_archived=include_archived,
+            )
+        except conversations.ConversationInputError as exc:
+            return _admin_error(str(exc), 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not list conversations ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {
+                    "tenant": tenant_key,
+                    "count": len(records),
+                    "result": [record.to_public_dict() for record in records],
+                }
+            ),
+            200,
+        )
+
+    @app.get("/ai/conversations/<conversation_id>")
+    @require_admin_token
+    def conversation_detail(conversation_id: str):
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        owner = _conversation_owner()
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            record = conversations.get_conversation(
+                resolved_settings,
+                conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+            if record is None:
+                return _admin_error("Conversation not found", 404)
+            messages = conversations.list_messages(
+                resolved_settings,
+                conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except conversations.ConversationInputError as exc:
+            return _admin_error(str(exc), 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not load conversation ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {
+                    "conversation": record.to_public_dict(),
+                    "messages": [message.to_public_dict() for message in messages],
+                }
+            ),
+            200,
+        )
+
+    @app.post("/ai/conversations/<conversation_id>/messages")
+    @require_admin_token
+    def conversation_message(conversation_id: str):
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        content = str(payload.get("content") or "").strip()
+        if not content:
+            return _admin_error("content is required", 400)
+        try:
+            turn = chat.run_turn(
+                resolved_settings,
+                conversation_id=conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                content=content,
+            )
+        except conversations.ConversationNotFound:
+            return _admin_error("Conversation not found", 404)
+        except conversations.ConversationInputError as exc:
+            return _admin_error(str(exc), 400)
+        except chat.ChatError as exc:
+            status = 503 if exc.code == "no_provider" else 502
+            return _admin_error(f"AI provider failed ({exc.code})", status)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not complete the turn ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {
+                    "conversation_id": turn.conversation_id,
+                    "correlation_id": turn.correlation_id,
+                    "answer": turn.answer,
+                    "provider": turn.provider,
+                    "model": turn.model,
+                    "usage": turn.usage,
+                    "attempts": list(turn.attempts),
+                }
+            ),
+            200,
+        )
+
+    @app.post("/ai/conversations/<conversation_id>/archive")
+    @require_admin_token
+    def conversation_archive(conversation_id: str):
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            archived = conversations.archive_conversation(
+                resolved_settings,
+                conversation_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not archive conversation ({_error_class(exc)})", 503)
+        if not archived:
+            return _admin_error("Conversation not found", 404)
+        return jsonify({"archived": True}), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token
