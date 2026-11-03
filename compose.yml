@@ -69,6 +69,12 @@ x-xp-prompt-environment: &x-xp-prompt-environment
   XP_PROMPT_REDIS_DB: "2"
   XP_PROMPT_QDRANT_URL: http://xp-prompt-qdrant:6333
   XP_PROMPT_DEPENDENCY_TIMEOUT_SECONDS: "3"
+  GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY:-}
+  XP_PROMPT_GEMINI_MODEL: ${XP_PROMPT_GEMINI_MODEL:-}
+  XP_PROMPT_GEMINI_ENDPOINT: ${XP_PROMPT_GEMINI_ENDPOINT:-https://generativelanguage.googleapis.com/v1beta}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  XP_PROMPT_DEEPSEEK_MODEL: ${XP_PROMPT_DEEPSEEK_MODEL:-deepseek-flash}
+  XP_PROMPT_DEEPSEEK_ENDPOINT: ${XP_PROMPT_DEEPSEEK_ENDPOINT:-https://api.deepseek.com}
 
 services:
   superset:
@@ -205,6 +211,22 @@ services:
       timeout: 15s
       retries: 5
       start_period: 45s
+    networks:
+      - xpbuilder-internal
+
+  xp-prompt-initialize:
+    <<: *x-xpbuilder-image
+    profiles: ["tools"]
+    command:
+      - /app/.venv/bin/alembic
+      - --config
+      - /app/xp_prompt/alembic.ini
+      - upgrade
+      - head
+    environment: *x-xp-prompt-environment
+    depends_on:
+      xp-prompt-db:
+        condition: service_healthy
     networks:
       - xpbuilder-internal
 

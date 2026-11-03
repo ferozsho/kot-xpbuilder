@@ -43,6 +43,11 @@ def _http_url(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+def _optional(env: Mapping[str, str], name: str) -> str | None:
+    value = env.get(name, "").strip()
+    return value or None
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Validated XP Prompt process settings.
@@ -62,6 +67,12 @@ class Settings:
     redis_database: int
     qdrant_url: str
     dependency_timeout_seconds: int
+    gemini_api_key: str | None = field(default=None, repr=False)
+    gemini_model: str | None = None
+    gemini_endpoint: str = "https://generativelanguage.googleapis.com/v1beta"
+    deepseek_api_key: str | None = field(default=None, repr=False)
+    deepseek_model: str = "deepseek-flash"
+    deepseek_endpoint: str = "https://api.deepseek.com"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -102,6 +113,22 @@ class Settings:
                 minimum=1,
                 maximum=30,
             ),
+            gemini_api_key=_optional(source, "GOOGLE_GEMINI_API_KEY"),
+            gemini_model=_optional(source, "XP_PROMPT_GEMINI_MODEL"),
+            gemini_endpoint=(
+                _http_url(source, "XP_PROMPT_GEMINI_ENDPOINT")
+                if _optional(source, "XP_PROMPT_GEMINI_ENDPOINT")
+                else "https://generativelanguage.googleapis.com/v1beta"
+            ),
+            deepseek_api_key=_optional(source, "DEEPSEEK_API_KEY"),
+            deepseek_model=(
+                _optional(source, "XP_PROMPT_DEEPSEEK_MODEL") or "deepseek-flash"
+            ),
+            deepseek_endpoint=(
+                _http_url(source, "XP_PROMPT_DEEPSEEK_ENDPOINT")
+                if _optional(source, "XP_PROMPT_DEEPSEEK_ENDPOINT")
+                else "https://api.deepseek.com"
+            ),
         )
 
     def safe_summary(self) -> dict[str, object]:
@@ -115,5 +142,11 @@ class Settings:
             "redis_database": self.redis_database,
             "qdrant_url": self.qdrant_url,
             "dependency_timeout_seconds": self.dependency_timeout_seconds,
+            "gemini_configured": bool(self.gemini_api_key and self.gemini_model),
+            "gemini_model": self.gemini_model,
+            "gemini_endpoint": self.gemini_endpoint,
+            "deepseek_configured": bool(self.deepseek_api_key),
+            "deepseek_model": self.deepseek_model,
+            "deepseek_endpoint": self.deepseek_endpoint,
         }
 

@@ -56,6 +56,22 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "must not contain credentials"):
             Settings.from_env(env)
 
+    def test_provider_keys_are_redacted_from_repr_and_summary(self) -> None:
+        env = self.base_env()
+        env["GOOGLE_GEMINI_API_KEY"] = "gemini-secret"
+        env["XP_PROMPT_GEMINI_MODEL"] = "gemini-test"
+        env["DEEPSEEK_API_KEY"] = "deepseek-secret"
+
+        settings = Settings.from_env(env)
+        summary = settings.safe_summary()
+
+        self.assertTrue(summary["gemini_configured"])
+        self.assertTrue(summary["deepseek_configured"])
+        self.assertNotIn("gemini-secret", repr(settings))
+        self.assertNotIn("deepseek-secret", repr(settings))
+        self.assertNotIn("gemini-secret", repr(summary))
+        self.assertNotIn("deepseek-secret", repr(summary))
+
 
 if __name__ == "__main__":
     unittest.main()

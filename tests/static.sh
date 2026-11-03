@@ -23,7 +23,7 @@ fi
 
 if rg -n \
     'CHANGE-ME-IN-PRODUCTION|guest-token-dev-secret|superset_ro_pass|postgresql://superset:superset|apache/superset:latest' \
-    Dockerfile compose.yml config docker bin; then
+    Dockerfile compose.yml config docker bin services; then
     echo "ERROR: insecure or floating runtime default detected" >&2
     exit 1
 fi

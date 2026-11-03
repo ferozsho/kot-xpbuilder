@@ -54,16 +54,20 @@ case "$command_name" in
     init)
         # The bundled MariaDB and phpMyAdmin come up first so their storage
         # database can be provisioned once the metadata schema is in place.
-        "${compose[@]}" up -d superset-db superset-redis mariadb phpmyadmin
+        "${compose[@]}" up -d superset-db superset-redis mariadb phpmyadmin \
+            xp-prompt-db xp-prompt-qdrant
         "${compose[@]}" --profile tools run --rm initialize \
             /opt/xpbuilder/bin/initialize.sh new
+        "${compose[@]}" --profile tools run --rm xp-prompt-initialize
         "$root/bin/provision-pmadb.sh" "$env_file" "$project"
         ;;
     upgrade)
         "$root/bin/backup.sh" "$env_file" "$project"
-        "${compose[@]}" up -d superset-db superset-redis mariadb phpmyadmin
+        "${compose[@]}" up -d superset-db superset-redis mariadb phpmyadmin \
+            xp-prompt-db xp-prompt-qdrant
         "${compose[@]}" --profile tools run --rm initialize \
             /opt/xpbuilder/bin/initialize.sh upgrade
+        "${compose[@]}" --profile tools run --rm xp-prompt-initialize
         "$root/bin/provision-pmadb.sh" "$env_file" "$project"
         ;;
     pmadb)

@@ -9,6 +9,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
+from xp_prompt.schema import SCHEMA_REVISION
+
 if TYPE_CHECKING:
     from xp_prompt.config import Settings
 
@@ -67,6 +69,10 @@ def check_postgres(settings: "Settings") -> CheckResult:
                 cursor.execute("SELECT 1")
                 if cursor.fetchone() != (1,):
                     raise RuntimeError("unexpected PostgreSQL readiness result")
+                cursor.execute("SELECT version_num FROM alembic_version")
+                row = cursor.fetchone()
+                if row != (SCHEMA_REVISION,):
+                    raise RuntimeError("XP Prompt database migration is not current")
         finally:
             connection.close()
 
