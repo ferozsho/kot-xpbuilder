@@ -294,6 +294,20 @@ def check_ai_prompt_wiring(compatibility: dict) -> None:
             f'initialize.sh must run {script_name}'
         )
 
+    # A route whose permission was never granted answers 403 for every non-admin
+    # role, so the grant list has to follow the view: derive it from the source.
+    permission_script = (ROOT / workspace['permission_script']).read_text(encoding='utf-8')
+    routed_methods = re.findall(
+        r'^    def (api_[a-z0-9_]+)\(', proxy_view, re.MULTILINE
+    )
+    if not routed_methods:
+        raise AssertionError('the XP Prompt proxy exposes no api_* routes')
+    for method in routed_methods:
+        if f'"can_{method}"' not in permission_script:
+            raise AssertionError(
+                f'route {method} has no granted permission "can_{method}"'
+            )
+
     dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
     if script_name not in dockerfile:
         raise AssertionError(f'Dockerfile must ship {script_name}')

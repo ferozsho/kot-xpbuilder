@@ -35,6 +35,13 @@ PERMISSIONS = (
     "can_api_conversation_detail",
     "can_api_conversation_message",
     "can_api_conversation_archive",
+    "can_api_conversation_reset_context",
+    "can_api_conversation_jobs",
+    "can_api_job_detail",
+    "can_api_job_action",
+    "can_api_conversation_artifacts",
+    "can_api_artifact_action",
+    "can_api_schema_slice",
 )
 VIEW_MENU = "AIPrompt"
 
