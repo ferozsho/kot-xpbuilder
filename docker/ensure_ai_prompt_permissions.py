@@ -42,6 +42,7 @@ PERMISSIONS = (
     "can_api_conversation_artifacts",
     "can_api_artifact_action",
     "can_api_schema_slice",
+    "can_api_sql_execute",
 )
 VIEW_MENU = "AIPrompt"
 

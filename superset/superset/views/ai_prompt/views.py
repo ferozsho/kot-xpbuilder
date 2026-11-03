@@ -30,6 +30,7 @@ once, and the compatibility contract keeps asserting it against the service.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from flask import g, request
@@ -37,6 +38,9 @@ from flask_appbuilder import expose
 from flask_appbuilder.security.decorators import has_access, has_access_api
 from flask_babel import gettext as _
 
+from superset import db, security_manager
+from superset.exceptions import SupersetSecurityException
+from superset.models.core import Database
 from superset.superset_typing import FlaskResponse
 from superset.views.ai_provider.views import call_xp_prompt
 from superset.views.base import BaseSupersetView
@@ -247,8 +251,111 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
-    # --- Authorized schema slice (P4-F02) -------------------------------
+    # --- Guarded execution (P4-F09) --------------------------------------
 
+    @expose("/api/sql/execute/", methods=("POST",))
+    @has_access_api
+    def api_sql_execute(self) -> FlaskResponse:
+        """Execute one guarded statement on Superset's own connection.
+
+        The orchestration service never holds analytics credentials: it produces
+        SQL, the guard validates it, and *this* view runs it through the
+        ``Database`` the administrator configured (which should be a read-only
+        role). Authorization is Superset's — ``raise_for_access`` with the SQL
+        text applies the same table/schema checks SQL Lab does.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        database_id = payload.get("database_id")
+        raw_sql = str(payload.get("sql") or "").strip()
+        schema_name = str(payload.get("schema") or "").strip() or None
+        max_rows = min(int(payload.get("max_rows") or MAX_PREVIEW_ROWS), MAX_PREVIEW_ROWS)
+        if not raw_sql:
+            return self.json_response(
+                {"message": _("sql is required"), "severity": "danger"}, 400
+            )
+
+        database = (
+            db.session.query(Database)
+            .filter(Database.id == database_id)
+            .one_or_none()
+            if database_id
+            else None
+        )
+        if database is None:
+            return self.json_response(
+                {"message": _("Database not found"), "severity": "danger"}, 404
+            )
+
+        # Re-validate here: the proxy must not execute what a client claims was
+        # validated earlier.
+        validate_status, validated = call_xp_prompt(
+            "POST",
+            "/ai/sql/validate",
+            payload={
+                "superset_user_id": owner,
+                "sql": raw_sql,
+                "database": database.database_name,
+                "schema": schema_name,
+                "max_rows": max_rows,
+                "datasets": authorized_datasets(),
+            },
+        )
+        if validate_status != 200:
+            return self.json_response(validated, validate_status)
+
+        try:
+            security_manager.raise_for_access(
+                database=database, sql=validated["sql"], schema=schema_name
+            )
+        except SupersetSecurityException as exc:
+            return self.json_response(
+                {
+                    "message": _("Not authorized to run this query"),
+                    "severity": "danger",
+                    "error_type": getattr(exc, "error_type", None),
+                },
+                403,
+            )
+
+        started = time.monotonic()
+        try:
+            frame = database.get_df(validated["sql"], schema=schema_name)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("XP Prompt execution failed: %s", type(exc).__name__)
+            return self.json_response(
+                {"message": _("The query could not be executed"), "severity": "danger"},
+                400,
+            )
+        duration_ms = round((time.monotonic() - started) * 1000)
+
+        preview = frame.head(max_rows)
+        columns = [str(column) for column in preview.columns]
+        rows = [
+            _cell(value)
+            for value in preview.itertuples(index=False, name=None)
+        ]
+        return self.json_response(
+            {
+                "columns": columns,
+                "rows": [list(row) for row in rows],
+                "row_count": int(len(frame)),
+                "returned": int(len(preview)),
+                "truncated": len(frame) > len(preview),
+                "duration_ms": duration_ms,
+                "limit": validated["limit"],
+                "tables": validated["tables"],
+                "database": database.database_name,
+                "schema_fingerprint": validated.get("schema_fingerprint"),
+            },
+            200,
+        )
+
+    # --- Authorized schema slice (P4-F02) -------------------------------
     @expose("/api/schema/", methods=("GET",))
     @has_access_api
     def api_schema_slice(self) -> FlaskResponse:
@@ -288,10 +395,24 @@ _JOB_ACTIONS = {
 
 #: Artifact transitions. ``publish`` is driven by a producer phase, not the UI.
 _ARTIFACT_ACTIONS = ("confirm", "discard", "publish")
-
 #: Bounds on the authorized slice: a prompt is not a schema dump.
 MAX_SLICE_DATASETS = 50
 MAX_SLICE_COLUMNS = 60
+
+#: Most rows a preview may return. Execution is synchronous, so this is also the
+#: practical limit on how much a single request can serialise.
+MAX_PREVIEW_ROWS = 200
+MAX_CELL_CHARS = 200
+
+
+def _cell(value: Any) -> str:
+    """One result cell as display text; nulls and pandas sentinels become empty."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text in {"nan", "NaN", "NaT", "None"}:
+        return ""
+    return text[:MAX_CELL_CHARS]
 
 
 def authorized_datasets() -> list[dict[str, Any]]:

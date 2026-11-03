@@ -34,6 +34,7 @@ from xp_prompt import (
     jobs,
     schema_slice,
     sql_candidate,
+    sql_execution,
     sql_guard,
 )
 from xp_prompt.config import Settings
@@ -800,6 +801,33 @@ def create_app(settings: Settings | None = None) -> Flask:
         response = candidate.to_public_dict()
         response["guard_code"] = None
         return jsonify(response), 200
+
+    @app.post("/ai/sql/validate")
+    @require_admin_token
+    def sql_validate():
+        """Re-run the guard on a statement that is about to be executed (P4-F09).
+
+        The proxy calls this immediately before executing, so a SQL string cannot
+        reach a database on the strength of an earlier check — or of the client.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        slice_ = schema_slice.SchemaSlice.from_payload(payload)
+        database = str(payload.get("database") or "").strip() or None
+        dialect = str(payload.get("dialect") or "").strip().lower() or None
+        try:
+            result = sql_execution.validate(
+                str(payload.get("sql") or ""),
+                schema=slice_,
+                database=database,
+                dialect=dialect,
+                max_rows=payload.get("max_rows") or sql_guard.MAX_ROWS,
+            )
+        except sql_guard.SqlPolicyError as exc:
+            status = 400 if exc.code in {"dialect_ambiguous", "unsupported_dialect"} else 422
+            return _admin_error(f"SQL candidate rejected (sql_blocked: {exc.code})", status)
+        return jsonify(result), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from xp_prompt import responses, sql_guard
+from xp_prompt import responses, sql_execution, sql_guard
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.structured import StructuredOutputError, parse_json_object
@@ -250,25 +250,14 @@ def _resolve_dialect(
     schema: SchemaSlice, *, database: str | None, dialect: str | None
 ) -> str:
     """Pick the dialect to write in, refusing to guess between several."""
-    if dialect:
-        normal = dialect.strip().lower()
-        if normal not in sql_guard.SUPPORTED_DIALECTS:
-            raise SqlCandidateError(
-                "unsupported_dialect", f"unsupported SQL dialect: {dialect}"
-            )
-        return normal
-    dialects = schema.dialects()
-    if not dialects:
+    if not schema.datasets:
         raise SqlCandidateError("no_schema", "no authorized tables are available")
-    if database:
-        for dataset in schema.datasets:
-            if dataset.database == database:
-                return dataset.dialect
-    if len(dialects) > 1:
-        raise SqlCandidateError(
-            "dialect_ambiguous", "the schema spans several dialects; choose one"
+    try:
+        return sql_execution.resolve_dialect(
+            schema, database=database, dialect=dialect
         )
-    return dialects[0]
+    except sql_guard.SqlPolicyError as exc:
+        raise SqlCandidateError(exc.code, str(exc)) from exc
 
 
 def _parse_candidate(content: str) -> tuple[str, str, tuple[str, ...]]:

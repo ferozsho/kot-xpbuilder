@@ -616,6 +616,30 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if '/ai/sql/candidate' not in service:
         raise AssertionError('the XP Prompt service must expose /ai/sql/candidate')
 
+    # P4-F09: execution stays inside Superset (it owns the analytics credentials),
+    # and the statement is re-validated server-side immediately before it runs.
+    proxy_source = (
+        ROOT / compatibility['ai_schema_slice']['proxy']
+    ).read_text(encoding='utf-8')
+    if '/api/sql/execute/' not in proxy_source:
+        raise AssertionError('the proxy must expose the guarded execution route')
+    for marker in ('raise_for_access(', 'get_df('):
+        if marker not in proxy_source:
+            raise AssertionError(
+                f'the execution route must go through Superset ({marker})'
+            )
+    if '/ai/sql/validate' not in service:
+        raise AssertionError(
+            'the service must re-validate a statement before execution'
+        )
+    execution = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'sql_execution.py'
+    )
+    if not execution.exists():
+        raise AssertionError('sql_execution.py must exist')
+    if 'sql_guard.check(' not in execution.read_text(encoding='utf-8'):
+        raise AssertionError('execution-time validation must call sql_guard.check')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.
