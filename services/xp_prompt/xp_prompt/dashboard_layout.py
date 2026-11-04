@@ -258,18 +258,28 @@ def plan_filters(
                     RejectedFilter(dataset_id, "", "columns_not_declared")
                 )
             continue
-        for column in sorted(available):
-            kind = available[column]
-            if count < MIN_FILTER_SCOPE:
-                rejected.append(
-                    RejectedFilter(dataset_id, column, "single_chart_scope")
-                )
-                continue
+        if count < MIN_FILTER_SCOPE:
+            rejected.append(RejectedFilter(dataset_id, "", "single_chart_scope"))
+            continue
+        if len(filters) >= max_filters:
+            rejected.append(RejectedFilter(dataset_id, "", "filter_budget"))
+            continue
+        # A time range is the filter people reach for first, so it wins the budget.
+        for column in _ordered_columns(available):
             if len(filters) >= max_filters:
-                rejected.append(RejectedFilter(dataset_id, column, "filter_budget"))
-                continue
-            filters.append(_filter_payload(dataset_id, column, kind))
+                # One summary per dataset: the per-column list is noise.
+                rejected.append(RejectedFilter(dataset_id, "", "filter_budget"))
+                break
+            filters.append(_filter_payload(dataset_id, column, available[column]))
     return FilterPlan(filters=tuple(filters), rejected=tuple(rejected))
+
+
+def _ordered_columns(available: dict[str, str]) -> list[str]:
+    """Temporal columns first, then alphabetical — stable, and defensible."""
+    return sorted(
+        available,
+        key=lambda column: (available[column] not in _TEMPORAL_KINDS, column),
+    )
 
 
 def _filter_payload(dataset_id: int, column: str, kind: str) -> dict[str, Any]:

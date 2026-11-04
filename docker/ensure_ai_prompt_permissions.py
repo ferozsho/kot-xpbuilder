@@ -58,6 +58,8 @@ PERMISSIONS = (
     "can_api_chart_preview",
     "can_api_chart_draft_save",
     "can_api_chart_draft_scrap",
+    "can_api_dashboard_plan",
+    "can_api_dashboard_layout",
 )
 VIEW_MENU = "AIPrompt"
 

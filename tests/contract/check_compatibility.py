@@ -1253,6 +1253,66 @@ def check_ai_sql_guard(compatibility: dict) -> None:
         raise AssertionError('a saved dataset must hand off to the chart step')
 
 
+def check_ai_dashboard_builder(compatibility: dict) -> None:
+    """Phase 8 may only plan from what the principal is authorized to see.
+
+    The plan is a proposal, so the contract pins the two properties that make it
+    trustworthy: reuse is preferred over regeneration, and a gap is reported as a
+    ``need`` rather than silently dropped. The layout must be validated before it can
+    be persisted, and a native filter must require proof that two in-scope charts
+    share the column.
+    """
+    services = ROOT / 'services' / 'xp_prompt' / 'xp_prompt'
+    plan_path = services / 'dashboard_plan.py'
+    layout_path = services / 'dashboard_layout.py'
+    for path in (plan_path, layout_path):
+        if not path.exists():
+            raise AssertionError(f'{path.name} must exist')
+    plan_source = plan_path.read_text(encoding='utf-8')
+    layout_source = layout_path.read_text(encoding='utf-8')
+
+    for marker in ('def build(', 'class ArtifactNeed', 'class Slot', 'def _quality('):
+        if marker not in plan_source:
+            raise AssertionError(f'dashboard_plan.py lost {marker}')
+    for marker in ('"no_existing_chart_and_no_recommendation"', '"source"', 'reuse'):
+        if marker not in plan_source:
+            raise AssertionError(f'dashboard_plan.py lost {marker}')
+    if 'source="existing"' not in plan_source:
+        raise AssertionError('an existing chart must win its slot before generation')
+    if 'MAX_CHARTS_PER_DATASET' not in plan_source:
+        raise AssertionError('one dataset must not fill the whole dashboard')
+
+    for marker in ('def build_position(', 'def validate_position(', 'def plan_filters('):
+        if marker not in layout_source:
+            raise AssertionError(f'dashboard_layout.py lost {marker}')
+    for marker in ('GRID_COLUMNS', 'MIN_FILTER_SCOPE', '"parents"', 'chartId'):
+        if marker not in layout_source:
+            raise AssertionError(f'dashboard_layout.py lost {marker}')
+
+    service_source = (services / 'api.py').read_text(encoding='utf-8')
+    for route in ('/ai/dashboards/plan', '/ai/dashboards/layout'):
+        if route not in service_source:
+            raise AssertionError(f'the service must expose {route}')
+
+    proxy_source = (
+        ROOT / 'superset' / 'superset' / 'views' / 'ai_prompt' / 'views.py'
+    ).read_text(encoding='utf-8')
+    for marker in ('def api_dashboard_plan', 'def api_dashboard_layout'):
+        if marker not in proxy_source:
+            raise AssertionError(f'the dashboard API lost {marker}')
+    if 'authorized_datasets()' not in proxy_source:
+        raise AssertionError('the dashboard plan must be built from the authorized slice')
+    if 'def _plan_charts' not in proxy_source:
+        raise AssertionError('reuse requires the saved charts on those datasets')
+
+    permissions = (
+        ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
+    ).read_text(encoding='utf-8')
+    for permission in ('can_api_dashboard_plan', 'can_api_dashboard_layout'):
+        if permission not in permissions:
+            raise AssertionError(f'the dashboard API needs {permission}')
+
+
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.
 
@@ -1396,6 +1456,8 @@ def main():
     check_ai_artifact_wiring(compatibility)
 
     check_ai_sql_guard(compatibility)
+
+    check_ai_dashboard_builder(compatibility)
 
     check_ai_schema_slice(compatibility)
 

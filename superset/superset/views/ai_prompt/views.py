@@ -559,6 +559,74 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    # --- Dashboard plan and layout (P8-F01..F05) -------------------------
+
+    @expose("/api/dashboards/plan/", methods=("POST",))
+    @has_access_api
+    def api_dashboard_plan(self) -> FlaskResponse:
+        """Plan a dashboard from a goal, using only datasets the caller may open.
+
+        The proxy contributes the deployment's facts — the authorized datasets with
+        their real columns, the charts already saved on them, and the viz types this
+        build can draw — and the service owns the planning rules. Nothing is created
+        here: the plan lists what must still be generated before anything could be
+        published.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        datasets, failure = _plan_datasets(payload.get("dataset_ids"))
+        if failure is not None:
+            return self.json_response(*failure)
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/dashboards/plan",
+            payload={
+                "superset_user_id": owner,
+                **_chart_catalog_payload(),
+                "goal": str(payload.get("goal") or "").strip(),
+                "datasets": [_plan_dataset(dataset) for dataset in datasets],
+                "charts": _plan_charts(datasets),
+                "candidates": payload.get("candidates") or {},
+                "time_grain": payload.get("time_grain"),
+            },
+        )
+        if status != 200:
+            return self.json_response(body, status)
+        body["columns"] = _plan_column_kinds(datasets)
+        return self.json_response(body, 200)
+
+    @expose("/api/dashboards/layout/", methods=("POST",))
+    @has_access_api
+    def api_dashboard_layout(self) -> FlaskResponse:
+        """Validate a plan's layout and native filters before anything is persisted.
+
+        A slot whose chart does not exist, a row wider than the grid, or a filter on a
+        column two in-scope charts do not share is reported here — a blank dashboard in
+        the browser is not a useful error message.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/dashboards/layout",
+            payload={
+                "superset_user_id": owner,
+                "title": str(payload.get("title") or ""),
+                "slots": payload.get("slots") or [],
+                "columns": payload.get("columns") or {},
+                "max_filters": payload.get("max_filters"),
+            },
+        )
+        return self.json_response(body, status)
+
     # --- Dataset drafts and save (P6-F01/F03/F06/F07/F09/F10) ------------
 
     @expose("/api/datasets/equivalents/", methods=("POST",))
@@ -1180,6 +1248,9 @@ _PATTERN_ACTIONS = ("promote", "deprecate", "quarantine", "restore")
 #: Bounds on the authorized slice: a prompt is not a schema dump.
 MAX_SLICE_DATASETS = 50
 MAX_SLICE_COLUMNS = 60
+#: Charts considered for reuse when planning a dashboard. Bounded because the plan
+#: only needs "is there already a chart of this family on this dataset".
+MAX_PLAN_CHARTS = 200
 
 #: Most rows a preview may return. Execution is synchronous, so this is also the
 #: practical limit on how much a single request can serialise.
@@ -1652,6 +1723,101 @@ def _chart_dataset_summary(dataset: Any) -> dict[str, Any]:
         "database": getattr(dataset.database, "database_name", ""),
         "columns": len(dataset.columns or []),
     }
+
+
+def _plan_datasets(
+    dataset_ids: Any,
+) -> tuple[list[dict[str, Any]], tuple[dict[str, Any], int] | None]:
+    """The authorized datasets a dashboard may be planned from, optionally narrowed.
+
+    The slice is the authority (``authorized_datasets`` is what Explore itself gates
+    on), so asking for a dataset outside it is refused rather than silently ignored.
+    """
+    available = authorized_datasets()
+    if dataset_ids in (None, ""):
+        return available, None
+    if not isinstance(dataset_ids, (list, tuple)):
+        return [], (
+            {"message": _("dataset_ids must be a list"), "severity": "danger"},
+            400,
+        )
+    wanted = {int(item) for item in dataset_ids if isinstance(item, int)}
+    if not wanted:
+        return [], (
+            {"message": _("dataset_ids must be a list of ids"), "severity": "danger"},
+            400,
+        )
+    known = {int(dataset["dataset_id"]) for dataset in available}
+    if not wanted <= known:
+        return [], (
+            {
+                "message": _("You are not authorized for one of those datasets"),
+                "severity": "danger",
+                "code": "dataset_not_authorized",
+            },
+            403,
+        )
+    return [
+        dataset for dataset in available if int(dataset["dataset_id"]) in wanted
+    ], None
+
+
+def _plan_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
+    """One authorized dataset in the shape the planner expects."""
+    return {
+        "id": int(dataset["dataset_id"]),
+        "name": str(dataset.get("name") or ""),
+        "columns": [
+            {"name": str(column.get("name") or "")}
+            for column in dataset.get("columns") or []
+            if column.get("name")
+        ],
+    }
+
+
+def _plan_charts(datasets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Saved charts on those datasets — the reuse candidates for the planner."""
+    from superset.models.slice import Slice
+
+    ids = [int(dataset["dataset_id"]) for dataset in datasets]
+    if not ids:
+        return []
+    rows = (
+        db.session.query(Slice)
+        .filter(Slice.datasource_id.in_(ids))
+        .order_by(Slice.id)
+        .limit(MAX_PLAN_CHARTS)
+        .all()
+    )
+    charts: list[dict[str, Any]] = []
+    for chart in rows:
+        try:
+            params = json_loads(chart.params or "{}")
+        except (TypeError, ValueError):
+            params = {}
+        charts.append(
+            {
+                "id": int(chart.id),
+                "name": chart.slice_name or f"chart {chart.id}",
+                "viz_type": str((params or {}).get("viz_type") or chart.viz_type or ""),
+                "dataset_id": int(chart.datasource_id),
+            }
+        )
+    return charts
+
+
+def _plan_column_kinds(datasets: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Column kinds per dataset, so a native filter is only proposed where proven."""
+    kinds: dict[str, dict[str, str]] = {}
+    for dataset in datasets:
+        kinds[str(int(dataset["dataset_id"]))] = {
+            str(column.get("name")): (
+                "temporal" if column.get("temporal") else "categorical"
+            )
+            for column in dataset.get("columns") or []
+            if column.get("name")
+        }
+    return kinds
 
 
 def _chart_frame(

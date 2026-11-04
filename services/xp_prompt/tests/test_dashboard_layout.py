@@ -164,6 +164,25 @@ class FilterTest(unittest.TestCase):
         self.assertEqual(len(plan.filters), 1)
         self.assertTrue(any(item.reason == "filter_budget" for item in plan.rejected))
 
+    def test_time_filter_wins_the_budget_and_budget_is_reported_once(self) -> None:
+        columns = {
+            7: {
+                "active_flag": "categorical",
+                "created_at": "temporal",
+                "course_name": "categorical",
+            }
+        }
+        plan = dashboard_layout.plan_filters(
+            [slot("7:trend", 11), slot("7:detail", 12, family="detail")],
+            columns=columns,
+            max_filters=1,
+        )
+        self.assertEqual(len(plan.filters), 1)
+        self.assertEqual(plan.filters[0]["name"], "created_at")
+        self.assertEqual(
+            [item.reason for item in plan.rejected], ["filter_budget"]
+        )
+
     def test_generated_slots_do_not_count_toward_filter_scope(self) -> None:
         plan = dashboard_layout.plan_filters(
             [

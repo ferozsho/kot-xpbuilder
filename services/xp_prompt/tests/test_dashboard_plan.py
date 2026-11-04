@@ -49,7 +49,11 @@ def line_candidate(score: float = 0.9) -> dict:
         "viz_type": "echarts_timeseries_line",
         "family": "trend",
         "title": "Scores over time",
-        "form_data": {"viz_type": "echarts_timeseries_line", "x_axis": "created_at"},
+        "form_data": {
+            "viz_type": "echarts_timeseries_line",
+            "x_axis": "created_at",
+            "metrics": ["SUM(score)"],
+        },
         "score": score,
         "rationale": "a temporal column and a measure are present",
     }
@@ -83,7 +87,7 @@ class EmptyGoalTest(unittest.TestCase):
         plan = dashboard_plan.build(goal="revenue by region")
         self.assertTrue(plan.empty)
         self.assertEqual(plan.title, "Revenue by region")
-        self.assertIn("no dataset or column", " ".join(plan.notes))
+        self.assertIn("No dataset is available", " ".join(plan.notes))
 
 
 class GoalRelevanceTest(unittest.TestCase):
@@ -244,10 +248,35 @@ class QualityTest(unittest.TestCase):
             max_slots=3,
         )
         quality = plan.quality
+        # The per-dataset cap holds the plan at two charts, so no headline is kept.
+        self.assertEqual(len(plan.slots), dashboard_plan.MAX_CHARTS_PER_DATASET)
         self.assertGreater(quality["diversity"], 0.99)
         self.assertGreater(quality["coverage"], 0.99)
         self.assertEqual(quality["redundancy"], 1.0)
+        self.assertEqual(quality["hierarchy"], 0.5)
+
+    def test_headline_slot_raises_the_hierarchy_score(self) -> None:
+        plan = dashboard_plan.build(
+            goal="student scores course enrolment",
+            datasets=[student_dataset(), course_dataset()],
+            candidates={
+                7: [
+                    {
+                        "viz_type": "big_number_total",
+                        "family": "single_value",
+                        "title": "Total score",
+                        "form_data": {"metric": "sum_score"},
+                        "score": 0.3,
+                    }
+                ],
+                9: [line_candidate()],
+            },
+            catalog=catalog(),
+        )
+        quality = plan.quality
+        self.assertEqual(len(plan.slots), 2)
         self.assertEqual(quality["hierarchy"], 1.0)
+        self.assertGreater(quality["coverage"], 0.99)
 
     def test_sections_follow_reading_order(self) -> None:
         plan = dashboard_plan.build(

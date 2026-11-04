@@ -38,6 +38,8 @@ from xp_prompt import (
     chat,
     conversations,
     cost_guard,
+    dashboard_layout,
+    dashboard_plan,
     dataset_draft,
     dataset_quality,
     dataset_spec,
@@ -1821,6 +1823,77 @@ def create_app(settings: Settings | None = None) -> Flask:
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not scrap the draft ({_error_class(exc)})", 503)
         return jsonify({"draft": draft.to_public_dict()}), 200
+
+    # --- Dashboard plans (P8-F01..F05) -----------------------------------
+
+    @app.post("/ai/dashboards/plan")
+    @require_admin_token
+    def dashboard_plan_build():
+        """Plan a dashboard from a goal, reusing whatever already exists.
+
+        The proxy owns the Superset side (which datasets and charts the principal may
+        see, and which viz types this deployment can draw). This endpoint owns the
+        planning rules: relevance, family diversity, reuse before regeneration, and the
+        explicit "needs generation" list that a caller must satisfy before publishing.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        plan = dashboard_plan.build(
+            goal=str(payload.get("goal") or ""),
+            datasets=payload.get("datasets") or (),
+            charts=payload.get("charts") or (),
+            candidates=payload.get("candidates") or {},
+            catalog=chart_catalog.Catalog.from_payload(payload),
+            time_grain=payload.get("time_grain"),
+        )
+        logger.info(
+            "dashboard_plan outcome=%s slots=%d reuse=%d needs=%d",
+            "ok" if not plan.empty else "empty",
+            len(plan.slots),
+            plan.reuse_count,
+            len(plan.needs),
+        )
+        return jsonify(plan.to_public_dict()), 200
+
+    @app.post("/ai/dashboards/layout")
+    @require_admin_token
+    def dashboard_layout_build():
+        """Turn saved charts into validated position metadata plus safe native filters.
+
+        Everything here is a check: a slot without a saved chart cannot be drawn, a row
+        may not exceed twelve columns, and a filter is only emitted for a column that at
+        least two in-scope charts share. Invalid input returns the problems instead of a
+        layout that would fail later in the browser.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        slots = payload.get("slots") or ()
+        position, problems = dashboard_layout.build_position(
+            slots,
+            title=str(payload.get("title") or ""),
+        )
+        validation = dashboard_layout.validate_position(position)
+        filters = dashboard_layout.plan_filters(
+            slots,
+            columns=payload.get("columns") or {},
+            max_filters=int(payload.get("max_filters") or dashboard_layout.MAX_FILTERS),
+        )
+        body = {
+            "position": position,
+            "problems": list(problems),
+            "validation": list(validation),
+            "valid": not problems and not validation,
+        }
+        body.update(filters.to_public_dict())
+        logger.info(
+            "dashboard_layout outcome=%s rows=%d filters=%d",
+            "ok" if body["valid"] else "invalid",
+            len(position.get("GRID_ID", {}).get("children", ())),
+            len(filters.filters),
+        )
+        return jsonify(body), 200 if body["valid"] else 422
 
     @app.get("/ai/providers/types")
     @require_admin_token

@@ -159,7 +159,8 @@ _STOPWORDS = frozenset(
     }
 )
 
-_WORD = re.compile(r"[a-z0-9_]+")
+#: Identifiers are snake_case, so ``student_scores`` must match the word ``student``.
+_WORD = re.compile(r"[a-z0-9]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -695,7 +696,12 @@ def _notes(
     quality: Mapping[str, float],
 ) -> tuple[str, ...]:
     notes: list[str] = []
-    if not tokens and known:
+    if not known:
+        notes.append(
+            "No dataset is available to plan from, so this plan proposes nothing; "
+            "select or create a dataset first."
+        )
+    elif not tokens:
         notes.append(
             "The goal named no dataset or column, so the plan was built from the "
             "artifacts that are available; confirm the intent before publishing."
