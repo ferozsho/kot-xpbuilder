@@ -216,6 +216,31 @@ class AIPromptView(BaseSupersetView):
 
     # --- Artifacts (P2-F07) --------------------------------------------
 
+    @expose("/api/conversations/<conversation_id>/audit/", methods=("GET",))
+    @has_access_api
+    def api_conversation_audit(self, conversation_id: str) -> FlaskResponse:
+        """Every SQL turn of this conversation, including the refused ones (P4-F12).
+
+        The statement itself stays hidden unless the *service* has diagnostics
+        enabled and the caller asked for it; this view only forwards the question.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        include_sql = str(request.args.get("include_sql") or "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        status, body = call_xp_prompt(
+            "GET",
+            f"/ai/conversations/{conversation_id}/audit"
+            f"?superset_user_id={owner}&include_sql={'true' if include_sql else ''}",
+        )
+        return self.json_response(body, status)
+
     @expose("/api/conversations/<conversation_id>/artifacts/", methods=("GET",))
     @has_access_api
     def api_conversation_artifacts(self, conversation_id: str) -> FlaskResponse:
@@ -273,8 +298,9 @@ class AIPromptView(BaseSupersetView):
         payload = _body()
         question, database, failure = _turn_target(payload)
         if failure is not None:
-            body, status = failure
-            return self.json_response(body, status)
+            return self._refuse(
+                owner, conversation_id, failure, "candidate", "invalid_request"
+            )
 
         schema_name = str(payload.get("schema") or "").strip() or None
         candidate_status, candidate = call_xp_prompt(
@@ -289,26 +315,57 @@ class AIPromptView(BaseSupersetView):
             },
         )
         if candidate_status != 200:
-            return self.json_response(candidate, candidate_status)
+            return self._refuse(
+                owner,
+                conversation_id,
+                (candidate, candidate_status),
+                "candidate",
+                str(
+                    candidate.get("guard_code")
+                    or candidate.get("code")
+                    or "candidate"
+                ),
+            )
+        expression = candidate["sql"]
+        context = {
+            "sql": expression,
+            "dialect": str(candidate.get("dialect") or ""),
+            "tables": candidate.get("tables"),
+            "inlined": candidate.get("inlined"),
+            "rls_applied": candidate.get("rls_applied"),
+        }
 
-        failure = _authorize(database, candidate["sql"], schema_name)
+        failure = _authorize(database, expression, schema_name)
         if failure is not None:
-            body, status = failure
-            return self.json_response(body, status)
+            return self._refuse(
+                owner, conversation_id, failure, "guard", "not_authorized", context
+            )
 
         # Cost gate (P4-F08): measure here, decide in the service. Refusing before
         # execution is the only useful place to refuse.
-        failure, plan = _cost_gate(owner, database, candidate["sql"], schema_name)
+        failure, plan = _cost_gate(owner, database, expression, schema_name)
         if failure is not None:
-            body, status = failure
-            return self.json_response(body, status)
+            code = str(failure[0].get("plan_code") or "plan_refused")
+            return self._refuse(
+                owner,
+                conversation_id,
+                failure,
+                "plan",
+                code,
+                {**context, "plan": _plan_record(plan)},
+            )
+        context["plan"] = _plan_record(plan)
 
-        frame, duration_ms, failure = _execute(
-            database, candidate["sql"], schema_name
-        )
+        frame, duration_ms, failure = _execute(database, expression, schema_name)
         if failure is not None:
-            body, status = failure
-            return self.json_response(body, status)
+            return self._refuse(
+                owner,
+                conversation_id,
+                failure,
+                "execute",
+                "execution_failed",
+                {**context, "duration_ms": duration_ms},
+            )
 
         # The wall-clock budget is a soft gate: the statement has run, so the
         # honest response is to refuse to present it as a cheap answer rather than
@@ -316,8 +373,14 @@ class AIPromptView(BaseSupersetView):
         # database role's statement timeout).
         slow = _runtime_budget_failure(duration_ms, plan)
         if slow is not None:
-            body, status = slow
-            return self.json_response(body, status)
+            return self._refuse(
+                owner,
+                conversation_id,
+                slow,
+                "execute",
+                "runtime_budget_exceeded",
+                {**context, "duration_ms": duration_ms},
+            )
 
         preview = frame.head(MAX_PREVIEW_ROWS)
         result_status, verdict = call_xp_prompt(
@@ -336,7 +399,13 @@ class AIPromptView(BaseSupersetView):
             },
         )
         if result_status != 200:
-            return self.json_response(verdict, result_status)
+            return self._refuse(
+                owner,
+                conversation_id,
+                (verdict, result_status),
+                "result",
+                "result_rejected",
+            )
 
         blocks = [
             *candidate.get("blocks", []),
@@ -352,12 +421,28 @@ class AIPromptView(BaseSupersetView):
             correlation_id=candidate.get("correlation_id"),
         )
         if store_status != 201:
-            return self.json_response(stored, store_status)
+            return self._refuse(
+                owner, conversation_id, (stored, store_status), "store", "store_failed"
+            )
+
+        _audit_turn(
+            owner,
+            conversation_id,
+            outcome="answered",
+            stage="execute",
+            code="ok",
+            correlation_id=candidate.get("correlation_id"),
+            duration_ms=duration_ms,
+            row_count=verdict.get("row_count"),
+            returned=verdict.get("returned"),
+            truncated=bool(verdict.get("truncated")),
+            **context,
+        )
 
         return self.json_response(
             {
                 "message": stored.get("message"),
-                "sql": candidate["sql"],
+                "sql": expression,
                 "duration_ms": duration_ms,
                 "limit": candidate.get("limit"),
                 "tables": candidate.get("tables", []),
@@ -366,6 +451,27 @@ class AIPromptView(BaseSupersetView):
             },
             201,
         )
+
+    def _refuse(
+        self,
+        owner: int,
+        conversation_id: str,
+        failure: tuple[dict[str, Any], int],
+        stage: str,
+        code: str,
+        context: dict[str, Any] | None = None,
+    ) -> FlaskResponse:
+        """Answer a refused turn and record why the turn was refused."""
+        body, status = failure
+        _audit_turn(
+            owner,
+            conversation_id,
+            outcome="refused",
+            stage=stage,
+            code=code,
+            **(context or {}),
+        )
+        return self.json_response(body, status)
 
     # --- Guarded execution (P4-F09) --------------------------------------
 
@@ -661,6 +767,71 @@ def _plan_warnings(plan: dict[str, Any]) -> list[dict[str, Any]]:
             }
         ]
     return []
+
+
+def _plan_record(plan: dict[str, Any]) -> dict[str, Any]:
+    """The audit's view of a plan verdict: what was measured and what it decided."""
+    estimate = plan.get("estimate") or {}
+    return {
+        "source": estimate.get("source"),
+        "rows": estimate.get("rows"),
+        "cost": estimate.get("cost"),
+        "nodes": estimate.get("plan_nodes"),
+        "code": plan.get("code"),
+    }
+
+
+def _audit_turn(
+    owner: int,
+    conversation_id: str,
+    *,
+    outcome: str,
+    stage: str,
+    code: str = "",
+    sql: str | None = None,
+    correlation_id: str | None = None,
+    plan: dict[str, Any] | None = None,
+    duration_ms: int | None = None,
+    row_count: int | None = None,
+    returned: int | None = None,
+    truncated: bool = False,
+    **extra: Any,
+) -> None:
+    """Record one turn in the audit trail (P4-F12).
+
+    Auditing must never break the turn it is recording: a failure here is logged and
+    swallowed, because the user's answer is already decided by the time it is called
+    and an audit outage must not become a query outage.
+    """
+    payload = {
+        "superset_user_id": owner,
+        "conversation_id": conversation_id,
+        "outcome": outcome,
+        "stage": stage,
+        "code": code,
+        "correlation_id": correlation_id,
+        "intent": "query",
+        "dialect": extra.pop("dialect", ""),
+        "tables": extra.pop("tables", None),
+        "inlined": extra.pop("inlined", None),
+        "rls_applied": extra.pop("rls_applied", None),
+        "plan": plan,
+        "duration_ms": duration_ms,
+        "row_count": row_count,
+        "returned": returned,
+        "truncated": truncated,
+        "sql": sql,
+    }
+    try:
+        status, body = call_xp_prompt("POST", "/ai/sql/audit", payload=payload)
+        if status not in (200, 201):
+            logger.warning(
+                "XP Prompt audit not stored: %s (%s)",
+                status,
+                body.get("message") if isinstance(body, dict) else "",
+            )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("XP Prompt audit failed: %s", type(exc).__name__)
 
 
 def _turn_target(

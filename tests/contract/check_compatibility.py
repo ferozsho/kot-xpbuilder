@@ -746,6 +746,38 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if 'runtime_budget_exceeded' not in proxy_source:
         raise AssertionError('the wall-clock budget must be enforced in the turn')
 
+    # P4-F12: every turn — including a refusal — leaves an audit row, the statement
+    # is sealed at rest, and it is only revealed on an explicit, enabled request.
+    audit_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'audit.py'
+    if not audit_path.exists():
+        raise AssertionError('audit.py must exist')
+    audit_source = audit_path.read_text(encoding='utf-8')
+    service_audit_settings = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'config.py'
+    ).read_text(encoding='utf-8')
+    permissions_source = (
+        ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
+    ).read_text(encoding='utf-8')
+    for marker in ('def record_turn', 'def list_turns', 'sql_ciphertext', 'SecretBox'):
+        if marker not in audit_source:
+            raise AssertionError(f'the audit trail lost {marker}')
+    if 'include_sql' not in audit_source:
+        raise AssertionError('a stored statement must be hidden unless requested')
+    if '/ai/sql/audit' not in service:
+        raise AssertionError('the service must expose /ai/sql/audit')
+    if '/audit' not in service:
+        raise AssertionError('the service must expose the conversation audit reader')
+    if 'allow_sql_diagnostics' not in service_audit_settings:
+        raise AssertionError(
+            'revealing a stored statement must be gated by a deployment setting'
+        )
+    if 'def _audit_turn' not in proxy_source or '"/ai/sql/audit"' not in proxy_source:
+        raise AssertionError('the joined turn must record its outcome')
+    if '/audit/' not in proxy_source:
+        raise AssertionError('the proxy must expose the audit reader')
+    if 'can_api_conversation_audit' not in permissions_source:
+        raise AssertionError('the audit route must be granted to the workspace roles')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

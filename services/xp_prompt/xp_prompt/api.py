@@ -29,6 +29,7 @@ from flask import Flask, Response, jsonify, request
 from xp_prompt import (
     __version__,
     artifacts,
+    audit,
     chat,
     conversations,
     cost_guard,
@@ -808,7 +809,19 @@ def create_app(settings: Settings | None = None) -> Flask:
                 max_rows=payload.get("max_rows") or sql_guard.MAX_ROWS,
             )
         except sql_candidate.SqlCandidateError as exc:
-            return _admin_error(_sql_candidate_message(exc), _sql_candidate_status(exc))
+            return (
+                jsonify(
+                    {
+                        "message": _sql_candidate_message(exc),
+                        "severity": "danger",
+                        # Machine-readable, so the proxy can audit the refusal
+                        # without parsing the message.
+                        "code": exc.code,
+                        "guard_code": getattr(exc, "guard_code", None),
+                    }
+                ),
+                _sql_candidate_status(exc),
+            )
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not generate SQL ({_error_class(exc)})", 503)
         response = candidate.to_public_dict()
@@ -948,6 +961,98 @@ def create_app(settings: Settings | None = None) -> Flask:
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not store the turn ({_error_class(exc)})", 503)
         return jsonify({"message": message.to_public_dict()}), 201
+
+    # --- SQL audit trail (P4-F12) ---------------------------------------
+
+    @app.post("/ai/sql/audit")
+    @require_admin_token
+    def sql_audit_record():
+        """Store one SQL turn — answered, refused, or failed (P4-F12).
+
+        The proxy owns the turn and therefore writes it; this endpoint owns the
+        shape, the bounds, and the sealing. A malformed record is rejected instead
+        of stored, so the trail cannot be poisoned with free-form documents.
+        """
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        try:
+            record = audit.record_turn(
+                resolved_settings,
+                conversation_id=conversation_id,
+                tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                outcome=str(payload.get("outcome") or ""),
+                stage=str(payload.get("stage") or ""),
+                code=str(payload.get("code") or ""),
+                correlation_id=str(payload.get("correlation_id") or ""),
+                intent=str(payload.get("intent") or ""),
+                dialect=str(payload.get("dialect") or ""),
+                tables=payload.get("tables"),
+                inlined=payload.get("inlined"),
+                rls_applied=payload.get("rls_applied"),
+                plan=payload.get("plan"),
+                duration_ms=payload.get("duration_ms"),
+                row_count=payload.get("row_count"),
+                returned=payload.get("returned"),
+                truncated=bool(payload.get("truncated")),
+                sql=payload.get("sql"),
+            )
+        except audit.AuditInputError as exc:
+            return _admin_error(f"Audit record rejected ({exc})", 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not store the audit ({_error_class(exc)})", 503)
+        return jsonify({"result": record.to_public_dict()}), 201
+
+    @app.get("/ai/conversations/<conversation_id>/audit")
+    @require_admin_token
+    def conversation_audit(conversation_id: str):
+        """The turns of one conversation, newest first — statements hidden by default.
+
+        Redaction is decided here, once: ``include_sql`` only has an effect when the
+        deployment enabled ``XP_PROMPT_ALLOW_SQL_DIAGNOSTICS``.
+        """
+        if not registry.is_provider_id(conversation_id):
+            return _admin_error("Conversation not found", 404)
+        owner = _conversation_owner(
+            {"superset_user_id": request.args.get("superset_user_id")}
+        )
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        wants_sql = str(request.args.get("include_sql") or "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        reveal = wants_sql and resolved_settings.allow_sql_diagnostics
+        try:
+            records = audit.list_turns(
+                resolved_settings,
+                conversation_id,
+                tenant_key=str(
+                    request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+                ),
+                superset_user_id=owner,
+                limit=int(request.args.get("limit") or audit.DEFAULT_LIST_LIMIT),
+                include_sql=reveal,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not load the audit ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {
+                    "count": len(records),
+                    "result": [
+                        record.to_public_dict(include_sql=reveal) for record in records
+                    ],
+                }
+            ),
+            200,
+        )
 
     @app.get("/ai/providers/types")
     @require_admin_token

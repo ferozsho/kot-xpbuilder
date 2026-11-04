@@ -103,6 +103,9 @@ class Settings:
     max_plan_nodes: int = 400
     max_runtime_ms: int = 20_000
     require_plan: bool = False
+    #: Whether the audit trail may return a stored statement. Off by default: the
+    #: SQL is sealed at rest precisely so it is not casually readable.
+    allow_sql_diagnostics: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -188,6 +191,9 @@ class Settings:
                 maximum=600_000,
             ),
             require_plan=_boolean(source, "XP_PROMPT_REQUIRE_PLAN", False),
+            allow_sql_diagnostics=_boolean(
+                source, "XP_PROMPT_ALLOW_SQL_DIAGNOSTICS", False
+            ),
         )
 
     def safe_summary(self) -> dict[str, object]:
