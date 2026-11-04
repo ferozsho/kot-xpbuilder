@@ -668,6 +668,19 @@ class AIPromptView(BaseSupersetView):
     def api_settings_update(self) -> FlaskResponse:
         """Validate and write a batch; the service owns bounds and auditing."""
         payload = _body()
+        # A global write changes every tenant, so it needs the platform-operator
+        # capability rather than the tenant-admin one: the plan separates them, and
+        # a tenant admin must not be able to move a platform ceiling.
+        if str(payload.get("scope") or "global").lower() == "global" and not (
+            security_manager.can_access("can_api_settings_global", "AIPrompt")
+        ):
+            return self.json_response(
+                {
+                    "message": _("Not authorized to change global settings"),
+                    "severity": "danger",
+                },
+                403,
+            )
         # The actor is the signed-in principal, never a claim from the browser:
         # an audit trail that names whoever the client says it is is not an audit
         # trail.

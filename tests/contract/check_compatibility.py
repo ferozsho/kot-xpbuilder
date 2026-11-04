@@ -1759,7 +1759,13 @@ def check_ai_configuration(compatibility: dict) -> None:
         raise AssertionError('the alert state needs a proxy route')
     if 'can_api_usage_alerts' not in permission_script:
         raise AssertionError('can_api_usage_alerts must be granted')
-    for permission in ('can_api_usage_alerts_deliver', 'can_api_settings_health'):
+    if 'can_api_settings_global' not in proxy_view:
+        raise AssertionError('a global settings write needs its own capability')
+    for permission in (
+        'can_api_usage_alerts_deliver',
+        'can_api_settings_health',
+        'can_api_settings_global',
+    ):
         if permission not in permission_script:
             raise AssertionError(f'{permission} must be granted')
     for marker in ('def api_settings_health(', 'def api_usage_alerts_deliver('):

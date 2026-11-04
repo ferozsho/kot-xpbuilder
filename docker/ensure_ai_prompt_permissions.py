@@ -84,6 +84,7 @@ ADMIN_ONLY_PERMISSIONS: tuple[str, ...] = (
     "can_api_usage_billing_fetch",
     "can_api_settings",
     "can_api_settings_health",
+    "can_api_settings_global",
     "can_api_settings_update",
     "can_api_settings_history",
     "can_api_settings_rollback",
