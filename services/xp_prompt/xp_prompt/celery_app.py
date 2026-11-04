@@ -53,6 +53,19 @@ def create_celery_app(settings: Settings | None = None) -> Celery:
                 "schedule": 60.0,
                 "args": (50,),
             },
+            "xp-prompt-recover-jobs": {
+                # A worker that dies leaves a lease behind. Sweeping every minute
+                # means a crashed job resumes in about a minute instead of waiting
+                # for the next job to happen to run on any worker (P11-F04).
+                "task": "xp_prompt.recover_jobs",
+                "schedule": 60.0,
+            },
+            "xp-prompt-retention-sweep": {
+                # Retention is a policy, so it runs on a schedule rather than when
+                # somebody remembers (P11-F06).
+                "task": "xp_prompt.apply_retention",
+                "schedule": crontab(hour=3, minute=30),
+            },
             "xp-prompt-reconcile-usage": {
                 "task": "xp_prompt.reconcile_usage",
                 "schedule": crontab(minute="*/15"),

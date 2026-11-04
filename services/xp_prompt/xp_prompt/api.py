@@ -58,6 +58,8 @@ from xp_prompt import (
     responses,
     result_validation,
     schema_slice,
+    metrics,
+    retention,
     settings_registry,
     sql_candidate,
     sql_gate,
@@ -355,6 +357,21 @@ def create_app(settings: Settings | None = None) -> Flask:
             ),
             403,
         )
+
+    @app.get("/metrics")
+    def metrics_text():
+        """Prometheus text for the deployment's own telemetry (P11-F07).
+
+        Unauthenticated like the health probes: a scraper has no session, and the
+        numbers are counts, thresholds and latency — never a prompt, a statement or
+        a secret.
+        """
+        try:
+            body = metrics.prometheus(resolved_settings)
+        except Exception as exc:  # pragma: no cover - telemetry must not 500
+            logger.warning("metrics_unavailable reason=%s", _error_class(exc))
+            return _admin_error("metrics unavailable", 503)
+        return app.response_class(body, mimetype="text/plain; version=0.0.4")
 
     @app.get("/health/live")
     def health_live():
@@ -2562,6 +2579,51 @@ def create_app(settings: Settings | None = None) -> Flask:
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not requeue ({_error_class(exc)})", 503)
         return jsonify(event.to_public_dict()), 200
+
+    # --- Retention and offboarding (P11-F06) ------------------------------
+
+    @app.get("/ai/retention")
+    @require_admin_token
+    def retention_preview():
+        """What a retention sweep would delete, before it deletes it."""
+        tenant_key = _request_tenant()
+        try:
+            body = retention.preview(resolved_settings, tenant_key=tenant_key)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not preview retention ({_error_class(exc)})", 503)
+        return jsonify(body), 200
+
+    @app.post("/ai/retention/apply")
+    @require_admin_token
+    def retention_apply():
+        """Run the sweep now, with the configured windows."""
+        tenant_key = _request_tenant()
+        try:
+            body = retention.apply(resolved_settings, tenant_key=tenant_key)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not apply retention ({_error_class(exc)})", 503)
+        return jsonify(body), 200
+
+    @app.post("/ai/tenants/<tenant_key>/offboard")
+    @require_admin_token
+    def tenant_offboard(tenant_key: str):
+        """Remove one tenant's data. The tenant row and the global config stay."""
+        payload = request.get_json(silent=True) or {}
+        try:
+            body = retention.offboard(
+                resolved_settings,
+                tenant_key=tenant_key,
+                actor=str(payload.get("actor") or ""),
+                reason=str(payload.get("reason") or ""),
+            )
+        except retention.RetentionError as exc:
+            status = 404 if exc.code == "unknown_tenant" else 422
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), status
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not offboard ({_error_class(exc)})", 503)
+        return jsonify(body), 200
 
     # --- Budgets and alerts (P9-F09) -------------------------------------
 

@@ -143,6 +143,9 @@ class JobRecord:
     #: True when ``create_job`` returned an existing job for the same
     #: idempotency key instead of inserting a new one.
     replayed: bool = False
+    #: The worker that holds the lease, so the executor can keep it alive and stop
+    #: when it has been reclaimed (P11-F04).
+    lease_owner: str = ""
     steps: tuple[JobStepRecord, ...] = field(default_factory=tuple)
 
     @property
@@ -659,6 +662,38 @@ def claim_job(
     return _job_from_row(row, steps)
 
 
+def heartbeat_job(
+    settings: Settings,
+    job_id: str,
+    *,
+    worker_id: str,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> bool:
+    """Extend a lease, and report whether this worker still owns the job.
+
+    A long step must not outlive its lease: once the sweep has reclaimed the job,
+    another worker may be running it, and both proceeding would double the work.
+    The caller stops when this returns ``False`` (P11-F04).
+    """
+    lease = max(1, min(int(lease_seconds), MAX_LEASE_SECONDS))
+    with connect(settings) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE ai_job
+            SET lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
+            WHERE id = %s
+              AND status = 'running'
+              AND lease_owner = %s
+            RETURNING id
+            """,
+            (lease, job_id, worker_id),
+        )
+        held = cursor.fetchone() is not None
+    if not held:
+        logger.info("job_lease_lost job=%s worker=%s", job_id, worker_id)
+    return held
+
+
 def recover_expired(settings: Settings) -> list[tuple[str, str]]:
     """Requeue (or fail) jobs whose worker lease expired.
 
@@ -735,11 +770,17 @@ def run_job(settings: Settings, job_id: str) -> JobRecord:
     except JobRequestUnreadable:
         return _finish_job(settings, job_id, FAILED, "request_unreadable")
 
+    worker_id = str(getattr(job, "lease_owner", "") or "")
     for step in job.steps:
         if step.status in {STEP_SUCCEEDED, STEP_SKIPPED}:
             continue
         if _cancel_requested(settings, job_id):
             return _cancel_running_job(settings, job_id)
+        if worker_id and not heartbeat_job(settings, job_id, worker_id=worker_id):
+            # The lease is gone: another worker may own this job now, so stopping
+            # is the only safe move (P11-F04).
+            logger.info("job_abandoned job=%s reason=lease_lost", job_id)
+            return _load_job_unscoped(settings, job_id) or job
         _start_step(settings, job_id, step)
         try:
             output = handler(
@@ -948,6 +989,7 @@ def _job_from_row(row: dict[str, Any], steps: tuple[JobStepRecord, ...]) -> JobR
         created_at=row.get("created_at"),
         started_at=row.get("started_at"),
         completed_at=row.get("completed_at"),
+        lease_owner=str(row.get("lease_owner") or ""),
         steps=steps,
     )
 
@@ -968,6 +1010,7 @@ def _replace(record: JobRecord, **changes: Any) -> JobRecord:
         "started_at": record.started_at,
         "completed_at": record.completed_at,
         "replayed": record.replayed,
+        "lease_owner": record.lease_owner,
         "steps": record.steps,
     }
     values.update(changes)

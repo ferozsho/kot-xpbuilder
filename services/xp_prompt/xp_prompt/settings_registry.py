@@ -433,6 +433,55 @@ REGISTRY: tuple[Setting, ...] = (
         owner="repair",
         summary="Hold a generated correction for operator review before reuse.",
     ),
+    # --- retention and offboarding (P11-F06) ---------------------------
+    Setting(
+        key="retention.conversations_days",
+        kind=INT,
+        default=0,
+        minimum=0,
+        maximum=3_650,
+        owner="retention",
+        summary="Days to keep conversations and messages. 0 keeps them forever.",
+    ),
+    Setting(
+        key="retention.jobs_days",
+        kind=INT,
+        default=0,
+        minimum=0,
+        maximum=3_650,
+        owner="retention",
+        summary="Days to keep finished jobs and their steps. 0 keeps them forever.",
+    ),
+    Setting(
+        key="retention.attempts_days",
+        kind=INT,
+        default=0,
+        minimum=0,
+        maximum=3_650,
+        owner="retention",
+        summary=(
+            "Days to keep provider attempt rows. 0 keeps them forever, which is "
+            "what the usage ledger needs."
+        ),
+    ),
+    Setting(
+        key="retention.artifacts_days",
+        kind=INT,
+        default=0,
+        minimum=0,
+        maximum=3_650,
+        owner="retention",
+        summary="Days to keep generated artifacts. 0 keeps them forever.",
+    ),
+    Setting(
+        key="retention.outbox_days",
+        kind=INT,
+        default=30,
+        minimum=0,
+        maximum=3_650,
+        owner="retention",
+        summary="Days to keep delivered outbox events. 0 keeps them forever.",
+    ),
     # --- feature flags (P10-F08) ---------------------------------------
     _feature("chat", "Conversational turns."),
     _feature("sql", "SQL candidate generation and execution."),

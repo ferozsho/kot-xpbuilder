@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from xp_prompt import alerts, billing, jobs, usage
+from xp_prompt import alerts, billing, jobs, retention, usage
 from xp_prompt.celery_app import app
 from xp_prompt.config import Settings
 from xp_prompt.providers.registry import DEFAULT_TENANT_KEY
@@ -161,6 +161,29 @@ def _report_breaches(settings: Settings, tenant_key: str) -> None:
         str(outcome["delivered"]).lower(),
         outcome["reason"] or "-",
     )
+
+
+@app.task(name="xp_prompt.apply_retention")
+def apply_retention() -> dict[str, Any]:
+    """Delete what the retention windows allow, once a day (P11-F06).
+
+    A sweep that removes nothing is not a failure: the default windows keep
+    everything, because the accounting record and the audit outlive any
+    convenience. Running it anyway is what makes the numbers visible.
+    """
+    settings = Settings.from_env()
+    reports: dict[str, Any] = {}
+    for tenant_key in usage.tenant_keys(settings):
+        try:
+            reports[tenant_key] = retention.apply(settings, tenant_key=tenant_key)
+        except Exception:  # pragma: no cover - one tenant must not stop the sweep
+            logger.warning(
+                "retention_failed tenant=%s", tenant_key, exc_info=True
+            )
+            continue
+    total = sum(report["total"] for report in reports.values())
+    logger.info("retention_sweep tenants=%d removed=%d", len(reports), total)
+    return {"tenants": len(reports), "removed": total, "reports": reports}
 
 
 @app.task(name="xp_prompt.fetch_billing_exports")

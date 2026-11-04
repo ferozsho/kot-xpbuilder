@@ -752,6 +752,18 @@ class AIPromptView(BaseSupersetView):
         status, body = call_xp_prompt("GET", f"/ai/usage/budgets?{_usage_query()}")
         return self.json_response(body, status)
 
+    @expose("/api/retention/", methods=("GET", "POST"))
+    @has_access_api
+    def api_retention(self) -> FlaskResponse:
+        """Preview a retention sweep, or run it (P11-F06)."""
+        if request.method == "POST":
+            status, body = call_xp_prompt(
+                "POST", "/ai/retention/apply", payload=_body()
+            )
+            return self.json_response(body, status)
+        status, body = call_xp_prompt("GET", f"/ai/retention?{_usage_query()}")
+        return self.json_response(body, status)
+
     @expose("/api/settings/health/", methods=("GET",))
     @has_access_api
     def api_settings_health(self) -> FlaskResponse:

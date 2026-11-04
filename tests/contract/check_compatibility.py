@@ -1794,6 +1794,60 @@ def check_ai_configuration(compatibility: dict) -> None:
             raise AssertionError(f'the phase must implement {marker}')
 
 
+def check_operations_hardening() -> None:
+    """P11-F04 to F07 must stay wired, not just documented.
+
+    Each of these fails silently: an unscheduled recovery sweep, a heartbeat that
+    does not check ownership, a retention sweep that can reach the accounting
+    record, and metrics that reset with the process.
+    """
+    services = ROOT / 'services' / 'xp_prompt' / 'xp_prompt'
+    jobs_source = (services / 'jobs.py').read_text(encoding='utf-8')
+    for marker in ('def heartbeat_job(', 'lease_owner', 'reason=lease_lost'):
+        if marker not in jobs_source:
+            raise AssertionError(f'the job lease must be kept alive: {marker}')
+    if 'AND lease_owner = %s' not in jobs_source:
+        raise AssertionError('a heartbeat must be conditional on ownership')
+
+    schedule = (services / 'celery_app.py').read_text(encoding='utf-8')
+    for entry in ('xp-prompt-recover-jobs', 'xp-prompt-retention-sweep'):
+        if entry not in schedule:
+            raise AssertionError(f'{entry} must be scheduled')
+
+    retention_source = (services / 'retention.py').read_text(encoding='utf-8')
+    for marker in ('def preview(', 'def apply(', 'def offboard(', 'PROTECTED'):
+        if marker not in retention_source:
+            raise AssertionError(f'retention must expose {marker}')
+    for protected in ('ai_setting_audit', 'ai_usage_budget', 'ai_tenant'):
+        if protected not in retention_source.split('PROTECTED =')[1][:600]:
+            raise AssertionError(f'{protected} must never be purged by a sweep')
+
+    metrics_source = (services / 'metrics.py').read_text(encoding='utf-8')
+    for marker in ('def prometheus(', 'xp_prompt_jobs', 'xp_prompt_outbox_events'):
+        if marker not in metrics_source:
+            raise AssertionError(f'metrics must expose {marker}')
+
+    api_source = (services / 'api.py').read_text(encoding='utf-8')
+    if 'def api_retention(' not in (
+        ROOT / 'superset' / 'superset' / 'views' / 'ai_prompt' / 'views.py'
+    ).read_text(encoding='utf-8'):
+        raise AssertionError('retention needs a proxy route')
+    for route in ('"/metrics"', '/ai/retention', '/ai/tenants/<tenant_key>/offboard'):
+        if route not in api_source:
+            raise AssertionError(f'the service must expose {route}')
+
+    registry_source = (services / 'settings_registry.py').read_text(encoding='utf-8')
+    for key in (
+        'retention.conversations_days',
+        'retention.jobs_days',
+        'retention.attempts_days',
+        'retention.artifacts_days',
+        'retention.outbox_days',
+    ):
+        if key not in registry_source:
+            raise AssertionError(f'{key} must be a declared setting')
+
+
 def check_schema_audit() -> None:
     """The schema audit must pass, and the audit history must be tenant-scoped.
 
@@ -1934,6 +1988,7 @@ def main():
     check_ai_usage_ledger(compatibility)
     check_ai_configuration(compatibility)
     check_schema_audit()
+    check_operations_hardening()
 
     check_ai_schema_slice(compatibility)
 
