@@ -2927,6 +2927,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                 resolved_settings,
                 key=request.args.get("key") or None,
                 limit=int(request.args.get("limit") or 50),
+                tenant_key=_request_tenant(),
             )
         except settings_registry.SettingError as exc:
             return jsonify(

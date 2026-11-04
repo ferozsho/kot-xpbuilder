@@ -975,33 +975,45 @@ def apply(
 
 
 def history(
-    settings: Settings, *, key: str | None = None, limit: int = 50
+    settings: Settings,
+    *,
+    key: str | None = None,
+    limit: int = 50,
+    tenant_key: str = "default",
 ) -> list[dict[str, Any]]:
-    """The append-only record behind "who changed this, and to what"."""
+    """The append-only record behind "who changed this, and to what".
+
+    Scoped to the tenant's own rows plus the global ones: the audit is a record of
+    *this* deployment's configuration, and a tenant admin has no business reading
+    another tenant's history (P11-F01).
+    """
     bounded = max(1, min(int(limit), MAX_HISTORY))
     with connect(settings) as connection, connection.cursor() as cursor:
+        tenant_id = _tenant_id(cursor, tenant_key)
+        scope_filter = "(tenant_id = %s OR tenant_id IS NULL)"
         if key:
             cursor.execute(
-                """
+                f"""
                 SELECT id, scope, key, version, before_value, after_value, actor,
                        reason, created_at
                 FROM ai_setting_audit
-                WHERE key = %s
+                WHERE key = %s AND {scope_filter}
                 ORDER BY created_at DESC, version DESC
                 LIMIT %s
                 """,
-                (_assert_storable(key).key, bounded),
+                (_assert_storable(key).key, tenant_id, bounded),
             )
         else:
             cursor.execute(
-                """
+                f"""
                 SELECT id, scope, key, version, before_value, after_value, actor,
                        reason, created_at
                 FROM ai_setting_audit
+                WHERE {scope_filter}
                 ORDER BY created_at DESC
                 LIMIT %s
                 """,
-                (bounded,),
+                (tenant_id, bounded),
             )
         rows = cursor.fetchall()
     return [
@@ -1034,13 +1046,14 @@ def rollback(
     and the undo, so the record is never rewritten.
     """
     with connect(settings) as connection, connection.cursor() as cursor:
+        tenant_id = _tenant_id(cursor, tenant_key)
         cursor.execute(
             """
             SELECT id, tenant_id, scope, key, before_value
             FROM ai_setting_audit
-            WHERE id = %s
+            WHERE id = %s AND (tenant_id = %s OR tenant_id IS NULL)
             """,
-            (str(audit_id),),
+            (str(audit_id), tenant_id),
         )
         entry = cursor.fetchone()
     if entry is None:

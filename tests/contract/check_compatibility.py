@@ -4,6 +4,8 @@ import json
 import os
 import re
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -1792,6 +1794,48 @@ def check_ai_configuration(compatibility: dict) -> None:
             raise AssertionError(f'the phase must implement {marker}')
 
 
+def check_schema_audit() -> None:
+    """The schema audit must pass, and the audit history must be tenant-scoped.
+
+    P11-F01/F02/F03 are only credible if they are checked on every build: a
+    migration without a downgrade, a forked chain, or a ``SCHEMA_REVISION`` that
+    does not match the head are exactly the faults that reach production quietly.
+    """
+    tool = ROOT / 'services' / 'xp_prompt' / 'tools' / 'audit_schema.py'
+    if not tool.exists():
+        raise AssertionError('the schema audit tool must exist')
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, str(tool)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            'schema audit failed:\n' + (completed.stdout or completed.stderr)
+        )
+    registry_source = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'settings_registry.py'
+    ).read_text(encoding='utf-8')
+    if 'def history(' not in registry_source:
+        raise AssertionError('settings history must exist')
+    if 'tenant_key: str = "default",\n) -> list[dict[str, Any]]:' not in (
+        registry_source
+    ):
+        raise AssertionError('the audit history must be scoped to a tenant')
+    migration = (
+        ROOT
+        / 'services'
+        / 'xp_prompt'
+        / 'migrations'
+        / 'versions'
+        / '20261103_19_ai_tenant_indexes.py'
+    )
+    if not migration.exists():
+        raise AssertionError('the tenant index migration must exist')
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -1889,6 +1933,7 @@ def main():
     check_ai_dashboard_builder(compatibility)
     check_ai_usage_ledger(compatibility)
     check_ai_configuration(compatibility)
+    check_schema_audit()
 
     check_ai_schema_slice(compatibility)
 

@@ -795,6 +795,8 @@ class _FakeCursor:
     def __init__(self, script: list) -> None:
         self._script = list(script)
         self._current = None
+        self.statements: list[str] = []
+        self.params: list = []
 
     def __enter__(self) -> "_FakeCursor":
         return self
@@ -803,6 +805,8 @@ class _FakeCursor:
         return False
 
     def execute(self, sql: str, params: object = None) -> None:
+        self.statements.append(sql)
+        self.params.append(params)
         self._current = self._script.pop(0) if self._script else None
 
     def fetchone(self):
@@ -945,6 +949,32 @@ class ExecutionSlotTests(unittest.TestCase):
     def test_the_slot_ttl_outlives_the_statement_timeout(self) -> None:
         self.assertGreaterEqual(sql_gate._ttl_seconds(20_000), 40)
         self.assertEqual(sql_gate._ttl_seconds(10_000_000), sql_gate.MAX_TTL_SECONDS)
+
+
+class AuditScopeTests(unittest.TestCase):
+    """The configuration history is this tenant's, plus the global rows."""
+
+    def test_history_is_scoped_and_still_sees_global_rows(self) -> None:
+        tenant = "11111111-1111-1111-1111-111111111111"
+        cursor = _FakeCursor([{"id": tenant}, []])
+        with mock.patch.object(
+            sr, "connect", return_value=_FakeConnection(cursor)
+        ):
+            sr.history(settings(), key="sql.max_rows", tenant_key="default")
+        statement = " ".join(cursor.statements)
+        self.assertIn("tenant_id = %s OR tenant_id IS NULL", statement)
+        self.assertEqual(cursor.params[-1][1], tenant)
+
+    def test_a_rollback_cannot_reach_another_tenants_row(self) -> None:
+        tenant = "11111111-1111-1111-1111-111111111111"
+        cursor = _FakeCursor([{"id": tenant}, None])
+        with mock.patch.object(
+            sr, "connect", return_value=_FakeConnection(cursor)
+        ):
+            with self.assertRaises(sr.SettingError) as caught:
+                sr.rollback(settings(), "22222222-2222-2222-2222-222222222222")
+        self.assertEqual(caught.exception.code, "audit_not_found")
+        self.assertIn("tenant_id = %s OR tenant_id IS NULL", " ".join(cursor.statements))
 
 
 if __name__ == "__main__":

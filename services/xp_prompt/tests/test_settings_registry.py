@@ -319,6 +319,7 @@ class RollbackTests(unittest.TestCase):
     def test_a_rollback_restores_the_previous_value_as_a_new_version(self) -> None:
         cursor = _FakeCursor(
             [
+                {"id": TENANT_ID},  # _tenant_id resolves the caller's tenant
                 {"id": AUDIT_ID, "tenant_id": None, "scope": "global",
                  "key": "sql.max_rows", "before_value": '"10000"'},
                 None,
@@ -335,7 +336,7 @@ class RollbackTests(unittest.TestCase):
         self.assertEqual(len(audit_sql), 2)
 
     def test_an_unknown_change_is_not_found(self) -> None:
-        cursor = _FakeCursor([None])
+        cursor = _FakeCursor([{"id": TENANT_ID}, None])
         with mock.patch.object(
             sr, "connect", return_value=_FakeConnection(cursor)
         ), self.assertRaises(sr.SettingError) as caught:
@@ -344,7 +345,8 @@ class RollbackTests(unittest.TestCase):
 
     def test_rolling_back_a_creation_has_nothing_to_restore(self) -> None:
         cursor = _FakeCursor(
-            [{"id": AUDIT_ID, "scope": "global", "key": "sql.max_rows",
+            [{"id": TENANT_ID},
+             {"id": AUDIT_ID, "scope": "global", "key": "sql.max_rows",
               "before_value": None}]
         )
         with mock.patch.object(
