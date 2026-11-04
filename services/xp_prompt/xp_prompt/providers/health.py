@@ -53,12 +53,18 @@ class ProviderHealth:
             return False
         return self.circuit_open_until > (now or utcnow())
 
-    def open_seconds(self) -> int:
-        """Cool-down for the next trip, growing with repeated failures."""
+    def open_seconds(self, base: int = OPEN_SECONDS) -> int:
+        """Cool-down for the next trip, growing with repeated failures.
+
+        ``base`` is ``provider.breaker_cooldown_seconds``, so an operator can move
+        the floor without changing the doubling that punishes a provider that keeps
+        failing. The ceiling stays a constant: the configurable part is where the
+        backoff starts, not how far it may go.
+        """
         if self.consecutive_failures < FAILURE_THRESHOLD:
             return 0
         exponent = min(self.consecutive_failures - FAILURE_THRESHOLD, 8)
-        return min(OPEN_SECONDS * (2**exponent), MAX_OPEN_SECONDS)
+        return min(max(1, int(base)) * (2**exponent), MAX_OPEN_SECONDS)
 
     def to_public_dict(self, now: datetime | None = None) -> dict[str, object]:
         moment = now or utcnow()
@@ -77,6 +83,7 @@ def after_failure(
     error_code: str,
     retryable: bool,
     now: datetime | None = None,
+    open_seconds_base: int = OPEN_SECONDS,
 ) -> ProviderHealth:
     """Fold one failed attempt into the provider health state.
 
@@ -97,7 +104,8 @@ def after_failure(
         return next_state
     return replace(
         next_state,
-        circuit_open_until=moment + timedelta(seconds=next_state.open_seconds()),
+        circuit_open_until=moment
+        + timedelta(seconds=next_state.open_seconds(open_seconds_base)),
     )
 
 

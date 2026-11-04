@@ -14,6 +14,10 @@ the three properties that make consumption safe:
 from __future__ import annotations
 
 import unittest
+from typing import Any
+from dataclasses import replace
+from pathlib import Path as pathlib_Path
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest import mock
 
@@ -21,6 +25,8 @@ from xp_prompt import chat, repair, schema_slice, sql_candidate
 from xp_prompt import settings_registry as sr
 from xp_prompt import patterns, sql_execution, sql_guard
 from xp_prompt.config import Settings
+from xp_prompt.providers import health as provider_health
+from xp_prompt.providers import registry as provider_registry
 
 ROOT_SECRET = "unit-test-root-secret-value"
 
@@ -350,6 +356,131 @@ class SqlGuardCeilingTests(unittest.TestCase):
         )
         self.assertEqual(result["limit"], 5_000)
         self.assertIsNone(result["limits"])
+
+
+class ProviderRoutingTests(unittest.TestCase):
+    """The routing knobs are the operator's, and their defaults change nothing."""
+
+    def test_the_registry_defaults_reproduce_the_constants(self) -> None:
+        self.assertEqual(
+            sr.BY_KEY["provider.max_attempts_per_provider"].default,
+            provider_health.MAX_ATTEMPTS_PER_PROVIDER,
+        )
+        self.assertEqual(
+            sr.BY_KEY["provider.breaker_cooldown_seconds"].default,
+            provider_health.OPEN_SECONDS,
+        )
+        self.assertTrue(sr.BY_KEY["provider.fallback_enabled"].default)
+
+    def test_the_breaker_backs_off_from_the_configured_base(self) -> None:
+        tripped = provider_health.ProviderHealth(
+            consecutive_failures=provider_health.FAILURE_THRESHOLD
+        )
+        self.assertEqual(tripped.open_seconds(), provider_health.OPEN_SECONDS)
+        self.assertEqual(tripped.open_seconds(base=10), 10)
+        again = replace(tripped, consecutive_failures=tripped.consecutive_failures + 1)
+        self.assertEqual(again.open_seconds(base=10), 20)
+
+    def test_the_breaker_still_has_a_constant_ceiling(self) -> None:
+        many = provider_health.ProviderHealth(
+            consecutive_failures=provider_health.FAILURE_THRESHOLD + 8
+        )
+        self.assertEqual(
+            many.open_seconds(base=3_600), provider_health.MAX_OPEN_SECONDS
+        )
+
+    def test_a_non_retryable_failure_alone_does_not_open_the_breaker(self) -> None:
+        state = provider_health.after_failure(
+            None, error_code="invalid_key", retryable=False, open_seconds_base=10
+        )
+        self.assertIsNone(state.circuit_open_until)
+
+    def test_a_recorded_failure_opens_for_the_configured_cooldown(self) -> None:
+        opening = provider_health.ProviderHealth(
+            consecutive_failures=provider_health.FAILURE_THRESHOLD - 1
+        )
+        with mock.patch.object(
+            provider_registry, "get_health", return_value=opening
+        ), mock.patch.object(provider_registry, "_write_health"):
+            state = provider_registry.record_attempt_failure(
+                settings(),
+                "provider-id",
+                error_code="rate_limited",
+                retryable=True,
+                cooldown_seconds=15,
+            )
+        self.assertEqual(
+            state.circuit_open_until - state.last_failure_at,
+            timedelta(seconds=15),
+        )
+
+    def test_without_a_setting_the_constant_cooldown_stands(self) -> None:
+        opening = provider_health.ProviderHealth(
+            consecutive_failures=provider_health.FAILURE_THRESHOLD - 1
+        )
+        with mock.patch.object(
+            provider_registry, "get_health", return_value=opening
+        ), mock.patch.object(provider_registry, "_write_health"):
+            state = provider_registry.record_attempt_failure(
+                settings(), "provider-id", error_code="rate_limited", retryable=True
+            )
+        self.assertEqual(
+            state.circuit_open_until - state.last_failure_at,
+            timedelta(seconds=provider_health.OPEN_SECONDS),
+        )
+
+    def record(self, name: str) -> provider_registry.ProviderRecord:
+        return provider_registry.ProviderRecord(
+            id=f"id-{name}",
+            tenant_key="default",
+            name=name,
+            provider_type="gemini",
+            base_url="https://example.invalid",
+            default_model="model-a",
+            config={},
+            enabled=True,
+            is_default=False,
+            priority=1,
+            api_key_fingerprint="fp",
+            api_key_last_four="0000",
+            last_tested_at=None,
+            last_test_status=None,
+            last_test_error=None,
+        )
+
+    def router(self, **overrides: object) -> Any:
+        records = [self.record("primary"), self.record("secondary")]
+        with mock.patch.object(
+            provider_registry, "_enabled_records", return_value=records
+        ), mock.patch.object(
+            provider_registry, "decrypt_api_key", return_value="sealed-key"
+        ), mock.patch.object(
+            provider_registry, "build_provider", return_value=object()
+        ), mock.patch.object(sr, "live", return_value=live_map(**overrides)):
+            return provider_registry.resolve_router(settings())
+
+    def test_a_fallback_is_used_by_default(self) -> None:
+        router = self.router()
+        self.assertEqual(router.primary.name, "primary")
+        self.assertEqual(router.fallback.name, "secondary")
+        self.assertEqual(router.max_attempts, provider_health.MAX_ATTEMPTS_PER_PROVIDER)
+
+    def test_the_fallback_can_be_switched_off(self) -> None:
+        router = self.router(provider__fallback_enabled=False)
+        self.assertIsNone(router.fallback)
+
+    def test_the_attempt_budget_is_the_configured_one(self) -> None:
+        router = self.router(provider__max_attempts_per_provider=4)
+        self.assertEqual(router.max_attempts, 4)
+
+    def test_the_routing_happens_where_no_caller_can_bypass_it(self) -> None:
+        # Circular to state, worth pinning: the knobs are read while the router is
+        # built, not by each module before it calls.
+        source = pathlib_Path(
+            provider_registry.__file__
+        ).read_text(encoding="utf-8")
+        self.assertIn("provider.fallback_enabled", source)
+        self.assertIn("provider.max_attempts_per_provider", source)
 
 
 if __name__ == "__main__":

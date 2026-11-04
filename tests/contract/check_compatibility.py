@@ -1704,6 +1704,11 @@ def check_ai_configuration(compatibility: dict) -> None:
         ),
         'sql_execution.py': ('settings_registry.SqlLimits', '"limits":'),
         'sql_guard.py': ('allow_metadata_schemas',),
+        'providers/registry.py': (
+            'provider.fallback_enabled',
+            'provider.max_attempts_per_provider',
+            'provider.breaker_cooldown_seconds',
+        ),
     }
     for name, markers in consumers.items():
         source = (services / name).read_text(encoding='utf-8')

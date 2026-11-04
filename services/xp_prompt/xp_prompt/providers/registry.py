@@ -20,6 +20,7 @@ from xp_prompt.providers.anthropic import AnthropicProvider
 from xp_prompt.providers.deepseek import DeepSeekProvider
 from xp_prompt.providers.gemini import GeminiProvider
 from xp_prompt.providers.health import (
+    OPEN_SECONDS,
     ProviderHealth,
     after_failure,
     after_success,
@@ -580,12 +581,16 @@ def record_attempt_failure(
     *,
     error_code: str,
     retryable: bool,
+    cooldown_seconds: int | None = None,
 ) -> ProviderHealth:
     """Fold one failed attempt into the stored health state."""
     state = after_failure(
         get_health(settings, provider_id),
         error_code=error_code[:64],
         retryable=retryable,
+        open_seconds_base=(
+            int(cooldown_seconds) if cooldown_seconds is not None else OPEN_SECONDS
+        ),
     )
     _write_health(settings, provider_id, state)
     return state
@@ -740,6 +745,17 @@ def resolve_router(
     fallback = next(
         (item for item in providers[1:] if item.name != providers[0].name), None
     )
+    # The routing knobs are the operator's: a switch-off fallback, an attempt
+    # budget per provider, and how long an open breaker skips a provider. They are
+    # read here because this is the one place a router is built, so no caller can
+    # bypass them (P10-F02).
+    from xp_prompt import settings_registry
+
+    live = settings_registry.live(settings, tenant_key=tenant_key)
+    cooldown_seconds = int(live["provider.breaker_cooldown_seconds"].value)
+    max_attempts = int(live["provider.max_attempts_per_provider"].value)
+    if not live["provider.fallback_enabled"].value:
+        fallback = None
     on_summary = None
     on_guard = None
     if context is not None:
@@ -748,7 +764,8 @@ def resolve_router(
     return ProviderRouter(
         primary=providers[0],
         fallback=fallback,
-        on_attempt=_health_reporter(settings, provider_ids),
+        max_attempts=max_attempts,
+        on_attempt=_health_reporter(settings, provider_ids, cooldown_seconds),
         on_summary=on_summary,
         guard=on_guard,
     )
@@ -792,6 +809,7 @@ def _budget_guard(
 def _health_reporter(
     settings: Settings,
     provider_ids: dict[str, str],
+    cooldown_seconds: int | None = None,
 ) -> Any:
     """Persist passive health for providers that have a database row.
 
@@ -812,6 +830,7 @@ def _health_reporter(
                     provider_id,
                     error_code=error.code,
                     retryable=error.retryable,
+                    cooldown_seconds=cooldown_seconds,
                 )
         except Exception:  # pragma: no cover - best effort bookkeeping
             return
