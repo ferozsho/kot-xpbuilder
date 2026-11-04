@@ -1265,11 +1265,13 @@ def check_ai_dashboard_builder(compatibility: dict) -> None:
     services = ROOT / 'services' / 'xp_prompt' / 'xp_prompt'
     plan_path = services / 'dashboard_plan.py'
     layout_path = services / 'dashboard_layout.py'
-    for path in (plan_path, layout_path):
+    preview_path = services / 'dashboard_preview.py'
+    for path in (plan_path, layout_path, preview_path):
         if not path.exists():
             raise AssertionError(f'{path.name} must exist')
     plan_source = plan_path.read_text(encoding='utf-8')
     layout_source = layout_path.read_text(encoding='utf-8')
+    preview_source = preview_path.read_text(encoding='utf-8')
 
     for marker in ('def build(', 'class ArtifactNeed', 'class Slot', 'def _quality('):
         if marker not in plan_source:
@@ -1289,15 +1291,36 @@ def check_ai_dashboard_builder(compatibility: dict) -> None:
         if marker not in layout_source:
             raise AssertionError(f'dashboard_layout.py lost {marker}')
 
+    for marker in (
+        'def build(',
+        'class Metadata',
+        'accessible_context',
+        'result_validation.validate_result',
+        '"persisted": False',
+    ):
+        if marker not in preview_source:
+            raise AssertionError(f'dashboard_preview.py lost {marker}')
+
     service_source = (services / 'api.py').read_text(encoding='utf-8')
-    for route in ('/ai/dashboards/plan', '/ai/dashboards/layout'):
+    for route in (
+        '/ai/dashboards/plan',
+        '/ai/dashboards/layout',
+        '/ai/dashboards/preview',
+    ):
         if route not in service_source:
             raise AssertionError(f'the service must expose {route}')
 
     proxy_source = (
         ROOT / 'superset' / 'superset' / 'views' / 'ai_prompt' / 'views.py'
     ).read_text(encoding='utf-8')
-    for marker in ('def api_dashboard_plan', 'def api_dashboard_layout'):
+    for marker in (
+        'def api_dashboard_plan',
+        'def api_dashboard_layout',
+        'def api_dashboard_preview',
+        'def _dashboard_preview_slots',
+        'ChartDataCommand',
+        'security_manager.raise_for_access(chart=chart)',
+    ):
         if marker not in proxy_source:
             raise AssertionError(f'the dashboard API lost {marker}')
     if 'authorized_datasets()' not in proxy_source:
@@ -1308,7 +1331,11 @@ def check_ai_dashboard_builder(compatibility: dict) -> None:
     permissions = (
         ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
     ).read_text(encoding='utf-8')
-    for permission in ('can_api_dashboard_plan', 'can_api_dashboard_layout'):
+    for permission in (
+        'can_api_dashboard_plan',
+        'can_api_dashboard_layout',
+        'can_api_dashboard_preview',
+    ):
         if permission not in permissions:
             raise AssertionError(f'the dashboard API needs {permission}')
 

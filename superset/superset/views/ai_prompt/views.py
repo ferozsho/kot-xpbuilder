@@ -627,6 +627,70 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    @expose("/api/dashboards/preview/", methods=("POST",))
+    @has_access_api
+    def api_dashboard_preview(self) -> FlaskResponse:
+        """Render every planned slot with real data before anything is persisted.
+
+        All slots are resolved and authorized first, so an unauthorized later slot
+        cannot cause earlier slot data to be returned. Saved charts use their stored
+        configuration; generated slots use the already contract-checked form data from
+        the plan. Every query then runs through ``ChartDataCommand`` in this caller's
+        security context, including RLS.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        resolved, failure = _dashboard_preview_slots(payload.get("slots"))
+        if failure is not None:
+            return self.json_response(*failure)
+
+        renders: list[dict[str, Any]] = []
+        for entry in resolved:
+            frame, error = _chart_frame(entry["dataset"], entry["draft"])
+            if error is not None:
+                hint, kind = _classify_failure(owner, "", error)
+                return self.json_response(
+                    {
+                        "message": hint,
+                        "severity": "danger",
+                        "code": "dashboard_preview_failed",
+                        "failure": kind,
+                        "slot_id": entry["slot"]["id"],
+                    },
+                    422,
+                )
+            preview = frame.head(MAX_PREVIEW_ROWS)
+            renders.append(
+                {
+                    "slot_id": entry["slot"]["id"],
+                    "columns": [str(column) for column in preview.columns],
+                    "rows": [
+                        [_cell(value) for value in row]
+                        for row in preview.itertuples(index=False, name=None)
+                    ],
+                    "row_count": int(len(frame)),
+                    "truncated": len(frame) > len(preview),
+                }
+            )
+
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/dashboards/preview",
+            payload={
+                "superset_user_id": owner,
+                "title": str(payload.get("title") or ""),
+                "goal": str(payload.get("goal") or ""),
+                "audience": str(payload.get("audience") or "unspecified"),
+                "slots": [entry["slot"] for entry in resolved],
+                "renders": renders,
+            },
+        )
+        return self.json_response(body, status)
+
     # --- Dataset drafts and save (P6-F01/F03/F06/F07/F09/F10) ------------
 
     @expose("/api/datasets/equivalents/", methods=("POST",))
@@ -1251,6 +1315,9 @@ MAX_SLICE_COLUMNS = 60
 #: Charts considered for reuse when planning a dashboard. Bounded because the plan
 #: only needs "is there already a chart of this family on this dataset".
 MAX_PLAN_CHARTS = 200
+#: The deterministic planner has the same cap. Repeating it here prevents a forged
+#: preview request from turning one browser action into an unbounded query fan-out.
+MAX_DASHBOARD_PREVIEW_SLOTS = 8
 
 #: Most rows a preview may return. Execution is synchronous, so this is also the
 #: practical limit on how much a single request can serialise.
@@ -1820,6 +1887,193 @@ def _plan_column_kinds(datasets: list[dict[str, Any]]) -> dict[str, dict[str, st
     return kinds
 
 
+def _dashboard_preview_slots(
+    slots: Any,
+) -> tuple[list[dict[str, Any]], tuple[dict[str, Any], int] | None]:
+    """Resolve and authorize a complete slot list before the first query runs."""
+    if not isinstance(slots, list):
+        return [], (
+            {"message": _("slots must be a list"), "severity": "danger"},
+            400,
+        )
+    if not slots:
+        return [], (
+            {"message": _("At least one slot is required"), "severity": "danger"},
+            400,
+        )
+    if len(slots) > MAX_DASHBOARD_PREVIEW_SLOTS:
+        return [], (
+            {
+                "message": _("Too many dashboard slots"),
+                "severity": "danger",
+                "code": "slot_budget",
+            },
+            422,
+        )
+
+    available_viz = {
+        str(entry.get("viz_type") or "")
+        for entry in _chart_catalog_payload().get("viz_types") or []
+    }
+    resolved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in slots:
+        if not isinstance(raw, dict):
+            return [], (
+                {"message": _("Each slot must be an object"), "severity": "danger"},
+                400,
+            )
+        slot_id = str(raw.get("id") or "").strip()[:64]
+        if not slot_id:
+            return [], (
+                {"message": _("Each slot needs an id"), "severity": "danger"},
+                400,
+            )
+        if slot_id in seen:
+            return [], (
+                {
+                    "message": _("A dashboard slot was repeated"),
+                    "severity": "danger",
+                    "code": "duplicate_slot",
+                },
+                422,
+            )
+        seen.add(slot_id)
+        entry, failure = _dashboard_preview_slot(raw, slot_id, available_viz)
+        if failure is not None:
+            return [], failure
+        resolved.append(entry)
+    return resolved, None
+
+
+def _dashboard_preview_slot(
+    raw: dict[str, Any], slot_id: str, available_viz: set[str]
+) -> tuple[dict[str, Any], tuple[dict[str, Any], int] | None]:
+    """Resolve one already-unique slot without executing its query."""
+    dataset, failure = _chart_dataset(raw.get("dataset_id"))
+    if failure is not None:
+        return {}, failure
+
+    chart_id = raw.get("chart_id")
+    if chart_id not in (None, ""):
+        config, failure = _saved_dashboard_preview_config(chart_id, dataset, raw)
+    else:
+        config, failure = _generated_dashboard_preview_config(raw, available_viz)
+    if failure is not None:
+        return {}, failure
+
+    title = str(config["title"])
+    viz_type = str(config["viz_type"])
+    chart = config.get("chart")
+    normalized = {
+        "id": slot_id,
+        "title": title[:MAX_TITLE_CHARS] or _("Untitled chart"),
+        "question": str(raw.get("question") or title).strip()[:MAX_TITLE_CHARS],
+        "family": str(raw.get("family") or "").strip()[:32],
+        "section": str(raw.get("section") or "detail").strip()[:32],
+        "dataset_id": int(dataset.id),
+        "dataset_name": str(dataset.table_name or "")[:MAX_TITLE_CHARS],
+        "viz_type": viz_type[:80],
+        "chart_id": int(chart.id) if chart is not None else None,
+        "source": str(config["source"]),
+    }
+    return {
+        "slot": normalized,
+        "dataset": dataset,
+        "draft": {"form_data": config["form_data"], "viz_type": viz_type},
+    }, None
+
+
+def _saved_dashboard_preview_config(
+    chart_id: Any, dataset: Any, raw: dict[str, Any]
+) -> tuple[dict[str, Any], tuple[dict[str, Any], int] | None]:
+    """Load a saved chart's authoritative configuration and check chart access."""
+    from superset.daos.chart import ChartDAO
+
+    try:
+        identifier = int(chart_id)
+    except (TypeError, ValueError):
+        return {}, ({"message": _("Invalid chart id"), "severity": "danger"}, 400)
+    chart = ChartDAO.find_by_id(identifier, skip_base_filter=True)
+    if chart is None:
+        return {}, ({"message": _("Chart not found"), "severity": "danger"}, 404)
+    if int(chart.datasource_id or 0) != int(dataset.id):
+        return {}, (
+            {
+                "message": _("The chart does not use this dataset"),
+                "severity": "danger",
+                "code": "chart_dataset_mismatch",
+            },
+            422,
+        )
+    try:
+        security_manager.raise_for_access(chart=chart)
+    except SupersetSecurityException:
+        return {}, (
+            {
+                "message": _("You are not authorized for this chart"),
+                "severity": "danger",
+                "code": "chart_not_authorized",
+            },
+            403,
+        )
+    try:
+        form_data = dict(json_loads(chart.params or "{}") or {})
+    except (TypeError, ValueError):
+        return {}, (
+            {
+                "message": _("The saved chart configuration is invalid"),
+                "severity": "danger",
+                "code": "invalid_chart_config",
+            },
+            422,
+        )
+    form_data["slice_id"] = int(chart.id)
+    return {
+        "chart": chart,
+        "form_data": form_data,
+        "viz_type": str(form_data.get("viz_type") or chart.viz_type or "").strip(),
+        "title": str(raw.get("title") or chart.slice_name or "").strip(),
+        "source": "existing",
+    }, None
+
+
+def _generated_dashboard_preview_config(
+    raw: dict[str, Any], available_viz: set[str]
+) -> tuple[dict[str, Any], tuple[dict[str, Any], int] | None]:
+    """Use a generated slot's validated plan configuration without persisting it."""
+    candidate = raw.get("form_data")
+    if not isinstance(candidate, dict) or not candidate:
+        return {}, (
+            {
+                "message": _("An unsaved slot needs chart form data"),
+                "severity": "danger",
+                "code": "missing_form_data",
+            },
+            422,
+        )
+    form_data = dict(candidate)
+    viz_type = str(
+        raw.get("viz_type") or form_data.get("viz_type") or ""
+    ).strip()
+    if not viz_type or viz_type not in available_viz:
+        return {}, (
+            {
+                "message": _("This visualization is not available"),
+                "severity": "danger",
+                "code": "viz_type_unavailable",
+            },
+            422,
+        )
+    return {
+        "chart": None,
+        "form_data": form_data,
+        "viz_type": viz_type,
+        "title": str(raw.get("title") or "").strip(),
+        "source": "generate",
+    }, None
+
+
 def _chart_frame(
     dataset: Any, draft: dict[str, Any]
 ) -> tuple[Any, str | None]:
@@ -1853,12 +2107,15 @@ def _chart_frame(
             str(exc)[:200],
         )
         return None, f"{type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS]
-    rows: list[dict[str, Any]] = []
+    rows: list[Any] = []
+    columns: list[str] = []
     if isinstance(result, dict):
         queries_result = result.get("queries") or []
         if queries_result:
-            rows = list(queries_result[0].get("data") or [])
-    frame = pd.DataFrame(rows)
+            query_result = queries_result[0]
+            rows = list(query_result.get("data") or [])
+            columns = [str(column) for column in query_result.get("colnames") or []]
+    frame = pd.DataFrame(rows, columns=columns or None)
     return frame, None
 
 
@@ -1869,19 +2126,33 @@ def _chart_query(draft: dict[str, Any]) -> dict[str, Any]:
     x_axis = form_data.get("x_axis")
     if isinstance(x_axis, str) and x_axis:
         columns.append(x_axis)
-    for entry in form_data.get("groupby") or []:
+    groupby = form_data.get("groupby") or []
+    if isinstance(groupby, str):
+        groupby = [groupby]
+    for entry in groupby if isinstance(groupby, list | tuple) else []:
         if isinstance(entry, str) and entry not in columns:
             columns.append(entry)
-    metrics = list(form_data.get("metrics") or [])
+    raw_metrics = form_data.get("metrics") or []
+    metrics = (
+        list(raw_metrics)
+        if isinstance(raw_metrics, list | tuple)
+        else [raw_metrics]
+    )
     single = form_data.get("metric")
     if single:
         metrics = [*metrics, single]
+    try:
+        requested_limit = int(form_data.get("row_limit") or MAX_PREVIEW_ROWS)
+    except (TypeError, ValueError):
+        requested_limit = MAX_PREVIEW_ROWS
     return {
         "columns": columns,
         "metrics": metrics,
-        "row_limit": int(form_data.get("row_limit") or MAX_PREVIEW_ROWS),
+        "row_limit": max(1, min(requested_limit, MAX_PREVIEW_ROWS)),
         "order_desc": True,
-        "filters": list(form_data.get("adhoc_filters") or []),
+        "filters": list(form_data.get("adhoc_filters") or [])
+        if isinstance(form_data.get("adhoc_filters") or [], list | tuple)
+        else [],
     }
 
 

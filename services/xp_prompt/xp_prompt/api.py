@@ -40,6 +40,7 @@ from xp_prompt import (
     cost_guard,
     dashboard_layout,
     dashboard_plan,
+    dashboard_preview,
     dataset_draft,
     dataset_quality,
     dataset_spec,
@@ -54,7 +55,6 @@ from xp_prompt import (
     sql_execution,
     sql_guard,
 )
-
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
@@ -1824,7 +1824,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             return _admin_error(f"Could not scrap the draft ({_error_class(exc)})", 503)
         return jsonify({"draft": draft.to_public_dict()}), 200
 
-    # --- Dashboard plans (P8-F01..F05) -----------------------------------
+    # --- Dashboard planning and preview (P8-F01..F07) ---------------------
 
     @app.post("/ai/dashboards/plan")
     @require_admin_token
@@ -1894,6 +1894,45 @@ def create_app(settings: Settings | None = None) -> Flask:
             len(filters.filters),
         )
         return jsonify(body), 200 if body["valid"] else 422
+
+    @app.post("/ai/dashboards/preview")
+    @require_admin_token
+    def dashboard_preview_build():
+        """Validate every chart-data result and assemble a read-only preview.
+
+        Superset has already rendered the slots in the caller's security context. This
+        endpoint owns the bounded result policy, generated metadata and accessible chart
+        context. It refuses a missing or extra render, so ``complete: true`` can never
+        describe a partial dashboard.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            preview = dashboard_preview.build(
+                title=str(payload.get("title") or ""),
+                goal=str(payload.get("goal") or ""),
+                audience=str(payload.get("audience") or "unspecified"),
+                slots=payload.get("slots") or (),
+                renders=payload.get("renders") or (),
+            )
+        except dashboard_preview.DashboardPreviewError as exc:
+            return (
+                jsonify(
+                    {
+                        "message": str(exc),
+                        "code": exc.code,
+                        "severity": "danger",
+                    }
+                ),
+                422,
+            )
+        logger.info(
+            "dashboard_preview outcome=ok slots=%d datasets=%d",
+            len(preview.slots),
+            preview.metadata.dataset_count,
+        )
+        return jsonify(preview.to_public_dict()), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

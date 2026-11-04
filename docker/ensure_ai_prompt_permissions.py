@@ -60,6 +60,7 @@ PERMISSIONS = (
     "can_api_chart_draft_scrap",
     "can_api_dashboard_plan",
     "can_api_dashboard_layout",
+    "can_api_dashboard_preview",
 )
 VIEW_MENU = "AIPrompt"
 
