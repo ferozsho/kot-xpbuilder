@@ -1322,6 +1322,9 @@ MAX_DASHBOARD_PREVIEW_SLOTS = 8
 #: Most rows a preview may return. Execution is synchronous, so this is also the
 #: practical limit on how much a single request can serialise.
 MAX_PREVIEW_ROWS = 200
+#: Fetch one sentinel row when a chart asks for more than the public preview cap, so
+#: ``truncated`` is evidence rather than a guess. The sentinel never reaches the client.
+MAX_CHART_QUERY_ROWS = MAX_PREVIEW_ROWS + 1
 MAX_CELL_CHARS = 200
 #: A virtual dataset's SQL is forwarded so the service can inline it; the service
 #: enforces the same bound, this is only here to keep one request small.
@@ -2126,12 +2129,13 @@ def _chart_query(draft: dict[str, Any]) -> dict[str, Any]:
     x_axis = form_data.get("x_axis")
     if isinstance(x_axis, str) and x_axis:
         columns.append(x_axis)
-    groupby = form_data.get("groupby") or []
-    if isinstance(groupby, str):
-        groupby = [groupby]
-    for entry in groupby if isinstance(groupby, list | tuple) else []:
-        if isinstance(entry, str) and entry not in columns:
-            columns.append(entry)
+    for key in ("groupby", "all_columns", "columns"):
+        configured = form_data.get(key) or []
+        if isinstance(configured, str):
+            configured = [configured]
+        for entry in configured if isinstance(configured, list | tuple) else []:
+            if isinstance(entry, str) and entry not in columns:
+                columns.append(entry)
     raw_metrics = form_data.get("metrics") or []
     metrics = (
         list(raw_metrics)
@@ -2148,7 +2152,7 @@ def _chart_query(draft: dict[str, Any]) -> dict[str, Any]:
     return {
         "columns": columns,
         "metrics": metrics,
-        "row_limit": max(1, min(requested_limit, MAX_PREVIEW_ROWS)),
+        "row_limit": max(1, min(requested_limit, MAX_CHART_QUERY_ROWS)),
         "order_desc": True,
         "filters": list(form_data.get("adhoc_filters") or [])
         if isinstance(form_data.get("adhoc_filters") or [], list | tuple)

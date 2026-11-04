@@ -58,6 +58,28 @@ def _add_secondary_index(connection, qualified: str, spec: dict[str, Any],
     name = str(spec.get("name") or "index")
     if name.lower() in existing:
         return "skipped", "already present"
+    if dialect == "postgresql":
+        columns = [
+            str(column)
+            for column in (spec.get("columns") or [])
+            if str(column) in coltypes
+        ]
+        if not columns:
+            return "skipped", "no such columns on the copy"
+        unique = (
+            "UNIQUE "
+            if spec.get("unique") and not spec.get("prefixes")
+            else ""
+        )
+        columnlist = ", ".join(_quote(column, dialect) for column in columns)
+        connection.execute(
+            text(
+                f"CREATE {unique}INDEX {_quote(name, dialect)} "
+                f"ON {qualified} ({columnlist})"
+            )
+        )
+        return "applied", ""
+
     fragment, warning = index_definition(spec, coltypes, dialect)
     if not fragment:
         return "skipped", warning or "no such columns on the copy"
@@ -118,10 +140,15 @@ def ensure_indexes(
                 with engine.begin() as connection:
                     if spec.get("primary"):
                         if has_primary:
-                            skipped.append({"name": "PRIMARY", "why": "already present"})
+                            skipped.append(
+                                {"name": "PRIMARY", "why": "already present"}
+                            )
                             continue
                         connection.execute(
-                            text(f"ALTER TABLE {qualified} ADD PRIMARY KEY ({columnlist})")
+                            text(
+                                f"ALTER TABLE {qualified} "
+                                f"ADD PRIMARY KEY ({columnlist})"
+                            )
                         )
                         applied.append("PRIMARY")
                         has_primary = True

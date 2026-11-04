@@ -1320,6 +1320,7 @@ def check_ai_dashboard_builder(compatibility: dict) -> None:
         'def _dashboard_preview_slots',
         'ChartDataCommand',
         'security_manager.raise_for_access(chart=chart)',
+        '"all_columns"',
     ):
         if marker not in proxy_source:
             raise AssertionError(f'the dashboard API lost {marker}')

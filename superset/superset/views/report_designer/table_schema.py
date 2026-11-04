@@ -113,15 +113,75 @@ def _default_sql(raw: Any) -> str:
     return ""
 
 
+def _postgres_type_sql(raw: Any) -> str:  # noqa: C901
+    """Translate a validated MySQL/MariaDB column type to PostgreSQL.
+
+    SyncDb reads ``column_type`` from Moodle's MariaDB information schema.  A
+    PostgreSQL upload database cannot consume display widths such as
+    ``bigint(10)`` or MySQL-only text names such as ``longtext``, so the type is
+    normalised before it reaches DDL.  Precision and character lengths are kept
+    where both dialects share their meaning.
+    """
+    source = _type_sql(raw).lower()
+    source = re.sub(r"\s+(?:unsigned|zerofill)\b", "", source).strip()
+    base = _base_type(source)
+    length = LENGTH_RE.match(source)
+    first = int(length.group(1)) if length else None
+    second = int(length.group(2)) if length and length.group(2) else None
+
+    if base == "bigint":
+        return "BIGINT"
+    if base in {"int", "integer", "mediumint"}:
+        return "INTEGER"
+    if base in {"smallint", "tinyint"}:
+        return "SMALLINT"
+    if base in {"decimal", "numeric"}:
+        if first is not None and second is not None:
+            return f"NUMERIC({first},{second})"
+        return "NUMERIC"
+    if base in {"double", "double precision"}:
+        return "DOUBLE PRECISION"
+    if base in {"float", "real"}:
+        return "REAL"
+    if base in {"char", "varchar"}:
+        return f"{base.upper()}({first})" if first is not None else base.upper()
+    if base in {"tinytext", "text", "mediumtext", "longtext", "enum", "set"}:
+        return "TEXT"
+    if base in {"tinyblob", "blob", "mediumblob", "longblob", "binary", "varbinary"}:
+        return "BYTEA"
+    if base in {"datetime", "timestamp"}:
+        precision = f"({first})" if first is not None else ""
+        return f"TIMESTAMP{precision} WITHOUT TIME ZONE"
+    if base == "date":
+        return "DATE"
+    if base == "time":
+        precision = f"({first})" if first is not None else ""
+        return f"TIME{precision} WITHOUT TIME ZONE"
+    if base == "year":
+        return "INTEGER"
+    if base == "json":
+        return "JSONB"
+    if base in {"bool", "boolean"}:
+        return "BOOLEAN"
+    if base == "bit":
+        return f"BIT({first})" if first is not None else "BIT"
+    raise ValueError(f"unsupported PostgreSQL source column type: {source[:60]!r}")
+
+
 def _column_sql(column: dict[str, Any], dialect: str) -> str:
     """One column definition, mirroring the source as closely as possible."""
     name = _quote(str(column.get("name") or ""), dialect)
-    sql = f"{name} {_type_sql(column.get('type'))}"
+    column_type = (
+        _postgres_type_sql(column.get("type"))
+        if dialect == "postgresql"
+        else _type_sql(column.get("type"))
+    )
+    sql = f"{name} {column_type}"
     extra = str(column.get("extra") or "").lower()
     # information_schema returns the whole extra clause ("on update
     # CURRENT_TIMESTAMP" and friends); only the one flag that changes insert
     # behaviour is carried over, the rest is cosmetic for a loaded copy.
-    if "auto_increment" in extra:
+    if "auto_increment" in extra and dialect in ("mysql", "mariadb"):
         sql += " NOT NULL AUTO_INCREMENT"
         return sql
     sql += " NOT NULL" if not column.get("nullable", True) else " NULL"
@@ -187,7 +247,7 @@ def _wanted_signature(columns: list[dict[str, Any]], primary: list[str],
             tuple(sorted(wanted_indexes)))
 
 
-def _table_options(collation: str | None) -> str:
+def _table_options(collation: str | None, dialect: str) -> str:
     """CREATE TABLE options, keeping the source collation where it is safe.
 
     Report SQL groups and orders text columns, so a collation that differs from
@@ -195,6 +255,8 @@ def _table_options(collation: str | None) -> str:
     also ships are used: MySQL 8's ``utf8mb4_0900_*`` family does not exist
     there and would make the whole statement fail.
     """
+    if dialect == "postgresql":
+        return ""
     options = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     name = str(collation or "").strip()
     if not name.startswith("utf8mb4_") or "_0900_" in name:
@@ -333,7 +395,7 @@ def _ddl(qualified: str, columns: list[dict[str, Any]], primary: list[str],
     if keycolumns:
         columnlist = ", ".join(_quote(name, dialect) for name in keycolumns)
         definitions.append(f"PRIMARY KEY ({columnlist})")
-    if create_indexes:
+    if create_indexes and dialect in ("mysql", "mariadb"):
         for spec in indexlist:
             if spec.get("primary"):
                 continue
@@ -346,12 +408,35 @@ def _ddl(qualified: str, columns: list[dict[str, Any]], primary: list[str],
                 definitions.append(fragment)
     body = ",\n  ".join(definitions)
     return (
-        f"CREATE TABLE {qualified} (\n  {body}\n)" + _table_options(collation),
+        f"CREATE TABLE {qualified} (\n  {body}\n)"
+        + _table_options(collation, dialect),
         warnings,
     )
 
 
-def prepare_table(
+def _postgres_index_sql(
+    qualified: str,
+    spec: dict[str, Any],
+    known: set[str],
+) -> str:
+    """Build a PostgreSQL secondary-index statement from one Moodle index."""
+    columns = [
+        str(column)
+        for column in (spec.get("columns") or [])
+        if str(column) in known
+    ]
+    if not columns or spec.get("primary"):
+        return ""
+    name = str(spec.get("name") or columns[0])
+    unique = "UNIQUE " if spec.get("unique") and not spec.get("prefixes") else ""
+    columnlist = ", ".join(_quote(column, "postgresql") for column in columns)
+    return (
+        f"CREATE {unique}INDEX {_quote(name, 'postgresql')} "
+        f"ON {qualified} ({columnlist})"
+    )
+
+
+def prepare_table(  # noqa: C901
     database: Database,
     table: str,
     schema: str | None,
@@ -387,7 +472,7 @@ def prepare_table(
 
     with database.get_sqla_engine(schema=schema) as engine:
         dialect = (engine.dialect.name or "").lower()
-        if dialect not in ("mysql", "mariadb"):
+        if dialect not in ("mysql", "mariadb", "postgresql"):
             raise ValueError(f"unsupported target dialect: {dialect}")
 
         qualified = _quote(clean, dialect)
@@ -412,9 +497,19 @@ def prepare_table(
                              create_indexes, collation)
         dropped = existing is not None
         with engine.begin() as connection:
+            if schema and dialect == "postgresql":
+                connection.execute(
+                    text(f"CREATE SCHEMA IF NOT EXISTS {_quote(schema, dialect)}")
+                )
             if dropped:
                 connection.execute(text(f"DROP TABLE IF EXISTS {qualified}"))
             connection.execute(text(ddl))
+            if create_indexes and dialect == "postgresql":
+                known = {str(column.get("name")) for column in columns}
+                for spec in indexlist:
+                    statement = _postgres_index_sql(qualified, spec, known)
+                    if statement:
+                        connection.execute(text(statement))
 
     for warning in warnings:
         logger.warning(

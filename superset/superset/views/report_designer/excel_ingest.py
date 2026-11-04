@@ -184,7 +184,7 @@ def _read_dataframe(file_stream: Any, filename: str):
         raise IngestError(_("Could not read the spreadsheet: %(err)s", err=ex)) from ex
 
 
-def ingest_excel(
+def ingest_excel(  # noqa: C901
     database: Database,
     file_stream: Any,
     filename: str,
@@ -229,6 +229,7 @@ def ingest_excel(
             df.to_sql(
                 clean,
                 con=engine,
+                schema=schema,
                 if_exists="append" if append else "replace",
                 index=False,
                 dtype=None if append else _staging_dtypes(df, engine),
