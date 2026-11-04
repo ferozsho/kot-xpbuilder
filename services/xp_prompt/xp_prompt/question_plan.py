@@ -120,6 +120,8 @@ class QuestionPlan:
     comparison: str = ""
     ambiguous: tuple[str, ...] = ()
     notes: tuple[str, ...] = field(default_factory=tuple)
+    #: A short list of what does exist, used to make a clarification concrete.
+    hint: str = ""
 
     @property
     def blocking(self) -> tuple[str, ...]:
@@ -134,6 +136,7 @@ class QuestionPlan:
             "comparison": self.comparison,
             "ambiguous": list(self.ambiguous),
             "blocking": list(self.blocking),
+            "hint": self.hint,
         }
 
     def prompt_block(self) -> str:
@@ -158,10 +161,9 @@ class QuestionPlan:
     def clarification(self) -> str:
         """One question back to the user, naming what could not be resolved."""
         if UNKNOWN_REFERENCE in self.ambiguous:
-            known = ", ".join(self.notes[:3]) or "the available columns"
             return (
-                "I could not match something in that question to the available data. "
-                f"Did you mean one of: {known}?"
+                "I could not match something in that question to the available "
+                f"data. Did you mean one of: {self.hint or 'the available columns'}?"
             )
         if MEASURE_AMBIGUOUS in self.ambiguous:
             return (
@@ -198,6 +200,7 @@ def analyse(question: str, schema: SchemaSlice) -> QuestionPlan:
             comparison=comparison,
             ambiguous=tuple(ambiguous[:MAX_BLOCKING]),
             notes=tuple(notes[:MAX_CANDIDATES]),
+            hint=_column_sample(schema),
         )
 
     asks_count = any(phrase in text for phrase in COUNT_PHRASES)
@@ -326,10 +329,15 @@ def _has_time_column(schema: SchemaSlice) -> bool:
     return False
 
 
-def _column_sample(schema: SchemaSlice) -> str:
+def _column_sample(schema: SchemaSlice, limit: int = 8) -> str:
+    """A short, de-duplicated list of real column names for a clarification."""
     names: list[str] = []
-    for dataset in schema.datasets[:3]:
-        names.extend(column.name for column in dataset.columns[:6])
+    for dataset in schema.datasets:
+        for column in dataset.columns:
+            if column.name not in names:
+                names.append(column.name)
+            if len(names) >= limit:
+                return ", ".join(names)
     return ", ".join(names) if names else "no columns"
 
 

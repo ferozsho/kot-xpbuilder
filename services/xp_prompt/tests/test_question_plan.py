@@ -159,9 +159,16 @@ class PromptBlockTest(unittest.TestCase):
                 "dimensions",
                 "filters",
                 "grain",
+                "hint",
                 "measures",
             ],
         )
+
+    def test_a_clarification_names_real_columns(self) -> None:
+        result = plan("How much revenue did we make?")
+
+        self.assertIn("assessment_score", result.clarification())
+        self.assertNotIn("Columns available:", result.clarification())
 
 
 if __name__ == "__main__":

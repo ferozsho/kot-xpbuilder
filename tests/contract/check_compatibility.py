@@ -885,6 +885,34 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if not example_migration.exists():
         raise AssertionError('the example library needs its own migration')
 
+    # P5-F01/F06: one taxonomy, one budget, and terminal policy outcomes that can
+    # never be retried.
+    failures_path = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'failures.py'
+    )
+    if not failures_path.exists():
+        raise AssertionError('failures.py must exist')
+    failures_source = failures_path.read_text(encoding='utf-8')
+    for marker in ('TERMINAL_KINDS', 'def classify', 'def can_repair', 'def fingerprint'):
+        if marker not in failures_source:
+            raise AssertionError(f'the failure taxonomy lost {marker}')
+    if 'terminal_policy' not in failures_source:
+        raise AssertionError('a policy refusal must be terminal for the repair loop')
+    if '/ai/sql/failure' not in service:
+        raise AssertionError('the service must classify failures')
+    if 'def _classify_failure' not in proxy_source:
+        raise AssertionError('the proxy must ask the service to classify a failure')
+    repair_migration = (
+        ROOT
+        / 'services'
+        / 'xp_prompt'
+        / 'migrations'
+        / 'versions'
+        / '20261103_10_ai_repair_attempt.py'
+    )
+    if not repair_migration.exists():
+        raise AssertionError('the repair ledger needs its own migration')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

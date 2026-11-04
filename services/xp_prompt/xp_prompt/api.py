@@ -33,6 +33,7 @@ from xp_prompt import (
     chat,
     conversations,
     cost_guard,
+    failures,
     jobs,
     responses,
     result_validation,
@@ -893,6 +894,60 @@ def create_app(settings: Settings | None = None) -> Flask:
             verdict.estimate.plan_nodes,
         )
         return jsonify(verdict.to_public_dict()), 200
+
+    @app.post("/ai/sql/failure")
+    @require_admin_token
+    def sql_failure_classify():
+        """Classify a failure and say whether it may be repaired (P5-F01/F06).
+
+        The proxy measures what the database said; this endpoint owns the taxonomy,
+        the fingerprint and the budget, so the same failure is classified the same
+        way whoever reports it, and a policy refusal can never be "healed" around.
+        """
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        event = failures.classify(
+            stage=str(payload.get("stage") or "execute"),
+            kind_hint=str(payload.get("kind") or ""),
+            error_class=str(payload.get("error_class") or ""),
+            sqlstate=str(payload.get("sqlstate") or ""),
+            errno=str(payload.get("errno") or ""),
+            message=str(payload.get("message") or ""),
+        )
+        state = failures.RepairState(
+            attempts=int(payload.get("attempts") or 0),
+            elapsed_ms=int(payload.get("elapsed_ms") or 0),
+            tokens=int(payload.get("tokens") or 0),
+        )
+        budget = failures.budget_from_settings(resolved_settings)
+        allowed, reason = failures.can_repair(event, state, budget)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        conversation_id = str(payload.get("conversation_id") or "").strip() or None
+        failures.record_attempt(
+            resolved_settings,
+            tenant_key=tenant_key,
+            fingerprint_value=event.fingerprint,
+            kind=event.kind,
+            stage=event.stage,
+            outcome="failed",
+            conversation_id=conversation_id,
+        )
+        return (
+            jsonify(
+                {
+                    "failure": event.to_public_dict(),
+                    "repair": {
+                        "allowed": allowed,
+                        "reason": reason,
+                        "budget": budget.to_public_dict(),
+                        "state": state.to_public_dict(),
+                    },
+                }
+            ),
+            200,
+        )
 
     @app.post("/ai/sql/result")
     @require_admin_token

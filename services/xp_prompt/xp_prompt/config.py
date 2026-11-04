@@ -110,6 +110,11 @@ class Settings:
     #: produced, keyed on the slice fingerprint and policy.
     candidate_cache_enabled: bool = True
     candidate_cache_ttl_seconds: int = 1_800
+    #: Repair budget (P5-F06). One failure may be repaired at most twice, within
+    #: thirty seconds and four thousand tokens, unless the deployment says otherwise.
+    repair_max_attempts: int = 2
+    repair_max_elapsed_ms: int = 30_000
+    repair_max_tokens: int = 4_000
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -207,6 +212,19 @@ class Settings:
                 1_800,
                 minimum=0,
                 maximum=86_400,
+            ),
+            repair_max_attempts=_integer(
+                source, "XP_PROMPT_REPAIR_MAX_ATTEMPTS", 2, minimum=0, maximum=5
+            ),
+            repair_max_elapsed_ms=_integer(
+                source,
+                "XP_PROMPT_REPAIR_MAX_ELAPSED_MS",
+                30_000,
+                minimum=0,
+                maximum=600_000,
+            ),
+            repair_max_tokens=_integer(
+                source, "XP_PROMPT_REPAIR_MAX_TOKENS", 4_000, minimum=0, maximum=200_000
             ),
         )
 

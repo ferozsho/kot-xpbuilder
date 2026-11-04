@@ -360,14 +360,18 @@ class AIPromptView(BaseSupersetView):
             )
         context["plan"] = _plan_record(plan)
 
-        frame, duration_ms, failure = _execute(database, expression, schema_name)
-        if failure is not None:
+        frame, duration_ms, error_text = _execute(database, expression, schema_name)
+        if error_text:
+            hint, kind = _classify_failure(owner, conversation_id, error_text)
             return self._refuse(
                 owner,
                 conversation_id,
-                failure,
+                (
+                    {"message": hint, "severity": "danger", "failure": kind},
+                    400,
+                ),
                 "execute",
-                "execution_failed",
+                kind,
                 {**context, "duration_ms": duration_ms},
             )
 
@@ -650,6 +654,9 @@ MAX_DATASET_SQL_CHARS = 8_000
 #: Rendered row-level predicates travel with the dataset; the service re-bounds and
 #: parses them before they reach a statement.
 MAX_RLS_CHARS = 2_000
+#: A driver error message is bounded before it leaves the process; the service masks
+#: it further before anything is stored.
+MAX_ERROR_CHARS = 400
 #: A plan probe is a read of the planner only, so its own output is bounded hard:
 #: a pathological plan is refused by the service anyway, not summarised here.
 MAX_PLAN_ROWS = 200
@@ -886,27 +893,57 @@ def _authorize(
 
 def _execute(
     database: Any, sql: str, schema_name: str | None
-) -> tuple[Any, int, tuple[dict[str, Any], int] | None]:
+) -> tuple[Any, int, str]:
     """Run the statement on Superset's own connection and time it.
 
-    Returns ``(frame, duration_ms, failure)``; on failure ``frame`` is ``None`` and
-    ``failure`` carries the body and status to send. The exception *type* is logged
-    and the message is not, so a driver error cannot echo user data.
+    Returns ``(frame, duration_ms, error_text)``; ``error_text`` is empty on success.
+    The text is the driver's own message, bounded, and is sent to the service for
+    classification — it is never stored or echoed to the browser verbatim.
     """
     started = time.monotonic()
     try:
         frame = database.get_df(sql, schema=schema_name)
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("XP Prompt execution failed: %s", type(exc).__name__)
+        message = str(exc).strip()[:MAX_ERROR_CHARS]
         return (
             None,
             round((time.monotonic() - started) * 1000),
-            (
-                {"message": _("The query could not be executed"), "severity": "danger"},
-                400,
-            ),
+            f"{type(exc).__name__}: {message}",
         )
-    return frame, round((time.monotonic() - started) * 1000), None
+    return frame, round((time.monotonic() - started) * 1000), ""
+
+
+def _classify_failure(
+    owner: int, conversation_id: str, error_text: str
+) -> tuple[str, str]:
+    """Ask the service what kind of failure this is, and what to tell the user.
+
+    The taxonomy lives in the service so the same failure is classified the same way
+    for the audit, the repair budget and the message the user sees (P5-F01).
+    """
+    try:
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/sql/failure",
+            payload={
+                "superset_user_id": owner,
+                "conversation_id": conversation_id,
+                "stage": "execute",
+                "message": error_text,
+            },
+        )
+        if status == 200:
+            failure = body.get("failure") or {}
+            hint = str(failure.get("hint") or "").strip()
+            kind = str(failure.get("kind") or "execution_failed")
+            if hint:
+                return hint, kind
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "XP Prompt failure classification failed: %s", type(exc).__name__
+        )
+    return str(_("The query could not be executed")), "execution_failed"
 
 
 def _store_turn(
