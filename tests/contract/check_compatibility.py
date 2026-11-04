@@ -1565,6 +1565,40 @@ def check_ai_usage_ledger(compatibility: dict) -> None:
     if 'features/aiUsage/AIUsagePage' not in routes_source:
         raise AssertionError('the usage route must load the usage page')
 
+    # Usage maintenance must not depend on somebody opening the dashboard, and a
+    # beat container that runs baked-image code silently schedules nothing.
+    celery_source = (services / 'celery_app.py').read_text(encoding='utf-8')
+    for entry in (
+        'xp-prompt-drain-usage-outbox',
+        'xp-prompt-reconcile-usage',
+        'xp-prompt-fetch-billing-exports',
+    ):
+        if entry not in celery_source:
+            raise AssertionError(f'the beat schedule must declare {entry}')
+    tasks_source = (services / 'tasks.py').read_text(encoding='utf-8')
+    for task in (
+        'xp_prompt.drain_usage_outbox',
+        'xp_prompt.reconcile_usage',
+        'xp_prompt.fetch_billing_exports',
+    ):
+        if task not in tasks_source:
+            raise AssertionError(f'tasks.py must define {task}')
+
+    compose_source = (ROOT / 'compose.yml').read_text(encoding='utf-8')
+    if 'xp-prompt-beat:' not in compose_source:
+        raise AssertionError('the stack must run a beat scheduler')
+    if 'beat' not in compose_source:
+        raise AssertionError('the beat service must run celery beat')
+    dev_source = (ROOT / 'compose.dev.yml').read_text(encoding='utf-8')
+    if 'xp-prompt-beat:' not in dev_source:
+        raise AssertionError(
+            'compose.dev.yml must mount live code into the beat service'
+        )
+
+    config_source = (services / 'config.py').read_text(encoding='utf-8')
+    if 'billing_source_url' not in config_source:
+        raise AssertionError('the billing source must be configurable')
+
 
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()

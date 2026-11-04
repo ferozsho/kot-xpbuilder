@@ -55,6 +55,12 @@ services:
     volumes:
       - ./services/xp_prompt:/app/xp_prompt
 
+  # Beat runs the same Celery app, so it needs the same live code: without this
+  # mount it reads the baked image and its schedule is whatever that image had.
+  xp-prompt-beat:
+    volumes:
+      - ./services/xp_prompt:/app/xp_prompt
+
   xp-prompt-initialize:
     volumes:
       - ./services/xp_prompt:/app/xp_prompt

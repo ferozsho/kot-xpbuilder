@@ -237,12 +237,13 @@ services:
       # The application directory is read-only for the runtime user, so the
       # scheduler's state file lives on the writable tmpfs instead of failing.
       - --schedule=/tmp/celerybeat-schedule
-    # Beat serves no port, so the image's HTTP healthcheck can only ever report
-    # unhealthy; liveness here means the scheduler process exists.
+    # Beat serves no port and the image has no pgrep, so the image's HTTP
+    # healthcheck can only ever report unhealthy: liveness here means the
+    # scheduler process (PID 1) is still the beat process.
     healthcheck:
       test:
         - CMD-SHELL
-        - pgrep -f "celery.*beat" > /dev/null
+        - grep -q celery /proc/1/cmdline && grep -q beat /proc/1/cmdline
       interval: 60s
       timeout: 10s
       retries: 3
