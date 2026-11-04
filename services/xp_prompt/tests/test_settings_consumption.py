@@ -17,9 +17,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from xp_prompt import chat, repair, sql_candidate
+from xp_prompt import chat, repair, schema_slice, sql_candidate
 from xp_prompt import settings_registry as sr
-from xp_prompt import patterns
+from xp_prompt import patterns, sql_execution, sql_guard
 from xp_prompt.config import Settings
 
 ROOT_SECRET = "unit-test-root-secret-value"
@@ -223,6 +223,133 @@ class RepairBudgetTests(unittest.TestCase):
             sr.BY_KEY["generation.max_output_tokens"].default,
             sql_candidate.CANDIDATE_MAX_TOKENS,
         )
+
+
+def slice_(datasets: list[dict] | None = None) -> schema_slice.SchemaSlice:
+    return schema_slice.SchemaSlice.from_payload(
+        {
+            "datasets": datasets
+            if datasets is not None
+            else [
+                {
+                    "name": "mdl_user",
+                    "schema": "public",
+                    "database": "lms",
+                    "dialect": "postgres",
+                    "columns": [{"name": "id", "type": "int"}],
+                }
+            ]
+        }
+    )
+
+
+class SqlLimitsTests(unittest.TestCase):
+    """The four safeguards are read from the registry and held at their ceilings."""
+
+    def limits(self, **overrides: object) -> sr.SqlLimits:
+        with mock.patch.object(sr, "live", return_value=live_map(**overrides)):
+            return sr.sql_limits(settings())
+
+    def test_the_documented_defaults_apply(self) -> None:
+        limits = self.limits()
+        self.assertEqual(limits.max_rows, sr.BY_KEY["sql.max_rows"].default)
+        self.assertEqual(limits.timeout_ms, sr.BY_KEY["sql.timeout_ms"].default)
+        self.assertEqual(limits.max_concurrent, sr.BY_KEY["sql.max_concurrent"].default)
+        self.assertFalse(limits.allow_metadata_schemas)
+
+    def test_a_row_edited_above_the_ceiling_is_held_down(self) -> None:
+        # The write path refuses this value; a row edited directly must not
+        # raise a safeguard either, or the ceiling is only a default.
+        ceiling = int(sr.BY_KEY["sql.max_rows"].maximum)
+        limits = self.limits(sql__max_rows=ceiling * 10)
+        self.assertEqual(limits.max_rows, ceiling)
+
+    def test_a_row_edited_below_the_floor_is_raised(self) -> None:
+        floor = int(sr.BY_KEY["sql.timeout_ms"].minimum)
+        limits = self.limits(sql__timeout_ms=1)
+        self.assertEqual(limits.timeout_ms, floor)
+
+    def test_every_safeguard_is_marked_as_a_ceiling(self) -> None:
+        for key in (
+            "sql.max_rows",
+            "sql.timeout_ms",
+            "sql.max_concurrent",
+            "sql.allow_metadata_schemas",
+        ):
+            self.assertTrue(sr.BY_KEY[key].ceiling, key)
+
+    def test_the_public_shape_names_all_four(self) -> None:
+        body = self.limits().to_public_dict()
+        self.assertEqual(
+            sorted(body),
+            [
+                "allow_metadata_schemas",
+                "max_concurrent",
+                "max_rows",
+                "timeout_ms",
+            ],
+        )
+
+
+class SqlGuardCeilingTests(unittest.TestCase):
+    """A request may narrow the safeguards; it may never widen them."""
+
+    def limits(self, **overrides: object) -> sr.SqlLimits:
+        with mock.patch.object(sr, "live", return_value=live_map(**overrides)):
+            return sr.sql_limits(settings())
+
+    def test_metadata_schemas_are_refused_by_default(self) -> None:
+        with self.assertRaises(sql_guard.SqlPolicyError) as caught:
+            sql_guard.check(
+                "SELECT count(*) FROM pg_catalog.pg_class", dialect="postgres"
+            )
+        self.assertEqual(caught.exception.code, "system_schema")
+
+    def test_the_operator_can_open_metadata_schemas(self) -> None:
+        guarded = sql_guard.check(
+            "SELECT count(*) FROM pg_catalog.pg_class",
+            dialect="postgres",
+            allow_metadata_schemas=True,
+        )
+        self.assertEqual(guarded.limit, sql_guard.MAX_ROWS)
+
+    def test_a_request_cannot_raise_the_row_cap(self) -> None:
+        result = sql_execution.validate(
+            "SELECT id FROM mdl_user",
+            schema=slice_(),
+            database="lms",
+            max_rows=50_000,
+            limits=self.limits(sql__max_rows=1_000),
+        )
+        self.assertEqual(result["limit"], 1_000)
+
+    def test_a_request_may_narrow_the_row_cap(self) -> None:
+        result = sql_execution.validate(
+            "SELECT id FROM mdl_user",
+            schema=slice_(),
+            database="lms",
+            max_rows=10,
+            limits=self.limits(sql__max_rows=1_000),
+        )
+        self.assertEqual(result["limit"], 10)
+
+    def test_the_executor_is_told_the_rest_of_the_safeguards(self) -> None:
+        limits = self.limits(sql__timeout_ms=5_000, sql__max_concurrent=2)
+        result = sql_execution.validate(
+            "SELECT id FROM mdl_user",
+            schema=slice_(),
+            database="lms",
+            limits=limits,
+        )
+        self.assertEqual(result["limits"]["timeout_ms"], 5_000)
+        self.assertEqual(result["limits"]["max_concurrent"], 2)
+
+    def test_without_limits_the_caller_decides(self) -> None:
+        result = sql_execution.validate(
+            "SELECT id FROM mdl_user", schema=slice_(), database="lms", max_rows=5_000
+        )
+        self.assertEqual(result["limit"], 5_000)
+        self.assertIsNone(result["limits"])
 
 
 if __name__ == "__main__":

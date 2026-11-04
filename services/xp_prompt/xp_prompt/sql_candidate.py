@@ -243,6 +243,11 @@ def generate(
         raise SqlCandidateError(
             "feature_disabled", "SQL generation is switched off for this tenant"
         )
+    # The row cap is a platform safeguard, so the caller's value can only narrow
+    # it. It is clamped before the prompt is built, so the statement is asked for
+    # under the same cap that will be enforced on it (P10-F06).
+    limits = settings_registry.sql_limits(settings, tenant_key=tenant_key)
+    max_rows = min(int(max_rows), limits.max_rows)
     plan = question_plan.analyse(question, schema)
     if plan.blocking:
         # Ask instead of guessing: an invented column or an arbitrary pick between
@@ -321,7 +326,14 @@ def generate(
         ) from exc
 
     sql_text, rationale, assumptions = _parse_candidate(routed.response.content)
-    guarded = _guard(sql_text, resolved_dialect, schema, database, max_rows)
+    guarded = _guard(
+        sql_text,
+        resolved_dialect,
+        schema,
+        database,
+        max_rows,
+        allow_metadata_schemas=limits.allow_metadata_schemas,
+    )
     _check_semantics(guarded.model_sql or guarded.sql, resolved_dialect, schema)
 
     blocks = responses.normalize_blocks(
@@ -526,6 +538,8 @@ def _guard(
     schema: SchemaSlice,
     database: str | None,
     max_rows: int,
+    *,
+    allow_metadata_schemas: bool = False,
 ) -> sql_guard.GuardResult:
     allowlist = schema.allowed_tables(database=database)
     try:
@@ -537,6 +551,7 @@ def _guard(
             connection_names=schema.connection_names(),
             virtual_tables=schema.virtual_tables(database=database),
             rls_targets=schema.rls_targets(database=database),
+            allow_metadata_schemas=allow_metadata_schemas,
         )
     except sql_guard.SqlPolicyError as exc:
         logger.info("sql_candidate outcome=blocked guard_code=%s", exc.code)

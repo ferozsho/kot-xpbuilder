@@ -222,6 +222,7 @@ def check(
     virtual_tables: Any = None,
     rls_targets: Any = None,
     enforce_limit: bool = True,
+    allow_metadata_schemas: bool = False,
 ) -> GuardResult:
     """Validate one candidate statement and return a safe, limit-enforced SQL.
 
@@ -285,7 +286,7 @@ def check(
     # dataset definitions are inlined (their base tables are the admin's choice,
     # not the model's).
     tables = _collect_tables(statement)
-    _reject_system_schemas(tables)
+    _reject_system_schemas(tables, allow_metadata=allow_metadata_schemas)
     if allowed_tables is not None:
         _reject_unlisted_tables(tables, allowed_tables)
     model_sql = statement.sql(dialect=normalised_dialect)
@@ -606,7 +607,15 @@ def _collect_tables(statement: exp.Expression) -> set[str]:
     return names
 
 
-def _reject_system_schemas(tables: set[str]) -> None:
+def _reject_system_schemas(tables: set[str], *, allow_metadata: bool = False) -> None:
+    """Metadata schemas describe the server, not the tenant's data.
+
+    ``allow_metadata`` comes from ``sql.allow_metadata_schemas``, which is off by
+    default and carries a platform ceiling: an operator may open it deliberately,
+    and no caller may open it for one request.
+    """
+    if allow_metadata:
+        return
     for table in tables:
         schema = table.split(".", 1)[0] if "." in table else ""
         if schema and schema in DENIED_SCHEMAS:

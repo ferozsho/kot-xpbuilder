@@ -32,7 +32,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
 import time
+from contextlib import contextmanager
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
 
@@ -57,6 +60,49 @@ from superset.views.ai_provider.views import call_xp_prompt
 from superset.views.base import BaseSupersetView
 
 logger = logging.getLogger(__name__)
+
+#: ``sql.max_concurrent`` when the service cannot report it (an older service, or
+#: a failed settings read). One, not four: an unknown limit must not be generous.
+DEFAULT_MAX_CONCURRENT = 1
+
+#: Statements this worker process is running, and the lock that counts them.
+#: The limit is published by the service, but the counter is process-local: a
+#: shared one would need Redis, so what this bounds is the work one worker can
+#: start — which is where the connections and the CPU actually go.
+_ACTIVE_SQL = 0
+_ACTIVE_SQL_LOCK = threading.Lock()
+
+
+@contextmanager
+def _concurrency_slot(max_concurrent: int) -> Iterator[bool]:
+    """Take one execution slot, or report that none is free.
+
+    Refusing before the query starts is the point: queueing it would only move
+    the pressure, and the caller can retry once the answer is worth waiting for.
+    """
+    global _ACTIVE_SQL
+    limit = max(1, int(max_concurrent))
+    with _ACTIVE_SQL_LOCK:
+        if _ACTIVE_SQL >= limit:
+            yield False
+            return
+        _ACTIVE_SQL += 1
+    try:
+        yield True
+    finally:
+        with _ACTIVE_SQL_LOCK:
+            _ACTIVE_SQL -= 1
+
+
+def _safeguards(validated: dict[str, Any]) -> dict[str, Any]:
+    """The service's safeguard set, with a defensive fallback for each value."""
+    published = validated.get("limits")
+    limits = published if isinstance(published, dict) else {}
+    return {
+        "max_rows": limits.get("max_rows"),
+        "max_concurrent": limits.get("max_concurrent") or DEFAULT_MAX_CONCURRENT,
+        "timeout_ms": limits.get("timeout_ms"),
+    }
 
 
 class AIPromptView(BaseSupersetView):
@@ -1512,6 +1558,13 @@ class AIPromptView(BaseSupersetView):
         if validate_status != 200:
             return self.json_response(validated, validate_status)
 
+        # The service publishes the safeguards it enforced, so this view does not
+        # have to keep a second copy of them: the row cap can only narrow what the
+        # caller asked for, and the concurrency limit is the service's number.
+        safeguards = _safeguards(validated)
+        if safeguards["max_rows"]:
+            max_rows = min(max_rows, int(safeguards["max_rows"]))
+
         try:
             security_manager.raise_for_access(
                 database=database, sql=validated["sql"], schema=schema_name
@@ -1527,14 +1580,33 @@ class AIPromptView(BaseSupersetView):
             )
 
         started = time.monotonic()
-        try:
-            frame = database.get_df(validated["sql"], schema=schema_name)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("XP Prompt execution failed: %s", type(exc).__name__)
-            return self.json_response(
-                {"message": _("The query could not be executed"), "severity": "danger"},
-                400,
-            )
+        with _concurrency_slot(safeguards["max_concurrent"]) as admitted:
+            if not admitted:
+                logger.info(
+                    "XP Prompt execution deferred: %s statements already running",
+                    _ACTIVE_SQL,
+                )
+                return self.json_response(
+                    {
+                        "message": _(
+                            "Too many AI queries are running; try again shortly"
+                        ),
+                        "severity": "warning",
+                        "code": "sql_concurrency_exceeded",
+                    },
+                    429,
+                )
+            try:
+                frame = database.get_df(validated["sql"], schema=schema_name)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("XP Prompt execution failed: %s", type(exc).__name__)
+                return self.json_response(
+                    {
+                        "message": _("The query could not be executed"),
+                        "severity": "danger",
+                    },
+                    400,
+                )
         duration_ms = round((time.monotonic() - started) * 1000)
 
         preview = frame.head(max_rows)
@@ -1568,6 +1640,10 @@ class AIPromptView(BaseSupersetView):
                 "tables": validated["tables"],
                 "database": database.database_name,
                 "schema_fingerprint": validated.get("schema_fingerprint"),
+                # Reported, not applied here: the statement timeout is the
+                # database engine's to enforce, and saying what is in force is
+                # better than an operator assuming it (P10-F06).
+                "limits": safeguards,
             },
             200,
         )

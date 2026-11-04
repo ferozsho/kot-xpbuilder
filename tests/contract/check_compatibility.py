@@ -1690,13 +1690,20 @@ def check_ai_configuration(compatibility: dict) -> None:
             'generation.thinking_budget_tokens',
             'feature.chat',
         ),
-        'sql_candidate.py': ('feature.sql', 'generation.max_output_tokens'),
+        'sql_candidate.py': (
+            'feature.sql',
+            'generation.max_output_tokens',
+            'settings_registry.sql_limits(',
+        ),
         'repair.py': (
             'feature.self_healing',
             'repair.max_attempts',
             'repair.pattern_evidence_threshold',
             'repair.pattern_auto_promote',
+            'settings_registry.sql_limits(',
         ),
+        'sql_execution.py': ('settings_registry.SqlLimits', '"limits":'),
+        'sql_guard.py': ('allow_metadata_schemas',),
     }
     for name, markers in consumers.items():
         source = (services / name).read_text(encoding='utf-8')
@@ -1705,6 +1712,15 @@ def check_ai_configuration(compatibility: dict) -> None:
                 raise AssertionError(f'{name} must honour {marker}')
     if '"feature_disabled": 403' not in api_source:
         raise AssertionError('a switched-off feature must answer 403, not 502')
+
+    # The four SQL safeguards are platform limits, so the registry clamps them and
+    # the executor is told the ones it must apply itself.
+    for marker in ('class SqlLimits', 'def sql_limits(', 'def _clamped(', 'above_ceiling'):
+        if marker not in registry_source:
+            raise AssertionError(f'the registry must clamp safeguards: {marker}')
+    for marker in ('_concurrency_slot', '_safeguards(', 'sql_concurrency_exceeded'):
+        if marker not in proxy_view:
+            raise AssertionError(f'the executor must apply the safeguards: {marker}')
 
 
 def main():

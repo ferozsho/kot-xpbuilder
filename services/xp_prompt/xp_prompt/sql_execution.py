@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from xp_prompt import sql_guard, sql_semantics
+from xp_prompt import settings_registry, sql_guard, sql_semantics
 from xp_prompt.schema_slice import SchemaSlice
 
 
@@ -61,17 +61,31 @@ def validate(
     database: str | None = None,
     dialect: str | None = None,
     max_rows: int = sql_guard.MAX_ROWS,
+    limits: settings_registry.SqlLimits | None = None,
 ) -> dict[str, Any]:
-    """Return the statement that may be executed, or raise ``SqlPolicyError``."""
+    """Return the statement that may be executed, or raise ``SqlPolicyError``.
+
+    ``limits`` is the deployment's safeguard set. When it is supplied the caller's
+    ``max_rows`` can only narrow it — a request cannot raise the platform's row cap,
+    and the metadata-schema rule is decided here rather than by the caller (P10-F06).
+    The same limits are echoed in the result so the executor can apply the timeout
+    and the concurrency gate instead of guessing them.
+    """
     resolved = resolve_dialect(schema, database=database, dialect=dialect)
+    cap = max_rows
+    allow_metadata = False
+    if limits is not None:
+        cap = min(int(max_rows), limits.max_rows)
+        allow_metadata = limits.allow_metadata_schemas
     guarded = sql_guard.check(
         sql,
         dialect=resolved,
         allowed_tables=schema.allowed_tables(database=database),
-        max_rows=max_rows,
+        max_rows=cap,
         connection_names=schema.connection_names(),
         virtual_tables=schema.virtual_tables(database=database),
         rls_targets=schema.rls_targets(database=database),
+        allow_metadata_schemas=allow_metadata,
     )
     # Semantics are re-checked here for the same reason the guard is: a statement
     # can arrive from a replay or a hand-written client, and "safe" is not the same
@@ -88,6 +102,7 @@ def validate(
         "inlined": list(guarded.inlined),
         "rls_applied": list(guarded.rls_applied),
         "limit": guarded.limit,
+        "limits": limits.to_public_dict() if limits is not None else None,
         "schema_fingerprint": schema.fingerprint,
     }
 

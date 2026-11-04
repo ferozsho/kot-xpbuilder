@@ -125,6 +125,10 @@ def propose(
         message=message,
     )
     budget = _repair_budget(settings, live)
+    # A repair is a second attempt, not a second chance: it reaches the same row
+    # cap and the same metadata rule as the first one (P10-F06).
+    limits = settings_registry.sql_limits(settings, tenant_key=tenant_key)
+    max_rows = min(int(max_rows), limits.max_rows)
     state = failures.RepairState(
         attempts=max(0, int(attempts)),
         elapsed_ms=max(0, int(elapsed_ms)),
@@ -162,6 +166,7 @@ def propose(
         intent=intent,
         suppressed=suppressed,
         explanation=explanation,
+        limits=limits,
     )
     if pattern_attempt is not None:
         _record_attempt(
@@ -193,6 +198,7 @@ def propose(
         suppressed=suppressed,
         conversation_id=conversation_id,
         explanation=explanation,
+        limits=limits,
     )
 
 
@@ -324,6 +330,7 @@ def _from_pattern(
     intent: str,
     suppressed: set[str],
     explanation: dict[str, Any],
+    limits: settings_registry.SqlLimits | None = None,
 ) -> RepairAttempt | None:
     """The best promoted correction for this exact failure, re-validated.
 
@@ -362,6 +369,7 @@ def _from_pattern(
         database=database,
         dialect=dialect,
         max_rows=max_rows,
+        limits=limits,
     )
     if validated is None:
         explanation["pattern_rejected"] = "failed_revalidation"
@@ -395,6 +403,7 @@ def _from_generation(
     suppressed: set[str],
     conversation_id: str | None,
     explanation: dict[str, Any],
+    limits: settings_registry.SqlLimits | None = None,
 ) -> RepairAttempt:
     """Ask for one corrected statement, then validate it like a first attempt."""
     note = repair_note(event, failed_sql)
@@ -455,6 +464,7 @@ def _from_generation(
         database=database,
         dialect=dialect,
         max_rows=max_rows,
+        limits=limits,
     )
     if validated is None:
         explanation["correction"] = "failed_revalidation"
@@ -506,14 +516,25 @@ def repair_note(event: failures.FailureEvent, failed_sql: str) -> str:
 
 
 def _revalidate(
-    sql: str, *, schema: SchemaSlice, database: str | None, dialect: str | None, max_rows: int
+    sql: str,
+    *,
+    schema: SchemaSlice,
+    database: str | None,
+    dialect: str | None,
+    max_rows: int,
+    limits: settings_registry.SqlLimits | None = None,
 ) -> dict[str, Any] | None:
     """P5-F05: a repair reaches the same guard, semantics and cap as a first attempt."""
     if not (sql or "").strip():
         return None
     try:
         return sql_execution.validate(
-            sql, schema=schema, database=database, dialect=dialect, max_rows=max_rows
+            sql,
+            schema=schema,
+            database=database,
+            dialect=dialect,
+            max_rows=max_rows,
+            limits=limits,
         )
     except sql_guard.SqlPolicyError as exc:
         logger.info("sql_repair outcome=blocked code=%s", exc.code)

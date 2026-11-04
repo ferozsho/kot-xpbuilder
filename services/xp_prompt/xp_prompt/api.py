@@ -1002,6 +1002,16 @@ def create_app(settings: Settings | None = None) -> Flask:
                 database=database,
                 dialect=dialect,
                 max_rows=payload.get("max_rows") or sql_guard.MAX_ROWS,
+                # The row cap, the metadata rule, the timeout and the concurrency
+                # gate are platform safeguards: a request may narrow the cap but
+                # never raise it, and the executor reads the rest from here
+                # (P10-F06).
+                limits=settings_registry.sql_limits(
+                    resolved_settings,
+                    tenant_key=str(
+                        payload.get("tenant") or registry.DEFAULT_TENANT_KEY
+                    ),
+                ),
             )
         except sql_guard.SqlPolicyError as exc:
             status = 400 if exc.code in {"dialect_ambiguous", "unsupported_dialect"} else 422

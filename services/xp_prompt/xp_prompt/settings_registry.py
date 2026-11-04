@@ -502,6 +502,74 @@ def override(
     return resolution.value
 
 
+@dataclass(frozen=True, slots=True)
+class SqlLimits:
+    """The SQL safeguards in force, already held inside their ceilings."""
+
+    max_rows: int
+    timeout_ms: int
+    max_concurrent: int
+    allow_metadata_schemas: bool
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "max_rows": self.max_rows,
+            "timeout_ms": self.timeout_ms,
+            "max_concurrent": self.max_concurrent,
+            "allow_metadata_schemas": self.allow_metadata_schemas,
+        }
+
+
+def _clamped(values: Mapping[str, Resolution], key: str) -> int:
+    """A stored value held inside its declared bounds, whatever the row says.
+
+    ``ceiling=True`` means the maximum is a platform limit rather than a
+    preference, so it is enforced here as well as at write time: a row edited
+    directly in the database must still not raise a safeguard (P10-F06). The
+    correction is logged, because silently ignoring the row an operator wrote is
+    how a limit stops being believed.
+    """
+    setting = BY_KEY[key]
+    resolution = values.get(key)
+    value = setting.default if resolution is None else resolution.value
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "ai_setting_unreadable key=%s default=%s", key, setting.default
+        )
+        return int(setting.default)
+    if setting.minimum is not None and number < int(setting.minimum):
+        number = int(setting.minimum)
+    if setting.maximum is not None and number > int(setting.maximum):
+        logger.warning(
+            "ai_setting_above_ceiling key=%s stored=%s held=%s",
+            key,
+            number,
+            setting.maximum,
+        )
+        number = int(setting.maximum)
+    return number
+
+
+def sql_limits(settings: Settings, *, tenant_key: str = "default") -> SqlLimits:
+    """The row cap, timeout, concurrency and metadata rule in force.
+
+    Every value is clamped to its declared ceiling, so the object a guard or an
+    executor receives can be trusted with the numbers it already validated.
+    """
+    values = live(settings, tenant_key=tenant_key)
+    metadata = values.get("sql.allow_metadata_schemas")
+    return SqlLimits(
+        max_rows=_clamped(values, "sql.max_rows"),
+        timeout_ms=_clamped(values, "sql.timeout_ms"),
+        max_concurrent=_clamped(values, "sql.max_concurrent"),
+        allow_metadata_schemas=bool(
+            metadata.value if metadata is not None else False
+        ),
+    )
+
+
 def stored(settings: Settings, *, tenant_key: str = "default") -> list[StoredSetting]:
     """The rows that exist, for the admin view (defaults are not rows)."""
     return _stored_rows(settings, tenant_key, refresh=True)
