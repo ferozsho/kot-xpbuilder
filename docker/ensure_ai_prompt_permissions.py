@@ -80,6 +80,10 @@ ADMIN_ONLY_PERMISSIONS: tuple[str, ...] = (
     "can_api_usage_billing_variance",
     "can_api_usage_billing_source",
     "can_api_usage_billing_fetch",
+    "can_api_settings",
+    "can_api_settings_update",
+    "can_api_settings_history",
+    "can_api_settings_rollback",
 )
 VIEW_MENU = "AIPrompt"
 

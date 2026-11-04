@@ -174,6 +174,13 @@ const AIUsageDashboard = lazy(
     ),
 );
 
+const AISettings = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "AISettings" */ 'src/features/aiSettings/AISettingsPage'
+    ),
+);
+
 const TaskList = lazy(
   () => import(/* webpackChunkName: "TaskList" */ 'src/pages/TaskList'),
 );
@@ -383,6 +390,14 @@ export const routes: Routes = [
   {
     path: '/aiusage/list/',
     Component: AIUsageDashboard,
+  },
+  {
+    path: '/aisettings/',
+    Component: AISettings,
+  },
+  {
+    path: '/aisettings/list/',
+    Component: AISettings,
   },
   {
     path: '/tasks/list/',

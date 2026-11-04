@@ -576,6 +576,45 @@ class AIPromptView(BaseSupersetView):
     # numbers, and a proxy that recomputed them would eventually disagree with the
     # ledger it is reporting on.
 
+    # --- Administrative configuration (P10) ------------------------------
+
+    @expose("/api/settings/", methods=("GET",))
+    @has_access_api
+    def api_settings(self) -> FlaskResponse:
+        """The typed registry with each setting's effective value and source."""
+        status, body = call_xp_prompt("GET", f"/ai/settings?{_usage_query()}")
+        return self.json_response(body, status)
+
+    @expose("/api/settings/", methods=("PUT",))
+    @has_access_api
+    def api_settings_update(self) -> FlaskResponse:
+        """Validate and write a batch; the service owns bounds and auditing."""
+        payload = _body()
+        # The actor is the signed-in principal, never a claim from the browser:
+        # an audit trail that names whoever the client says it is is not an audit
+        # trail.
+        payload["actor"] = _actor_label()
+        status, body = call_xp_prompt("PUT", "/ai/settings", payload=payload)
+        return self.json_response(body, status)
+
+    @expose("/api/settings/history/", methods=("GET",))
+    @has_access_api
+    def api_settings_history(self) -> FlaskResponse:
+        status, body = call_xp_prompt(
+            "GET", f"/ai/settings/history?{_usage_query()}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/settings/rollback/<audit_id>/", methods=("POST",))
+    @has_access_api
+    def api_settings_rollback(self, audit_id: str) -> FlaskResponse:
+        payload = _body()
+        payload["actor"] = _actor_label()
+        status, body = call_xp_prompt(
+            "POST", f"/ai/settings/rollback/{audit_id}", payload=payload
+        )
+        return self.json_response(body, status)
+
     @expose("/api/usage/summary/", methods=("GET",))
     @has_access_api
     def api_usage_summary(self) -> FlaskResponse:
@@ -669,7 +708,7 @@ class AIPromptView(BaseSupersetView):
     @expose("/api/usage/billing/source/", methods=("GET",))
     @has_access_api
     def api_usage_billing_source(self) -> FlaskResponse:
-        """Whether an export source is configured. The URL and token stay server-side."""
+        """Whether an export source is configured. The URL and token stay secret."""
         status, body = call_xp_prompt("GET", "/ai/usage/billing/source")
         return self.json_response(body, status)
 
@@ -2500,7 +2539,23 @@ _PUBLISH_MODES_WITH_TARGET = frozenset({MODE_UPDATE, MODE_DUPLICATE})
 #: Query parameters a usage read understands. Anything else is dropped: a proxy
 #: that forwarded the whole query string would let a caller reach service
 #: parameters this view never intended to expose.
-_USAGE_PARAMS = ("group_by", "since", "module", "limit", "provider", "model")
+_USAGE_PARAMS = ("group_by", "since", "module", "limit", "provider", "model", "key")
+
+
+def _actor_label() -> str:
+    """Who is making the change, for the audit row.
+
+    Taken from the session rather than the request body: a setting audit that
+    records whatever name the client supplies is decoration, not accountability.
+    """
+    try:
+        user = g.user
+        username = getattr(user, "username", None) or ""
+        if username:
+            return str(username)[:128]
+        return str(getattr(user, "id", "") or "")[:128]
+    except Exception:  # pragma: no cover - defensive
+        return ""
 
 
 def _usage_query() -> str:

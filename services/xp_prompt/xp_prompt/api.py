@@ -57,6 +57,7 @@ from xp_prompt import (
     responses,
     result_validation,
     schema_slice,
+    settings_registry,
     sql_candidate,
     sql_execution,
     sql_guard,
@@ -2593,6 +2594,136 @@ def create_app(settings: Settings | None = None) -> Flask:
                 f"Could not compare billing ({_error_class(exc)})", 503
             )
         return jsonify(body), 200
+
+    # --- Administrative configuration (P10) ------------------------------
+
+    @app.get("/ai/settings")
+    @require_admin_token
+    def settings_list():
+        """The registry, the stored rows and the effective value of each setting.
+
+        Configuration is described, not guessed: a caller can see a setting's
+        type, bounds and whether changing it needs a restart, so the UI does not
+        have to hardcode what the service already knows (P10-F01/F11).
+        """
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            resolutions = settings_registry.load(resolved_settings, tenant_key=tenant_key)
+            rows = settings_registry.stored(resolved_settings, tenant_key=tenant_key)
+        except settings_registry.SettingError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not read settings ({_error_class(exc)})", 503)
+        by_scope = {(row.scope, row.key): row for row in rows}
+        entries = [
+            {
+                **setting.to_public_dict(),
+                "effective": resolutions[setting.key].value,
+                "source": resolutions[setting.key].source,
+                "version": resolutions[setting.key].version,
+                "global": (
+                    by_scope[(settings_registry.GLOBAL, setting.key)].value
+                    if (settings_registry.GLOBAL, setting.key) in by_scope
+                    else None
+                ),
+                "tenant": (
+                    by_scope[(settings_registry.TENANT, setting.key)].value
+                    if (settings_registry.TENANT, setting.key) in by_scope
+                    else None
+                ),
+            }
+            for setting in settings_registry.REGISTRY
+        ]
+        return (
+            jsonify(
+                {
+                    "tenant": tenant_key,
+                    "count": len(entries),
+                    "restart_required": [
+                        entry["key"] for entry in entries if entry["restart_required"]
+                    ],
+                    "settings": entries,
+                }
+            ),
+            200,
+        )
+
+    @app.put("/ai/settings")
+    @require_admin_token
+    def settings_update():
+        """Validate the whole batch, then write it, version-checked and audited."""
+        payload = request.get_json(silent=True) or {}
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        updates = payload.get("values")
+        if not isinstance(updates, dict):
+            return _admin_error("values must be an object", 400)
+        try:
+            resolved = settings_registry.apply(
+                resolved_settings,
+                updates,
+                tenant_key=tenant_key,
+                scope=str(payload.get("scope") or settings_registry.GLOBAL),
+                actor=str(payload.get("actor") or ""),
+                reason=str(payload.get("reason") or ""),
+                expected_version=_optional_int(payload.get("expected_version")),
+            )
+        except settings_registry.SettingError as exc:
+            status = 409 if exc.code == "version_conflict" else 422
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), status
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not save settings ({_error_class(exc)})", 503)
+        return jsonify(
+            {"count": len(resolved), "result": [row.to_public_dict() for row in resolved]}
+        ), 200
+
+    @app.get("/ai/settings/history")
+    @require_admin_token
+    def settings_history():
+        """Who changed what, before and after — the record rollback reads."""
+        try:
+            entries = settings_registry.history(
+                resolved_settings,
+                key=request.args.get("key") or None,
+                limit=int(request.args.get("limit") or 50),
+            )
+        except settings_registry.SettingError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except (TypeError, ValueError):
+            return _admin_error("limit must be an integer", 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not read history ({_error_class(exc)})", 503)
+        return jsonify({"count": len(entries), "result": entries}), 200
+
+    @app.post("/ai/settings/rollback/<audit_id>")
+    @require_admin_token
+    def settings_rollback(audit_id: str):
+        """Reinstate a previous value as a new version, never by erasing history."""
+        if not _is_uuid(audit_id):
+            return _admin_error("Change not found", 404)
+        payload = request.get_json(silent=True) or {}
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            resolved = settings_registry.rollback(
+                resolved_settings,
+                audit_id,
+                tenant_key=tenant_key,
+                actor=str(payload.get("actor") or ""),
+                reason=str(payload.get("reason") or ""),
+            )
+        except settings_registry.SettingError as exc:
+            status = 404 if exc.code == "audit_not_found" else 422
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), status
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not roll back ({_error_class(exc)})", 503)
+        return jsonify(resolved.to_public_dict()), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

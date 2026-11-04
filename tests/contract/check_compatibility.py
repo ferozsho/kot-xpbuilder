@@ -1600,6 +1600,82 @@ def check_ai_usage_ledger(compatibility: dict) -> None:
         raise AssertionError('the billing source must be configurable')
 
 
+def check_ai_configuration(compatibility: dict) -> None:
+    """Configuration must be typed, bounded, audited and never a secret.
+
+    Pinned because each of these fails silently: an untyped registry accepts any
+    key, a ceiling that is only a default can be raised, an audit without
+    before/after cannot roll back, and a settings store that accepts a key-shaped
+    credential becomes a leak.
+    """
+    services = ROOT / 'services' / 'xp_prompt' / 'xp_prompt'
+    registry_path = services / 'settings_registry.py'
+    if not registry_path.exists():
+        raise AssertionError('the typed settings registry must exist')
+    registry_source = registry_path.read_text(encoding='utf-8')
+    for marker in (
+        'REGISTRY: tuple[Setting, ...]',
+        'def resolve(',
+        'def apply(',
+        'def history(',
+        'def rollback(',
+        'def feature_enabled(',
+        'ceiling: bool',
+        'unknown_setting',
+        'secret_not_allowed',
+        'version_conflict',
+    ):
+        if marker not in registry_source:
+            raise AssertionError(f'settings_registry.py lost {marker}')
+
+    migration_path = (
+        services.parent / 'migrations' / 'versions' / '20261103_18_ai_setting.py'
+    )
+    if not migration_path.exists():
+        raise AssertionError('the settings tables need their migration')
+    if 'ai_setting_audit' not in migration_path.read_text(encoding='utf-8'):
+        raise AssertionError('configuration changes must be audited')
+
+    api_source = (services / 'api.py').read_text(encoding='utf-8')
+    for route in ('/ai/settings', '/ai/settings/history', '/ai/settings/rollback/'):
+        if route not in api_source:
+            raise AssertionError(f'the service must expose {route}')
+
+    proxy_view = (
+        ROOT / 'superset' / 'superset' / 'views' / 'ai_prompt' / 'views.py'
+    ).read_text(encoding='utf-8')
+    for marker in (
+        'def api_settings(',
+        'def api_settings_update(',
+        'def api_settings_history(',
+        'def api_settings_rollback(',
+        'def _actor_label(',
+    ):
+        if marker not in proxy_view:
+            raise AssertionError(f'the settings proxy lost {marker}')
+    # The audit actor must come from the session, not the request body.
+    if 'payload["actor"] = _actor_label()' not in proxy_view:
+        raise AssertionError('the settings actor must be the signed-in principal')
+
+    permission_script = (
+        ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
+    ).read_text(encoding='utf-8')
+    for permission in (
+        'can_api_settings',
+        'can_api_settings_update',
+        'can_api_settings_history',
+        'can_api_settings_rollback',
+    ):
+        if permission not in permission_script:
+            raise AssertionError(f'{permission} must be granted')
+
+    routes_source = (
+        ROOT / 'superset' / 'superset-frontend' / 'src' / 'views' / 'routes.tsx'
+    ).read_text(encoding='utf-8')
+    if '/aisettings/' not in routes_source:
+        raise AssertionError('the SPA must route the AI settings page')
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -1696,6 +1772,7 @@ def main():
 
     check_ai_dashboard_builder(compatibility)
     check_ai_usage_ledger(compatibility)
+    check_ai_configuration(compatibility)
 
     check_ai_schema_slice(compatibility)
 
