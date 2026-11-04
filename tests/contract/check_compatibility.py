@@ -808,6 +808,40 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if '"semantic_invalid": 422' not in service:
         raise AssertionError('a semantic refusal must answer 422, not a server error')
 
+    # P4-F11: only candidates are cached, the key covers schema *and* policy, an
+    # explicit bypass is honoured, and the status is recorded in the audit.
+    cache_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'cache.py'
+    if not cache_path.exists():
+        raise AssertionError('cache.py must exist')
+    cache_source = cache_path.read_text(encoding='utf-8')
+    for marker in ('def cache_key', 'CACHE_VERSION', 'def load', 'def store'):
+        if marker not in cache_source:
+            raise AssertionError(f'the candidate cache lost {marker}')
+    if 'fingerprint' not in cache_source:
+        raise AssertionError(
+            'the cache key must include the slice fingerprint (schema + policy)'
+        )
+    if 'bypass_cache' not in candidate:
+        raise AssertionError('candidate generation must honour an explicit bypass')
+    if 'bypass_cache' not in service:
+        raise AssertionError('the candidate route must accept a bypass request')
+    if 'regenerate' not in proxy_source:
+        raise AssertionError('the proxy must forward an explicit regenerate request')
+    if 'cache_status' not in audit_source:
+        raise AssertionError('a cached turn must be auditable')
+    if 'cache_status' not in service:
+        raise AssertionError('the audit route must accept the cache status')
+    migration = (
+        ROOT
+        / 'services'
+        / 'xp_prompt'
+        / 'migrations'
+        / 'versions'
+        / '20261103_08_ai_sql_audit_cache.py'
+    )
+    if not migration.exists():
+        raise AssertionError('the cache-status column needs its own migration')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

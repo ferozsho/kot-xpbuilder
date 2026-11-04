@@ -25,9 +25,10 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
-from xp_prompt import responses, sql_execution, sql_guard, sql_semantics
+from xp_prompt import cache, responses, sql_execution, sql_guard, sql_semantics
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.structured import StructuredOutputError, parse_json_object
@@ -98,6 +99,9 @@ class SqlCandidate:
     model: str
     correlation_id: str
     blocks: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    #: ``hit``, ``miss``, ``bypass`` or ``disabled`` — carried into the audit so a
+    #: replayed statement is never mistaken for a fresh one.
+    cache_status: str = cache.MISS
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +115,7 @@ class SqlCandidate:
             "provider": self.provider,
             "model": self.model,
             "correlation_id": self.correlation_id,
+            "cache": self.cache_status,
             "blocks": list(self.blocks),
         }
 
@@ -169,9 +174,39 @@ def generate(
     database: str | None = None,
     dialect: str | None = None,
     max_rows: int = sql_guard.MAX_ROWS,
+    bypass_cache: bool = False,
 ) -> SqlCandidate:
-    """Ask for one candidate, validate it, and return it with its blocks."""
+    """Ask for one candidate, validate it, and return it with its blocks.
+
+    A candidate may come from the cache (P4-F11): same question, same slice
+    fingerprint (which covers the datasets, their definitions and their row-level
+    policies), same dialect, same row cap. Only the statement is cached, never a
+    result, and a refusal is never stored — an explicit ``bypass_cache`` is honoured
+    and reported.
+    """
     resolved_dialect = _resolve_dialect(schema, database=database, dialect=dialect)
+    key = cache.cache_key(
+        tenant_key=tenant_key,
+        question=question,
+        schema=schema,
+        dialect=resolved_dialect,
+        max_rows=max_rows,
+    )
+    if not cache.enabled(settings):
+        cache_status = cache.DISABLED
+    elif bypass_cache:
+        cache_status = cache.BYPASS
+    else:
+        cached = cache.load(settings, key)
+        if cached is not None:
+            logger.info(
+                "sql_candidate outcome=succeeded cache=hit provider=%s model=%s",
+                cached.provider,
+                cached.model,
+            )
+            return _from_cache(cached, schema, cache_status=cache.HIT)
+        cache_status = cache.MISS
+
     request = build_request(
         question, schema, dialect=resolved_dialect, max_rows=max_rows
     )
@@ -225,14 +260,35 @@ def generate(
     correlation_id = (
         routed.attempts[0].correlation_id if routed.attempts else request.correlation_id
     ) or ""
+    if cache_status == cache.MISS:
+        # Only a statement that survived the guard *and* the semantic check is
+        # stored: a cache must not make a refusal stick.
+        cache.store(
+            settings,
+            key,
+            cache.CachedCandidate(
+                sql=guarded.sql,
+                dialect=guarded.dialect,
+                rationale=rationale,
+                assumptions=assumptions,
+                tables=guarded.tables,
+                limit=guarded.limit,
+                fingerprint=schema.fingerprint,
+                provider=routed.response.provider,
+                model=routed.response.model,
+                correlation_id=correlation_id,
+                stored_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            ),
+        )
     logger.info(
         "sql_candidate correlation_id=%s provider=%s model=%s tables=%d limit=%d "
-        "outcome=succeeded",
+        "cache=%s outcome=succeeded",
         correlation_id,
         routed.response.provider,
         routed.response.model,
         len(guarded.tables),
         guarded.limit,
+        cache_status,
     )
 
     return SqlCandidate(
@@ -247,6 +303,50 @@ def generate(
         model=routed.response.model,
         correlation_id=correlation_id,
         blocks=tuple(blocks),
+        cache_status=cache_status,
+    )
+
+
+def _from_cache(
+    cached: cache.CachedCandidate, schema: SchemaSlice, *, cache_status: str
+) -> SqlCandidate:
+    """Rebuild a candidate from a stored entry, with fresh blocks.
+
+    The entry is replayed but not re-validated: it was validated before it was
+    stored, and the key pins the slice fingerprint — a changed schema or policy
+    produces a different key, so a stale entry cannot be reached. The blocks are
+    rebuilt rather than stored so one owner (``responses``) decides their shape.
+    """
+    blocks = responses.normalize_blocks(
+        [
+            {
+                "type": responses.SQL_PREVIEW,
+                "sql": cached.sql,
+                "dialect": cached.dialect,
+            },
+            {"type": responses.ASSUMPTIONS, "items": list(cached.assumptions)},
+            {
+                "type": responses.WARNINGS,
+                "items": [
+                    "Nothing has been executed yet.",
+                    "This statement came from the candidate cache.",
+                ],
+            },
+        ]
+    )
+    return SqlCandidate(
+        sql=cached.sql,
+        dialect=cached.dialect,
+        rationale=cached.rationale,
+        assumptions=cached.assumptions,
+        tables=cached.tables,
+        limit=cached.limit,
+        fingerprint=schema.fingerprint,
+        provider=cached.provider,
+        model=cached.model,
+        correlation_id=cached.correlation_id,
+        blocks=tuple(blocks),
+        cache_status=cache_status,
     )
 
 

@@ -365,50 +365,62 @@ export default function AIPromptPage() {
    * Answer the draft as a data question: the service writes and validates the
    * SQL, Superset executes it, and the stored turn comes back with blocks.
    */
-  const runSql = useCallback(async () => {
-    const question = draft.trim();
-    if (!question || sending || runningSql) {
-      return;
-    }
-    setRunningSql(true);
-    setError(null);
-    let conversationId = activeId;
-    try {
-      if (!conversationId) {
-        const created = await createConversation();
-        setConversations(current => [created, ...current]);
-        setActiveId(created.id);
-        setContextVersion(created.context_version);
-        conversationId = created.id;
+  const runSql = useCallback(
+    async (regenerate = false) => {
+      const question = draft.trim();
+      if (!question || sending || runningSql) {
+        return;
       }
-      setDraft('');
-      const response = await askWithSql(conversationId, question);
-      const detail = await fetchConversation(conversationId);
-      setMessages(detail.messages ?? []);
-      setConversations(current =>
-        current.map(item =>
-          item.id === conversationId
-            ? { ...item, last_message_at: new Date().toISOString() }
-            : item,
-        ),
-      );
-      addSuccessToast(
-        t('Query ran in %(ms)s ms', { ms: response.duration_ms }),
-      );
-    } catch (caught) {
-      setError(await describeError(caught));
-      if (conversationId) {
-        try {
-          const detail = await fetchConversation(conversationId);
-          setMessages(detail.messages ?? []);
-        } catch {
-          // the error banner already explains the failure
+      setRunningSql(true);
+      setError(null);
+      let conversationId = activeId;
+      try {
+        if (!conversationId) {
+          const created = await createConversation();
+          setConversations(current => [created, ...current]);
+          setActiveId(created.id);
+          setContextVersion(created.context_version);
+          conversationId = created.id;
         }
+        setDraft('');
+        const response = await askWithSql(
+          conversationId,
+          question,
+          undefined,
+          regenerate,
+        );
+        const detail = await fetchConversation(conversationId);
+        setMessages(detail.messages ?? []);
+        setConversations(current =>
+          current.map(item =>
+            item.id === conversationId
+              ? { ...item, last_message_at: new Date().toISOString() }
+              : item,
+          ),
+        );
+        addSuccessToast(
+          response.cache === 'hit'
+            ? t('Query ran in %(ms)s ms (reused statement)', {
+                ms: response.duration_ms,
+              })
+            : t('Query ran in %(ms)s ms', { ms: response.duration_ms }),
+        );
+      } catch (caught) {
+        setError(await describeError(caught));
+        if (conversationId) {
+          try {
+            const detail = await fetchConversation(conversationId);
+            setMessages(detail.messages ?? []);
+          } catch {
+            // the error banner already explains the failure
+          }
+        }
+      } finally {
+        setRunningSql(false);
       }
-    } finally {
-      setRunningSql(false);
-    }
-  }, [activeId, addSuccessToast, draft, runningSql, sending]);
+    },
+    [activeId, addSuccessToast, draft, runningSql, sending],
+  );
 
   /** Drop the replayed context without deleting the visible transcript. */
   const resetThreadContext = useCallback(async () => {
@@ -596,9 +608,24 @@ export default function AIPromptPage() {
                   buttonStyle="secondary"
                   loading={runningSql}
                   disabled={!draft.trim() || sending}
-                  onClick={runSql}
+                  onClick={() => runSql()}
                 >
                   {t('Run SQL')}
+                </Button>
+              </Tooltip>
+              <Tooltip
+                title={t(
+                  'Ask again without reusing a cached statement. Use this when ' +
+                    'the previous SQL looked wrong for the same question.',
+                )}
+              >
+                <Button
+                  buttonStyle="tertiary"
+                  loading={runningSql}
+                  disabled={!draft.trim() || sending}
+                  onClick={() => runSql(true)}
+                >
+                  {t('Regenerate')}
                 </Button>
               </Tooltip>
               <Tooltip

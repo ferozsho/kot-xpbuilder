@@ -106,6 +106,10 @@ class Settings:
     #: Whether the audit trail may return a stored statement. Off by default: the
     #: SQL is sealed at rest precisely so it is not casually readable.
     allow_sql_diagnostics: bool = False
+    #: Candidate cache (P4-F11). Results are never cached — only the SQL a question
+    #: produced, keyed on the slice fingerprint and policy.
+    candidate_cache_enabled: bool = True
+    candidate_cache_ttl_seconds: int = 1_800
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -193,6 +197,16 @@ class Settings:
             require_plan=_boolean(source, "XP_PROMPT_REQUIRE_PLAN", False),
             allow_sql_diagnostics=_boolean(
                 source, "XP_PROMPT_ALLOW_SQL_DIAGNOSTICS", False
+            ),
+            candidate_cache_enabled=_boolean(
+                source, "XP_PROMPT_CANDIDATE_CACHE", True
+            ),
+            candidate_cache_ttl_seconds=_integer(
+                source,
+                "XP_PROMPT_CANDIDATE_CACHE_TTL_SECONDS",
+                1_800,
+                minimum=0,
+                maximum=86_400,
             ),
         )
 

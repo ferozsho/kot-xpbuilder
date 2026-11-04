@@ -38,6 +38,9 @@ export interface SqlTurnResponse {
   limit?: number | null;
   tables?: string[];
   database?: string;
+  plan?: string;
+  /** ``hit``, ``miss``, ``bypass`` or ``disabled``. */
+  cache?: string;
 }
 
 /**
@@ -130,16 +133,24 @@ export async function archiveConversation(id: string): Promise<void> {
  *
  * ``databaseId`` is only needed when the principal is authorized for several
  * databases; otherwise Superset derives the single one from the slice.
+ * ``regenerate`` bypasses the candidate cache so the question is answered fresh.
  */
 export async function askWithSql(
   conversationId: string,
   question: string,
   databaseId?: number,
+  regenerate?: boolean,
 ): Promise<SqlTurnResponse> {
+  const payload: Record<string, unknown> = { question };
+  if (databaseId !== undefined) {
+    payload.database_id = databaseId;
+  }
+  if (regenerate) {
+    payload.regenerate = true;
+  }
   const { json } = await SupersetClient.post({
     endpoint: `${BASE}/conversations/${conversationId}/sql/`,
-    jsonPayload:
-      databaseId === undefined ? { question } : { question, database_id: databaseId },
+    jsonPayload: payload,
   });
   return json as SqlTurnResponse;
 }

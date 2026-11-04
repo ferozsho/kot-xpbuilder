@@ -57,6 +57,7 @@ class RedactionTest(unittest.TestCase):
         self.assertEqual(
             sorted(payload),
             [
+                "cache_status",
                 "code",
                 "conversation_id",
                 "correlation_id",

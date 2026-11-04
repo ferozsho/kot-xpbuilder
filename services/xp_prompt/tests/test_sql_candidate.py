@@ -351,6 +351,7 @@ class GenerateTest(unittest.TestCase):
             [
                 "assumptions",
                 "blocks",
+                "cache",
                 "correlation_id",
                 "dialect",
                 "limit",

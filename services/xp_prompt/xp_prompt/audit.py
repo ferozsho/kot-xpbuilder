@@ -44,6 +44,8 @@ STAGES: tuple[str, ...] = (
     "result",
     "store",
 )
+#: Whether the statement was reused, regenerated, or the cache was unavailable.
+CACHE_STATUSES: tuple[str, ...] = ("hit", "miss", "bypass", "disabled")
 
 MAX_CODE_CHARS = 64
 MAX_CORRELATION_CHARS = 64
@@ -88,6 +90,8 @@ class AuditRecord:
     returned: int | None = None
     truncated: bool = False
     sql_sha256: str = ""
+    #: ``hit``/``miss``/``bypass``/``disabled`` — how the statement was obtained.
+    cache_status: str = ""
     sql: str | None = field(default=None, repr=False)
     created_at: datetime | None = None
 
@@ -118,6 +122,7 @@ class AuditRecord:
             "returned": self.returned,
             "truncated": self.truncated,
             "sql_sha256": self.sql_sha256,
+            "cache_status": self.cache_status,
             "sql_hidden": self.sql is None or not include_sql,
             "created_at": _isoformat(self.created_at),
         }
@@ -146,6 +151,7 @@ def record_turn(
     row_count: int | None = None,
     returned: int | None = None,
     truncated: bool = False,
+    cache_status: str = "",
     sql: str | None = None,
 ) -> AuditRecord:
     """Store one turn. Raises :class:`AuditInputError` on a malformed payload."""
@@ -179,11 +185,11 @@ def record_turn(
                     intent, outcome, stage, code, dialect, tables, inlined,
                     rls_applied, plan_source, plan_rows, plan_cost, plan_nodes,
                     plan_code, duration_ms, row_count, returned, truncated,
-                    sql_ciphertext, sql_sha256
+                    sql_ciphertext, sql_sha256, cache_status
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
-                    %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING id
                 """,
@@ -211,6 +217,7 @@ def record_turn(
                     bool(truncated),
                     sealed,
                     fingerprint,
+                    _cache_status(cache_status),
                 ),
             )
             audit_id = str(cursor.fetchone()["id"])
@@ -245,6 +252,7 @@ def record_turn(
         returned=_optional_int(returned),
         truncated=bool(truncated),
         sql_sha256=fingerprint,
+        cache_status=_cache_status(cache_status),
     )
 
 
@@ -314,6 +322,7 @@ def _record(row: Any, *, box: SecretBox | None) -> AuditRecord:
         returned=row.get("returned"),
         truncated=bool(row.get("truncated")),
         sql_sha256=row.get("sql_sha256") or "",
+        cache_status=row.get("cache_status") or "",
         sql=expression,
         created_at=row.get("created_at"),
     )
@@ -327,6 +336,12 @@ def _tenant_id(cursor: Any, tenant_key: str) -> Any:
 
 def _text(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _cache_status(value: Any) -> str:
+    """Only the four known states are stored; anything else becomes unknown."""
+    status = str(value or "").strip().lower()
+    return status if status in CACHE_STATUSES else ""
 
 
 def _optional_text(value: Any, limit: int) -> str | None:

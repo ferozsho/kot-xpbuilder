@@ -813,6 +813,9 @@ def create_app(settings: Settings | None = None) -> Flask:
                 database=database,
                 dialect=dialect,
                 max_rows=payload.get("max_rows") or sql_guard.MAX_ROWS,
+                # Explicit regeneration: honoured even when a cached statement
+                # exists, and reported as ``cache: "bypass"`` (P4-F11).
+                bypass_cache=bool(payload.get("bypass_cache")),
             )
         except sql_candidate.SqlCandidateError as exc:
             return (
@@ -1010,6 +1013,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                 row_count=payload.get("row_count"),
                 returned=payload.get("returned"),
                 truncated=bool(payload.get("truncated")),
+                cache_status=str(payload.get("cache_status") or ""),
                 sql=payload.get("sql"),
             )
         except audit.AuditInputError as exc:

@@ -312,6 +312,9 @@ class AIPromptView(BaseSupersetView):
                 "database": database.database_name,
                 "max_rows": MAX_PREVIEW_ROWS,
                 "datasets": authorized_datasets(),
+                # "Regenerate" must reach the service: a cache hit is otherwise
+                # indistinguishable from a fresh answer (P4-F11).
+                "bypass_cache": bool(payload.get("regenerate")),
             },
         )
         if candidate_status != 200:
@@ -333,6 +336,7 @@ class AIPromptView(BaseSupersetView):
             "tables": candidate.get("tables"),
             "inlined": candidate.get("inlined"),
             "rls_applied": candidate.get("rls_applied"),
+            "cache_status": str(candidate.get("cache") or ""),
         }
 
         failure = _authorize(database, expression, schema_name)
@@ -448,6 +452,7 @@ class AIPromptView(BaseSupersetView):
                 "tables": candidate.get("tables", []),
                 "database": database.database_name,
                 "plan": plan.get("code"),
+                "cache": candidate.get("cache"),
             },
             201,
         )
@@ -815,6 +820,7 @@ def _audit_turn(
         "tables": extra.pop("tables", None),
         "inlined": extra.pop("inlined", None),
         "rls_applied": extra.pop("rls_applied", None),
+        "cache_status": extra.pop("cache_status", ""),
         "plan": plan,
         "duration_ms": duration_ms,
         "row_count": row_count,
