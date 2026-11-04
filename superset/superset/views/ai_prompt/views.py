@@ -552,7 +552,7 @@ class AIPromptView(BaseSupersetView):
                     for row in preview.itertuples(index=False, name=None)
                 ],
                 "row_count": int(len(frame)),
-                "truncated": len(frame) > len(preview) or oversized,
+                "truncated": len(frame) > len(preview),
                 "intent": "query",
                 "max_rows": MAX_PREVIEW_ROWS,
             },
@@ -750,6 +750,19 @@ class AIPromptView(BaseSupersetView):
             )
             return self.json_response(body, status)
         status, body = call_xp_prompt("GET", f"/ai/usage/budgets?{_usage_query()}")
+        return self.json_response(body, status)
+
+    @expose("/api/tenants/<tenant_key>/offboard/", methods=("POST",))
+    @has_access_api
+    def api_tenant_offboard(self, tenant_key: str) -> FlaskResponse:
+        """Remove one tenant's data. The service refuses the default tenant."""
+        payload = _body()
+        payload["actor"] = _actor_label()
+        status, body = call_xp_prompt(
+            "POST",
+            f"/ai/tenants/{quote(tenant_key, safe='')}/offboard",
+            payload=payload,
+        )
         return self.json_response(body, status)
 
     @expose("/api/retention/", methods=("GET", "POST"))

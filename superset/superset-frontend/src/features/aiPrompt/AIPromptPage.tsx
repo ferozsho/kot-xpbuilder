@@ -39,6 +39,7 @@ import {
 } from './api';
 import ResponseBlocks from './blocks';
 import ChartPanel from './ChartPanel';
+import DashboardPanel from './DashboardPanel';
 import type { ChartDataset } from './ChartPanel';
 import DatasetPanel from './DatasetPanel';
 import JobPanel from './JobPanel';
@@ -598,6 +599,7 @@ export default function AIPromptPage() {
             onSaved={setChartDataset}
           />
 
+          <DashboardPanel />
           <ChartPanel
             dataset={chartDataset}
             conversationId={activeId ?? undefined}

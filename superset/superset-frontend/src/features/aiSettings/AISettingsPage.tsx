@@ -40,6 +40,7 @@ import {
   saveSettings,
   SettingEntry,
 } from './api';
+import OffboardingCard from './OffboardingCard';
 import RetentionCard from './RetentionCard';
 import SettingsHealthCard from './SettingsHealthCard';
 
@@ -361,6 +362,7 @@ export default function AISettingsPage() {
 
       <SettingsHealthCard />
       <RetentionCard />
+      <OffboardingCard />
     </Page>
   );
 }

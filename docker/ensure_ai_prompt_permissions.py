@@ -20,9 +20,9 @@ Idempotent — safe to re-run. Apply to a running stack with no image rebuild:
 from __future__ import annotations
 
 from sqlalchemy import text
+from superset.app import create_app
 
 from superset import db
-from superset.app import create_app
 
 #: ``can_<method name>`` permissions declared by AIPromptView, plus the
 #: ``menu_access`` permission that makes FAB render the top-level entry.
@@ -77,6 +77,7 @@ ADMIN_ONLY_PERMISSIONS: tuple[str, ...] = (
     "can_api_usage_alerts",
     "can_api_usage_alerts_deliver",
     "can_api_retention",
+    "can_api_tenant_offboard",
     "can_api_usage_outbox",
     "can_api_usage_outbox_drain",
     "can_api_usage_billing_imports",
