@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from xp_prompt import chart_rules
+from xp_prompt import chart_rules, usage
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.structured import StructuredOutputError, parse_json_object
@@ -69,7 +69,13 @@ def rank(
     if not candidates:
         return default
     try:
-        router = registry.resolve_router(settings, tenant_key=tenant_key)
+        router = registry.resolve_router(
+            settings,
+            tenant_key=tenant_key,
+            context=usage.Context(
+                tenant_key=tenant_key, module="chart", feature="ranking"
+            ),
+        )
     except registry.ProviderConfigError:
         return default
     request = build_request(candidates, question)

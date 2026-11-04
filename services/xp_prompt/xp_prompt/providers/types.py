@@ -107,6 +107,18 @@ class AttemptSummary:
     correlation_id: str | None = None
     #: Operation name, so audit can group attempts without the raw request.
     operation: str | None = None
+    #: The provider's own token counts, when it reported them. Present so the
+    #: usage ledger (P9) can price an attempt from the attempt itself rather
+    #: than from a second callback that might never arrive.
+    usage: TokenUsage | None = None
+    #: Wall-clock time spent in this attempt, including a provider timeout.
+    duration_ms: int | None = None
+    #: The provider's request id, for reconciling against a billing export.
+    request_id: str | None = None
+    #: True when this attempt was a fallback provider rather than the primary.
+    fallback: bool = False
+    #: A content-free description of the failure. Never the prompt or the body.
+    error_detail: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -36,6 +36,7 @@ from xp_prompt import (
     sql_execution,
     sql_guard,
     sql_semantics,
+    usage,
 )
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
@@ -203,6 +204,8 @@ def generate(
     max_rows: int = sql_guard.MAX_ROWS,
     bypass_cache: bool = False,
     repair_note: str = "",
+    superset_user_id: int | None = None,
+    conversation_id: str | None = None,
 ) -> SqlCandidate:
     """Ask for one candidate, validate it, and return it with its blocks.
 
@@ -258,7 +261,17 @@ def generate(
     )
 
     try:
-        router = registry.resolve_router(settings, tenant_key=tenant_key)
+        router = registry.resolve_router(
+            settings,
+            tenant_key=tenant_key,
+            context=usage.Context(
+                tenant_key=tenant_key,
+                module="sql",
+                feature="candidate_generation",
+                superset_user_id=superset_user_id,
+                conversation_id=conversation_id,
+            ),
+        )
     except registry.ProviderConfigError as exc:
         raise SqlCandidateError("no_provider", str(exc)) from exc
 

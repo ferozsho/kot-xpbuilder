@@ -1449,6 +1449,79 @@ def check_ai_schema_slice(compatibility: dict) -> None:
         raise AssertionError('the XP Prompt service must expose /ai/schema')
 
 
+def check_ai_usage_ledger(compatibility: dict) -> None:
+    """Every provider attempt must be recorded, priced and de-duplicable.
+
+    The properties pinned here are the ones that fail quietly: a router that is
+    never given the ledger, an attempt that can be counted twice, a cost that
+    silently becomes zero because a token count was missing, and a price that is
+    edited in place instead of versioned.
+    """
+    services = ROOT / 'services' / 'xp_prompt' / 'xp_prompt'
+    usage_path = services / 'usage.py'
+    if not usage_path.exists():
+        raise AssertionError('usage.py must exist')
+    usage_source = usage_path.read_text(encoding='utf-8')
+    for marker in (
+        'def estimate_cost_micros(',
+        'def recorder(',
+        'def record(',
+        'def resolve_price(',
+        'def publish_price(',
+        'def summary(',
+        'def reconcile(',
+        'estimated_cost_micros',
+        'price_version',
+    ):
+        if marker not in usage_source:
+            raise AssertionError(f'usage.py lost {marker}')
+    # A replay must be rejected by the database, not de-duplicated later.
+    if 'ON CONFLICT' not in usage_source or 'DO NOTHING' not in usage_source:
+        raise AssertionError('usage recording must be idempotent by constraint')
+
+    migration_path = (
+        services.parent / 'migrations' / 'versions' / '20261103_15_ai_usage_ledger.py'
+    )
+    if not migration_path.exists():
+        raise AssertionError('the usage ledger needs its migration')
+    migration_source = migration_path.read_text(encoding='utf-8')
+    # Money is integer micros; a float column would round differently per host.
+    if 'estimated_cost_micros' not in migration_source:
+        raise AssertionError('the ledger must store the computed cost')
+    if 'sa.Float' in migration_source or 'sa.Numeric' in migration_source:
+        raise AssertionError('money must be stored as integer micros')
+
+    api_source = (services / 'api.py').read_text(encoding='utf-8')
+    for route in (
+        '/ai/usage/summary',
+        '/ai/usage/attempts',
+        '/ai/usage/reconciliation',
+        '/ai/usage/prices',
+    ):
+        if route not in api_source:
+            raise AssertionError(f'the service must expose {route}')
+
+    router_source = (services / 'providers' / 'router.py').read_text(encoding='utf-8')
+    for marker in ('on_summary', 'def _summarize('):
+        if marker not in router_source:
+            raise AssertionError(f'the provider router lost {marker}')
+
+    types_source = (services / 'providers' / 'types.py').read_text(encoding='utf-8')
+    for marker in ('usage:', 'duration_ms', 'request_id', 'fallback'):
+        if marker not in types_source:
+            raise AssertionError(f'AttemptSummary lost {marker}')
+
+    # The ledger has to be installed where every AI call passes through, or a
+    # module quietly spends tokens nobody can see.
+    registry_source = (
+        services / 'providers' / 'registry.py'
+    ).read_text(encoding='utf-8')
+    if 'context: Any = None' not in registry_source:
+        raise AssertionError('resolve_router must accept the usage context')
+    if 'usage.recorder(' not in registry_source:
+        raise AssertionError('resolve_router must install the usage recorder')
+
+
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     compatibility = json.loads(
@@ -1544,6 +1617,7 @@ def main():
     check_ai_sql_guard(compatibility)
 
     check_ai_dashboard_builder(compatibility)
+    check_ai_usage_ledger(compatibility)
 
     check_ai_schema_slice(compatibility)
 

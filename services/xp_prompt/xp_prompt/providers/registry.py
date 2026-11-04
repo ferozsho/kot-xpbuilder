@@ -10,7 +10,7 @@ straight to an adapter, and never appears in an HTTP response, log record, or
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -694,6 +694,7 @@ def resolve_router(
     settings: Settings,
     *,
     tenant_key: str = DEFAULT_TENANT_KEY,
+    context: Any = None,
 ) -> ProviderRouter:
     """Build the primary/fallback chain every AI operation should use.
 
@@ -704,6 +705,11 @@ def resolve_router(
     A provider whose sealed key can no longer be decrypted (root secret
     rotation) is skipped instead of failing every AI call, and the admin sees
     the broken row in the settings page.
+
+    ``context`` is a :class:`xp_prompt.usage.Context` describing who is calling and
+    from which module. Supplying it is what makes every attempt land in the usage
+    ledger: the router is the one place all AI calls pass through, so the ledger is
+    installed here rather than in each caller (P9-F01).
     """
     providers: list[NamedProvider] = []
     provider_ids: dict[str, str] = {}
@@ -734,11 +740,33 @@ def resolve_router(
     fallback = next(
         (item for item in providers[1:] if item.name != providers[0].name), None
     )
+    on_summary = None
+    if context is not None:
+        on_summary = _usage_recorder(settings, context, tenant_key)
     return ProviderRouter(
         primary=providers[0],
         fallback=fallback,
         on_attempt=_health_reporter(settings, provider_ids),
+        on_summary=on_summary,
     )
+
+
+def _usage_recorder(
+    settings: Settings,
+    context: Any,
+    tenant_key: str,
+) -> Any:
+    """Record every attempt in the usage ledger, without failing the request.
+
+    The import is local because ``usage`` imports ``config`` and ``db`` while this
+    module is imported during provider resolution; keeping it here avoids a cycle
+    and keeps the ledger off the import path of a plain provider lookup.
+    """
+    from xp_prompt import usage
+
+    if context.tenant_key != tenant_key:
+        context = replace(context, tenant_key=tenant_key)
+    return usage.recorder(settings, context)
 
 
 def _health_reporter(

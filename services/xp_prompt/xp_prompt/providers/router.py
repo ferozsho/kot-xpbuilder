@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 #: Called as ``on_attempt(provider_name, error)``; ``error`` is ``None`` on success.
 AttemptCallback = Callable[[str, ProviderError | None], None]
 
+#: Called once per attempt with everything the usage ledger needs (P9-F01/F02).
+#: Separate from ``AttemptCallback`` because health wants a provider and an error,
+#: while the ledger wants the whole attempt, usage included.
+SummaryCallback = Callable[[AttemptSummary], None]
+
 
 class Provider(Protocol):
     name: str
@@ -64,6 +69,7 @@ class ProviderRouter:
         sleep: Callable[[float], None] = time.sleep,
         jitter: Callable[[], float] = random.random,
         on_attempt: AttemptCallback | None = None,
+        on_summary: SummaryCallback | None = None,
     ) -> None:
         if fallback is not None and fallback.name == primary.name:
             raise ValueError("fallback provider must differ from primary provider")
@@ -73,6 +79,7 @@ class ProviderRouter:
         self._sleep = sleep
         self._jitter = jitter
         self._on_attempt = on_attempt
+        self._on_summary = on_summary
 
     def generate(self, request: ProviderRequest) -> RoutedResponse:
         correlation_id = request.correlation_id or uuid.uuid4().hex
@@ -88,7 +95,9 @@ class ProviderRouter:
                     correlation_id=correlation_id,
                 ) from error
             try:
-                fallback_response = self._attempt(self.fallback, request, attempts)
+                fallback_response = self._attempt(
+                    self.fallback, request, attempts, fallback=True
+                )
             except ProviderError as fallback_error:
                 raise ProviderRoutingError(
                     cause=fallback_error,
@@ -105,25 +114,30 @@ class ProviderRouter:
         provider: Provider,
         request: ProviderRequest,
         attempts: list[AttemptSummary],
+        *,
+        fallback: bool = False,
     ) -> ProviderResponse:
         """Run one provider with bounded retries; returns or raises its error."""
         for attempt in range(1, self.max_attempts + 1):
+            started = time.monotonic()
             try:
                 response = provider.generate(request)
                 self._validate_structured_output(provider, request, response)
             except ProviderError as error:
-                attempts.append(
-                    AttemptSummary(
-                        provider=provider.name,
-                        model=provider.model,
-                        outcome="failed",
-                        error_code=error.code,
-                        retryable=error.retryable,
-                        attempt=attempt,
-                        correlation_id=request.correlation_id,
-                        operation=request.operation,
-                    )
+                summary = AttemptSummary(
+                    provider=provider.name,
+                    model=provider.model,
+                    outcome="failed",
+                    error_code=error.code,
+                    retryable=error.retryable,
+                    attempt=attempt,
+                    correlation_id=request.correlation_id,
+                    operation=request.operation,
+                    duration_ms=_elapsed_ms(started),
+                    fallback=fallback,
+                    error_detail=str(error),
                 )
+                attempts.append(summary)
                 self._report(provider.name, error)
                 self._log(
                     request,
@@ -132,6 +146,7 @@ class ProviderRouter:
                     outcome="failed",
                     error_code=error.code,
                 )
+                self._summarize(summary)
                 if not error.retryable or attempt == self.max_attempts:
                     raise
                 delay = retry_delay_seconds(
@@ -142,16 +157,19 @@ class ProviderRouter:
                 if delay > 0:
                     self._sleep(delay)
                 continue
-            attempts.append(
-                AttemptSummary(
-                    provider=provider.name,
-                    model=provider.model,
-                    outcome="succeeded",
-                    attempt=attempt,
-                    correlation_id=request.correlation_id,
-                    operation=request.operation,
-                )
+            summary = AttemptSummary(
+                provider=provider.name,
+                model=provider.model,
+                outcome="succeeded",
+                attempt=attempt,
+                correlation_id=request.correlation_id,
+                operation=request.operation,
+                usage=response.usage,
+                duration_ms=_elapsed_ms(started),
+                request_id=response.request_id,
+                fallback=fallback,
             )
+            attempts.append(summary)
             self._report(provider.name, None)
             self._log(
                 request,
@@ -160,6 +178,7 @@ class ProviderRouter:
                 outcome="succeeded",
                 error_code=None,
             )
+            self._summarize(summary)
             return response
         raise AssertionError("retry loop exited without a result")  # pragma: no cover
 
@@ -219,4 +238,26 @@ class ProviderRouter:
         except Exception:  # pragma: no cover - health reporting is best effort
             # Losing a health datapoint must never fail the user's request.
             pass
+
+    def _summarize(self, summary: AttemptSummary) -> None:
+        """Hand one finished attempt to the usage ledger (P9-F01).
+
+        The ledger is an observer, so a broken recorder must not turn a successful
+        answer into a failure. It also runs before a retry sleeps, so the attempt
+        that is about to be retried is already durable.
+        """
+        if self._on_summary is None:
+            return
+        try:
+            self._on_summary(summary)
+        except Exception:  # pragma: no cover - ledger is best effort
+            logger.warning("provider_attempt_summary_failed", exc_info=True)
+
+
+def _elapsed_ms(started: float) -> int | None:
+    """Whole milliseconds since ``started``; ``None`` rather than a wild guess."""
+    try:
+        return max(0, int((time.monotonic() - started) * 1000))
+    except Exception:  # pragma: no cover - defensive
+        return None
 

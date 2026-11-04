@@ -22,6 +22,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
 
@@ -56,11 +57,17 @@ from xp_prompt import (
     sql_candidate,
     sql_execution,
     sql_guard,
+    usage,
 )
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
-from xp_prompt.providers.types import Message, ProviderError, ProviderRequest
+from xp_prompt.providers.types import (
+    AttemptSummary,
+    Message,
+    ProviderError,
+    ProviderRequest,
+)
 from xp_prompt.security import constant_time_equals, internal_admin_token
 
 ADMIN_TOKEN_HEADER = "X-XP-Prompt-Token"
@@ -109,6 +116,38 @@ def _optional_uuid(value: Any) -> str | None:
     """Link a record to a conversation or job only when the id is well-formed."""
     text = str(value or "").strip()
     return text if _is_uuid(text) else None
+
+
+def _optional_int(value: Any) -> int | None:
+    """An integer field that is meaningful when absent, e.g. a discount rate."""
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_timestamp(value: Any) -> Any:
+    """Accept an ISO date or datetime; an unparseable value means "not filtered".
+
+    Usage queries are read-only reporting, so a bad ``since`` should widen the
+    window visibly rather than answer 400 and leave the admin staring at nothing.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidate = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(f"{candidate}T00:00:00")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 #: P4-F04 refusals -> HTTP status. A blocked statement is a policy outcome (422),
@@ -187,6 +226,42 @@ def create_app(settings: Settings | None = None) -> Flask:
                 )
         except Exception:  # pragma: no cover - bookkeeping only
             logger.warning("Could not persist provider health", exc_info=True)
+
+    def _record_connection_test(
+        name: str,
+        model: str,
+        correlation_id: str,
+        duration_ms: int,
+        *,
+        response: Any = None,
+        error: ProviderError | None = None,
+    ) -> None:
+        """Put the settings-page probe in the usage ledger too (P9-F01).
+
+        The probe bypasses the router, so without this it would be the one AI call
+        that spends tokens invisibly. It is best effort: a ledger write must never
+        turn a working connection into a failed test.
+        """
+        try:
+            usage.record(
+                resolved_settings,
+                usage.Context(module="provider_test", feature="connection_test"),
+                AttemptSummary(
+                    provider=name,
+                    model=getattr(response, "model", None) or model,
+                    outcome="failed" if error is not None else "succeeded",
+                    error_code=error.code if error is not None else None,
+                    attempt=1,
+                    correlation_id=correlation_id,
+                    operation="provider.test",
+                    usage=getattr(response, "usage", None),
+                    duration_ms=duration_ms,
+                    request_id=getattr(response, "request_id", None),
+                    error_detail=str(error) if error is not None else "",
+                ),
+            )
+        except Exception:  # pragma: no cover - bookkeeping only
+            logger.warning("Could not record provider test usage", exc_info=True)
 
     def require_admin_token(view: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(view)
@@ -855,6 +930,10 @@ def create_app(settings: Settings | None = None) -> Flask:
                 # Explicit regeneration: honoured even when a cached statement
                 # exists, and reported as ``cache: "bypass"`` (P4-F11).
                 bypass_cache=bool(payload.get("bypass_cache")),
+                # Who spent the tokens, so the usage ledger can attribute a call
+                # rather than merely count it (P9-F02).
+                superset_user_id=_conversation_owner(payload),
+                conversation_id=payload.get("conversation_id") or None,
             )
         except sql_candidate.SqlCandidateError as exc:
             return (
@@ -2128,6 +2207,141 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
         return jsonify(record), 200
 
+    # --- Usage ledger and prices (P9-F01..F05, F07, F10) -----------------
+
+    @app.get("/ai/usage/summary")
+    @require_admin_token
+    def usage_summary():
+        """Totals behind the admin cards, with the cost labelled estimated.
+
+        The numbers are computed from a published price list, not read from a
+        provider invoice, so the response says so rather than letting a caller
+        assume otherwise (P9-F08).
+        """
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        raw_groups = request.args.getlist("group_by") or request.args.get(
+            "group_by", ""
+        ).split(",")
+        try:
+            body = usage.summary(
+                resolved_settings,
+                tenant_key=tenant_key,
+                group_by=[group for group in raw_groups if group],
+                since=_parse_timestamp(request.args.get("since")),
+                module=request.args.get("module") or None,
+                superset_user_id=(
+                    int(request.args["superset_user_id"])
+                    if request.args.get("superset_user_id")
+                    else None
+                ),
+            )
+        except usage.UsageError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not read usage ({_error_class(exc)})", 503)
+        return jsonify(body), 200
+
+    @app.get("/ai/usage/attempts")
+    @require_admin_token
+    def usage_attempts():
+        """The newest attempts, one row per provider call (P9-F02)."""
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        limit = request.args.get("limit") or usage.DEFAULT_LIST_LIMIT
+        try:
+            rows = usage.attempts(
+                resolved_settings,
+                tenant_key=tenant_key,
+                correlation_id=request.args.get("correlation_id") or None,
+                module=request.args.get("module") or None,
+                limit=int(limit),
+            )
+        except (TypeError, ValueError):
+            return _admin_error("limit must be an integer", 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not read attempts ({_error_class(exc)})", 503
+            )
+        return jsonify({"count": len(rows), "result": rows}), 200
+
+    @app.get("/ai/usage/reconciliation")
+    @require_admin_token
+    def usage_reconciliation():
+        """Ledger quality: missing usage, unpriced models, impossible counts."""
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            body = usage.reconcile(resolved_settings, tenant_key=tenant_key)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not reconcile usage ({_error_class(exc)})", 503
+            )
+        return jsonify(body), 200
+
+    @app.get("/ai/usage/prices")
+    @require_admin_token
+    def usage_price_list():
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            rows = usage.list_prices(
+                resolved_settings,
+                tenant_key=tenant_key,
+                provider=request.args.get("provider") or None,
+                model=request.args.get("model") or None,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not read prices ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {"count": len(rows), "result": [row.to_public_dict() for row in rows]}
+            ),
+            200,
+        )
+
+    @app.post("/ai/usage/prices")
+    @require_admin_token
+    def usage_price_publish():
+        """Publish a new price version; an old one is closed, never edited."""
+        payload = request.get_json(silent=True) or {}
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            price = usage.ModelPrice(
+                provider=str(payload.get("provider") or "").strip(),
+                model=str(payload.get("model") or "").strip(),
+                version=int(payload.get("version") or 1),
+                currency=str(payload.get("currency") or "").strip().upper(),
+                unit_tokens=int(payload.get("unit_tokens") or usage.MICROS_PER_UNIT),
+                input_micros_per_unit=int(
+                    payload.get("input_micros_per_unit") or 0
+                ),
+                output_micros_per_unit=int(
+                    payload.get("output_micros_per_unit") or 0
+                ),
+                cached_input_micros_per_unit=_optional_int(
+                    payload.get("cached_input_micros_per_unit")
+                ),
+                reasoning_micros_per_unit=_optional_int(
+                    payload.get("reasoning_micros_per_unit")
+                ),
+                effective_from=_parse_timestamp(payload.get("effective_from")),
+                source=str(payload.get("source") or ""),
+                source_url=str(payload.get("source_url") or ""),
+            )
+            stored = usage.publish_price(
+                resolved_settings, price, tenant_key=tenant_key
+            )
+        except usage.UsageError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except (TypeError, ValueError):
+            return _admin_error("price fields must be integers", 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not publish price ({_error_class(exc)})", 503
+            )
+        return jsonify(stored.to_public_dict()), 201
+
     @app.get("/ai/providers/types")
     @require_admin_token
     def provider_types():
@@ -2245,6 +2459,13 @@ def create_app(settings: Settings | None = None) -> Flask:
                 error=f"{exc.code}: {detail}"[:255] if detail else exc.code,
             )
             _record_health(provider_id, exc)
+            _record_connection_test(
+                record.name,
+                record.default_model,
+                correlation_id,
+                duration_ms,
+                error=exc,
+            )
             logger.info(
                 "provider_test correlation_id=%s provider=%s outcome=failed "
                 "error_code=%s detail=%s duration_ms=%d",
@@ -2289,6 +2510,9 @@ def create_app(settings: Settings | None = None) -> Flask:
         duration_ms = round((time.monotonic() - started) * 1000)
         registry.record_test_result(resolved_settings, provider_id, status="succeeded")
         _record_health(provider_id, None)
+        _record_connection_test(
+            record.name, response.model, correlation_id, duration_ms, response=response
+        )
         logger.info(
             "provider_test correlation_id=%s provider=%s outcome=succeeded "
             "model=%s duration_ms=%d",

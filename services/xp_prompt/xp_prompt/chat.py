@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from xp_prompt import conversations, intents, responses
+from xp_prompt import usage as usage_ledger
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.types import (
@@ -159,7 +160,17 @@ def run_turn(
     request = _build_request(history, user_message.id, intent=decision.intent)
 
     try:
-        router = registry.resolve_router(settings, tenant_key=tenant_key)
+        router = registry.resolve_router(
+            settings,
+            tenant_key=tenant_key,
+            context=usage_ledger.Context(
+                tenant_key=tenant_key,
+                module="chat",
+                feature="conversation_turn",
+                superset_user_id=superset_user_id,
+                conversation_id=conversation_id,
+            ),
+        )
     except registry.ProviderConfigError as exc:
         raise ChatError("no_provider", str(exc)) from exc
 
