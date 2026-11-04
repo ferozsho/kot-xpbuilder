@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+#
+# bin/dev — develop against the running stack instead of rebuilding the image.
+#
+# The runtime image bakes in the Superset source, the XP Prompt service and the
+# compiled frontend. That is right for a release and wrong for an afternoon of
+# edits, so this wrapper runs the same image with the checkout bind-mounted
+# (compose.dev.yml) and gives you the few steps that are actually needed:
+#
+#   bin/dev up              start with live code (rebuilds only if you ask)
+#   bin/dev reload          apply Python changes (restart, ~2 s, no rebuild)
+#   bin/dev frontend        rebuild the frontend into the shared assets dir
+#   bin/dev frontend watch  same, but webpack stays running and rebuilds on save
+#   bin/dev migrate         alembic upgrade head against the running database
+#   bin/dev permissions     grant the XP Ask / repair / dataset permissions
+#   bin/dev seed            copy .mo translations + version_info.json out of the image
+#   bin/dev status          what is running, and whether it is healthy
+#   bin/dev logs [service]  follow logs
+#   bin/dev down            stop the stack
+#
+# Rules of thumb:
+#   * Python (services/xp_prompt, superset/superset) → `bin/dev reload`
+#   * Frontend (superset/superset-frontend)          → `bin/dev frontend`, then refresh
+#   * Dockerfile, requirements, compose.yml          → `bin/dev build` (DEV_MODE=true,
+#                                                      so it skips the frontend)
+#
+# Never run a bare `docker compose up -d`: `pull_policy`/rebuild semantics aside,
+# it would start the services without this overlay and silently serve the baked
+# image again.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [ ! -f .env ]; then
+    echo "bin/dev: .env is missing; copy .env.example and fill it in first" >&2
+    exit 1
+fi
+
+ENV_FILE="${XPBUILDER_ENV_FILE:-.env}"
+INSTANCE="${XPBUILDER_INSTANCE:-$(sed -n 's/^XPBUILDER_INSTANCE=//p' "$ENV_FILE" | head -1)}"
+if [ -z "${INSTANCE}" ]; then
+    echo "bin/dev: XPBUILDER_INSTANCE is not set in $ENV_FILE" >&2
+    exit 1
+fi
+
+compose() {
+    docker compose --env-file "$ENV_FILE" -f compose.yml -f compose.dev.yml -p "$INSTANCE" "$@"
+}
+
+#: Services that import Python from the mounted checkout.
+PYTHON_SERVICES=(superset superset-worker superset-beat xp-prompt-api xp-prompt-worker)
+
+assets_ready() {
+    [ -f "superset/superset/static/assets/manifest.json" ] || \
+        [ -n "$(ls -A superset/superset/static/assets 2>/dev/null || true)" ]
+}
+
+seed_metadata() {
+    # The image compiles translations and writes static/version_info.json; the
+    # checkout has neither, and mounting over /app/superset would hide them.
+    local container="${INSTANCE}_superset"
+    if ! docker ps --format '{{.Names}}' | grep -qx "$container"; then
+        echo "bin/dev: $container is not running — start the stack first" >&2
+        return 1
+    fi
+    mkdir -p superset/superset/static
+    docker cp "$container:/app/superset/static/version_info.json" \
+        superset/superset/static/version_info.json 2>/dev/null || true
+    docker cp "$container:/app/superset/translations/." \
+        superset/superset/translations/ 2>/dev/null || true
+    echo "bin/dev: seeded version_info.json and compiled translations"
+}
+
+frontend() {
+    local mode="${1:-build}"
+    if [ "$mode" = "watch" ]; then
+        echo "bin/dev: webpack is watching superset-frontend (Ctrl-C to stop)"
+        compose --profile frontend run --rm --service-ports frontend \
+            sh -lc '[ -d node_modules/webpack ] || npm ci --no-audit --no-fund; npm run dev'
+        return
+    fi
+    echo "bin/dev: building the frontend into superset/superset/static/assets"
+    compose --profile frontend run --rm frontend sh -lc \
+        '[ -d node_modules/webpack ] || npm ci --no-audit --no-fund; npm run build-dev'
+    # The builder runs as root in its container; hand the output back to you.
+    docker run --rm -v "$ROOT/superset/superset/static:/static" alpine:3.20 \
+        chown -R "$(id -u):$(id -g)" /static
+    echo "bin/dev: done — refresh the browser (hard refresh once, if the hash changed)"
+}
+
+usage() {
+    sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# No argument must never mean "start things": an accidental `up` against a live
+# stack recreates containers. It prints the help instead.
+case "${1:-help}" in
+    help | -h | --help)
+        usage
+        exit 0
+        ;;
+    up)
+        compose up -d
+        if ! assets_ready; then
+            echo
+            echo "bin/dev: superset/superset/static/assets is empty, so the UI has no"
+            echo "         JS/CSS yet. Build it once with: bin/dev frontend"
+        fi
+        if [ ! -f superset/superset/static/version_info.json ]; then
+            echo "bin/dev: seed the image metadata once with: bin/dev seed"
+        fi
+        compose ps
+        ;;
+    down)
+        compose down
+        ;;
+    reload)
+        names=()
+        for service in "${PYTHON_SERVICES[@]}"; do
+            names+=("${INSTANCE}_${service//-/_}")
+        done
+        echo "bin/dev: restarting ${names[*]} (no rebuild)"
+        docker restart "${names[@]}" >/dev/null
+        compose ps
+        ;;
+    frontend)
+        frontend "${2:-build}"
+        ;;
+    migrate)
+        docker exec -w /app/xp_prompt "${INSTANCE}_xp_prompt_api" \
+            /app/.venv/bin/alembic upgrade head
+        ;;
+    permissions)
+        docker exec -i "${INSTANCE}_superset" /app/.venv/bin/python - \
+            < docker/ensure_ai_prompt_permissions.py
+        ;;
+    seed)
+        seed_metadata
+        ;;
+    build)
+        # DEV_MODE=true skips `npm ci` and the webpack build inside the image;
+        # the frontend comes from `bin/dev frontend` instead.
+        DEV_MODE="${DEV_MODE:-true}" docker compose --env-file "$ENV_FILE" \
+            build --build-arg DEV_MODE="${DEV_MODE:-true}" superset
+        ;;
+    status)
+        compose ps
+        for service in "${PYTHON_SERVICES[@]}"; do
+            local_name="${INSTANCE}_${service//-/_}"
+            state="$(docker inspect -f '{{.State.Health.Status}}' "$local_name" 2>/dev/null || echo missing)"
+            printf '  %-28s %s\n' "$local_name" "$state"
+        done
+        ;;
+    logs)
+        shift || true
+        compose logs -f "${@:-superset}"
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

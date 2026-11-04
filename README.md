@@ -67,6 +67,7 @@ Only files whose basename is exactly `.env` are accepted.
 | `ops/nginx/` | Example TLS vhosts for the hosted deployment (Superset, phpMyAdmin) |
 | `docker/patches/` | Export/verify vendored-source edits as patches |
 | `bin/xpbuilder` | CLI wrapper around `docker compose` |
+| `bin/dev` | Development wrapper: live source, no rebuild (`compose.dev.yml`) |
 | `instances/<site>/.env` | One protected configuration per site (never committed) |
 | `superset/` | Vendored Apache Superset 6.1.0 source (build input) |
 
@@ -89,6 +90,22 @@ Only files whose basename is exactly `.env` are accepted.
 
 Configuration is documented in [docs/configuration.md](docs/configuration.md)
 and server deployment in [docs/deployment.md](docs/deployment.md).
+
+### Editing the code? Use dev mode
+
+A rebuild is only needed when the *image* changes. `compose.dev.yml` mounts the
+checkout over the baked source, and `bin/dev` wraps the steps:
+
+```bash
+bin/dev build      # once — DEV_MODE=true, so it skips the frontend
+bin/dev up && bin/dev seed && bin/dev frontend
+
+bin/dev reload     # after a Python change (~2 s, no rebuild)
+bin/dev frontend   # after a frontend change, then refresh
+```
+
+See [docs/dev-mode.md](docs/dev-mode.md) for what is live, what still needs a
+build, and the guard rails.
 
 ## Connecting your own data
 

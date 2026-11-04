@@ -1,0 +1,89 @@
+# Development overlay — run the checkout, not just the image.
+#
+# Use it together with the base file:
+#
+#   docker compose --env-file .env -f compose.yml -f compose.dev.yml -p "$INSTANCE" up -d
+#
+# or, preferably, through the wrapper that knows the order of the steps:
+#
+#   bin/dev up          # start with live code
+#   bin/dev reload      # after a Python change
+#   bin/dev frontend    # after a frontend change
+#
+# What this buys you:
+#   * `services/xp_prompt` is mounted at /app/xp_prompt, so a change to the AI
+#     service is a `restart`, never an image rebuild;
+#   * `superset/superset` is mounted at /app/superset, so a change to any Superset
+#     Python module (views, commands, DAOs, config) is a `restart` too;
+#   * the frontend build writes into `superset/superset/static/assets`, which is
+#     part of that same mount — so `bin/dev frontend` (webpack, incremental) is
+#     visible after a browser refresh.
+#
+# Two things this overlay does NOT do, on purpose:
+#   * it does not build the frontend inside the image (run `bin/dev build`, which
+#     passes DEV_MODE=true and skips it), and
+#   * it does not seed the checkout's `static/version_info.json` or the compiled
+#     `.mo` translations — `bin/dev seed` copies those out of the image once.
+#
+# Nothing here changes the production path: without `-f compose.dev.yml` the
+# services are exactly the baked image.
+
+name: ${XPBUILDER_INSTANCE:?XPBUILDER_INSTANCE is required}
+
+services:
+  superset:
+    volumes:
+      - ./superset/superset:/app/superset
+
+  superset-worker:
+    volumes:
+      - ./superset/superset:/app/superset
+
+  superset-beat:
+    volumes:
+      - ./superset/superset:/app/superset
+
+  initialize:
+    volumes:
+      - ./superset/superset:/app/superset
+
+  xp-prompt-api:
+    volumes:
+      - ./services/xp_prompt:/app/xp_prompt
+
+  xp-prompt-worker:
+    volumes:
+      - ./services/xp_prompt:/app/xp_prompt
+
+  xp-prompt-initialize:
+    volumes:
+      - ./services/xp_prompt:/app/xp_prompt
+
+  # One-shot (or watching) frontend builder. Off by default: `profiles` keeps it
+  # out of `up`, so it only runs when asked for. node_modules lives in a named
+  # volume, which is what makes the second and later builds fast.
+  frontend:
+    profiles: ["frontend"]
+    image: node:20-trixie-slim
+    container_name: ${XPBUILDER_INSTANCE}_frontend
+    working_dir: /app/superset-frontend
+    environment:
+      HOME: /tmp
+      NPM_CONFIG_CACHE: /tmp/.npm
+      NODE_OPTIONS: --max_old_space_size=8192
+      CYPRESS_INSTALL_BINARY: "0"
+    volumes:
+      - ./superset/superset-frontend:/app/superset-frontend
+      - xp-frontend-node-modules:/app/superset-frontend/node_modules
+      # webpack writes to ../superset/static/assets, which is why this mount has
+      # to sit next to the source mount at the same relative path as the image.
+      - ./superset/superset/static:/app/superset/static
+    command:
+      - sh
+      - -lc
+      - >-
+        [ -d node_modules/webpack ] || npm ci --no-audit --no-fund;
+        npm run build-dev
+
+volumes:
+  xp-frontend-node-modules:
