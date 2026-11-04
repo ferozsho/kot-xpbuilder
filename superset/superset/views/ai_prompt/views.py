@@ -707,6 +707,17 @@ class AIPromptView(BaseSupersetView):
         status, body = call_xp_prompt("GET", f"/ai/usage/budgets?{_usage_query()}")
         return self.json_response(body, status)
 
+    @expose("/api/usage/alerts/", methods=("GET",))
+    @has_access_api
+    def api_usage_alerts(self) -> FlaskResponse:
+        """Whether alerts are enabled, who they are addressed to, and the breaches.
+
+        The service decides all three from the stored configuration; this view
+        forwards and does not invent a recipient.
+        """
+        status, body = call_xp_prompt("GET", f"/ai/usage/alerts?{_usage_query()}")
+        return self.json_response(body, status)
+
     @expose("/api/usage/budgets/<budget_id>/", methods=("DELETE",))
     @has_access_api
     def api_usage_budget_delete(self, budget_id: str) -> FlaskResponse:

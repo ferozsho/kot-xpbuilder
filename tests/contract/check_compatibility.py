@@ -1709,6 +1709,9 @@ def check_ai_configuration(compatibility: dict) -> None:
             'provider.max_attempts_per_provider',
             'provider.breaker_cooldown_seconds',
         ),
+        'usage.py': ('usage.cost_is_estimated',),
+        'budgets.py': ('usage.default_budget_warn_percent',),
+        'alerts.py': ('usage.alert_email', '"delivered": False'),
     }
     for name, markers in consumers.items():
         source = (services / name).read_text(encoding='utf-8')
@@ -1726,6 +1729,23 @@ def check_ai_configuration(compatibility: dict) -> None:
     for marker in ('_concurrency_slot', '_safeguards(', 'sql_concurrency_exceeded'):
         if marker not in proxy_view:
             raise AssertionError(f'the executor must apply the safeguards: {marker}')
+
+    # Every capability route is gated on a feature flag, and one handler answers
+    # for all of them so a refusal is never mistaken for a provider fault.
+    if '@feature_required(' not in api_source:
+        raise AssertionError('the capability routes must be gated')
+    if 'errorhandler(settings_registry.FeatureDisabled)' not in api_source:
+        raise AssertionError('a switched-off feature needs one 403 handler')
+    for marker in ('class FeatureDisabled', 'def require_feature('):
+        if marker not in registry_source:
+            raise AssertionError(f'the registry must expose {marker}')
+    for flag in ('dataset', 'chart', 'dashboard', 'history', 'usage', 'diagnostics'):
+        if f'@feature_required("{flag}")' not in api_source:
+            raise AssertionError(f'nothing is gated on feature.{flag}')
+    if 'def api_usage_alerts(' not in proxy_view:
+        raise AssertionError('the alert state needs a proxy route')
+    if 'can_api_usage_alerts' not in permission_script:
+        raise AssertionError('can_api_usage_alerts must be granted')
 
 
 def main():

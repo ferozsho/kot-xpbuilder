@@ -21,9 +21,9 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest import mock
 
-from xp_prompt import chat, repair, schema_slice, sql_candidate
+from xp_prompt import alerts, budgets, chat, repair, schema_slice, sql_candidate
 from xp_prompt import settings_registry as sr
-from xp_prompt import patterns, sql_execution, sql_guard
+from xp_prompt import patterns, sql_execution, sql_guard, usage
 from xp_prompt.config import Settings
 from xp_prompt.providers import health as provider_health
 from xp_prompt.providers import registry as provider_registry
@@ -481,6 +481,142 @@ class ProviderRoutingTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("provider.fallback_enabled", source)
         self.assertIn("provider.max_attempts_per_provider", source)
+
+    def test_a_text_setting_is_not_mistaken_for_broken_json(self) -> None:
+        # The only ``text`` setting is the alert address, and returning None for
+        # it made a configured recipient look like nobody.
+        self.assertEqual(sr._load("ops@example.org"), "ops@example.org")
+        self.assertEqual(sr._load(""), "")
+
+    def test_json_text_is_still_decoded(self) -> None:
+        self.assertEqual(sr._load('{"a": 1}'), {"a": 1})
+        self.assertEqual(sr._load("[1, 2]"), [1, 2])
+        self.assertEqual(sr._load("150"), 150)
+        self.assertEqual(sr._load("true"), True)
+
+    def test_structured_values_round_trip(self) -> None:
+        self.assertIsNone(sr._load(None))
+        self.assertEqual(sr._load(1_000), 1_000)
+        self.assertFalse(sr._load(False))
+
+
+class FeatureSwitchTests(unittest.TestCase):
+    """A capability that is off refuses, and says which one."""
+
+    def test_a_switched_on_flag_passes(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()):
+            sr.require_feature(settings(), "dataset")
+
+    def test_a_switched_off_flag_raises_a_typed_refusal(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map(feature__chart=False)):
+            with self.assertRaises(sr.FeatureDisabled) as caught:
+                sr.require_feature(settings(), "chart")
+        self.assertEqual(caught.exception.flag, "feature.chart")
+        self.assertEqual(caught.exception.code, "feature_disabled")
+        self.assertIn("feature.chart", str(caught.exception))
+
+    def test_an_unknown_flag_is_off_rather_than_on(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()):
+            self.assertFalse(sr.feature_enabled(settings(), "not_a_feature"))
+
+    def test_every_feature_flag_is_declared_and_gateable(self) -> None:
+        flags = [
+            setting.key.split(".", 1)[1]
+            for setting in sr.REGISTRY
+            if setting.key.startswith("feature.")
+        ]
+        self.assertEqual(
+            sorted(flags),
+            [
+                "chart",
+                "chat",
+                "dashboard",
+                "dataset",
+                "diagnostics",
+                "history",
+                "self_healing",
+                "sql",
+                "usage",
+            ],
+        )
+
+
+class UsageSettingsTests(unittest.TestCase):
+    """The cost label, the warning line and the alert state come from settings."""
+
+    def test_the_cost_label_defaults_to_estimated(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()):
+            self.assertTrue(usage._cost_is_estimated(settings(), "default"))
+
+    def test_a_reconciled_deployment_can_stop_calling_it_an_estimate(self) -> None:
+        with mock.patch.object(
+            sr, "live", return_value=live_map(usage__cost_is_estimated=False)
+        ):
+            self.assertFalse(usage._cost_is_estimated(settings(), "default"))
+
+    def test_an_unreadable_setting_stays_an_estimate(self) -> None:
+        # Unknown is not "billed": the safe label is the one that does not
+        # overstate what the number is.
+        with mock.patch.object(sr, "load", side_effect=RuntimeError("db is down")):
+            self.assertTrue(usage._cost_is_estimated(settings(), "default"))
+
+    def test_a_new_budget_starts_at_the_configured_warning_line(self) -> None:
+        with mock.patch.object(
+            sr, "live", return_value=live_map(usage__default_budget_warn_percent=65)
+        ):
+            self.assertEqual(budgets._default_warn_percent(settings(), "default"), 65)
+
+    def test_the_warning_line_is_clamped_like_every_other_value(self) -> None:
+        with mock.patch.object(
+            sr, "live", return_value=live_map(usage__default_budget_warn_percent=250)
+        ):
+            self.assertEqual(
+                budgets._default_warn_percent(settings(), "default"),
+                budgets.MAX_WARN_PERCENT,
+            )
+
+    def test_no_address_means_no_alerts(self) -> None:
+        state = {"budgets": []}
+        with mock.patch.object(sr, "live", return_value=live_map()), mock.patch.object(
+            alerts.budgets, "status", return_value=state
+        ):
+            report = alerts.report(settings())
+        self.assertFalse(report["enabled"])
+        self.assertEqual(report["recipient"], "")
+
+    def test_a_breach_is_reported_and_delivery_is_not_claimed(self) -> None:
+        state = {
+            "budgets": [
+                {
+                    "id": "b1",
+                    "scope": "tenant",
+                    "scope_ref": "",
+                    "period": "month",
+                    "state": "warning",
+                    "percent_used": 85,
+                    "warn_percent": 80,
+                    "cost_micros_limit": 1_000_000,
+                },
+                {
+                    "id": "b2",
+                    "scope": "module",
+                    "scope_ref": "chat",
+                    "period": "day",
+                    "state": "disabled",
+                    "percent_used": 10,
+                    "warn_percent": 80,
+                    "cost_micros_limit": 500_000,
+                },
+            ]
+        }
+        with mock.patch.object(
+            sr, "live", return_value=live_map(usage__alert_email="ops@example.org")
+        ), mock.patch.object(alerts.budgets, "status", return_value=state):
+            report = alerts.report(settings())
+        self.assertTrue(report["enabled"])
+        self.assertEqual(report["recipient"], "ops@example.org")
+        self.assertEqual([item["id"] for item in report["breaches"]], ["b1"])
+        self.assertFalse(report["delivered"])
 
 
 if __name__ == "__main__":

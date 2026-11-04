@@ -708,9 +708,23 @@ def summary(
         "group_by": keys,
         "groups": groups,
         "totals": overall,
-        "cost_is_estimated": True,
+        # The label is configuration, not a constant: a deployment that has
+        # reconciled its ledger against real invoices can say so, and one that has
+        # not keeps saying "estimated" (P10-F07).
+        "cost_is_estimated": _cost_is_estimated(settings, tenant_key),
         "since": _isoformat(since),
     }
+
+
+def _cost_is_estimated(settings: Settings, tenant_key: str) -> bool:
+    """Whether the totals above are a computation rather than an invoice."""
+    from xp_prompt import settings_registry
+
+    values = settings_registry.live(settings, tenant_key=tenant_key)
+    resolved = values.get("usage.cost_is_estimated")
+    # Unknown is not "billed": an unreadable setting must not upgrade an estimate
+    # into an invoice.
+    return bool(resolved.value) if resolved is not None else True
 
 
 def attempts(

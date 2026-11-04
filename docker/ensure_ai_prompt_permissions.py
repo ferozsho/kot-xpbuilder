@@ -74,6 +74,7 @@ ADMIN_ONLY_PERMISSIONS: tuple[str, ...] = (
     "can_api_usage_prices",
     "can_api_usage_budgets",
     "can_api_usage_budget_delete",
+    "can_api_usage_alerts",
     "can_api_usage_outbox",
     "can_api_usage_outbox_drain",
     "can_api_usage_billing_imports",

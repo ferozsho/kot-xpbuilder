@@ -138,6 +138,16 @@ class Decision:
         }
 
 
+def _default_warn_percent(settings: Settings, tenant_key: str) -> int:
+    """The deployment's warning line for a new budget, bounded like every other."""
+    from xp_prompt import settings_registry
+
+    values = settings_registry.live(settings, tenant_key=tenant_key)
+    resolved = values.get("usage.default_budget_warn_percent")
+    percent = int(resolved.value) if resolved is not None else DEFAULT_WARN_PERCENT
+    return max(1, min(percent, MAX_WARN_PERCENT))
+
+
 def define(
     settings: Settings,
     *,
@@ -147,12 +157,19 @@ def define(
     scope_ref: str = "",
     cost_micros_limit: int | None = None,
     tokens_limit: int | None = None,
-    warn_percent: int = DEFAULT_WARN_PERCENT,
+    warn_percent: int | None = None,
     hard_stop: bool = True,
     enabled: bool = True,
     currency: str = "",
 ) -> Budget:
-    """Create or update one budget definition."""
+    """Create or update one budget definition.
+
+    ``warn_percent`` defaults to the deployment's ``usage.default_budget_warn_percent``
+    rather than a constant, so a new budget starts at the line the operator chose
+    instead of the one baked in at build time (P10-F07).
+    """
+    if warn_percent is None:
+        warn_percent = _default_warn_percent(settings, tenant_key)
     clean_scope = (scope or "").strip().lower()
     clean_period = (period or "").strip().lower()
     if clean_scope not in SCOPES:

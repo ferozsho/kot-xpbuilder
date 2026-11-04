@@ -30,6 +30,7 @@ from flask import Flask, Response, jsonify, request
 
 from xp_prompt import (
     __version__,
+    alerts,
     artifacts,
     audit,
     billing,
@@ -295,6 +296,52 @@ def create_app(settings: Settings | None = None) -> Flask:
 
         return wrapper
 
+    def _request_tenant() -> str:
+        """The tenant a request is acting for, from its body or query string."""
+        payload = request.get_json(silent=True)
+        raw = ""
+        if isinstance(payload, dict):
+            raw = str(payload.get("tenant") or "")
+        if not raw:
+            raw = str(request.args.get("tenant") or "")
+        return raw or registry.DEFAULT_TENANT_KEY
+
+    def feature_required(flag: str) -> Callable[[Callable[..., Any]], Any]:
+        """Refuse the route when the tenant has switched the capability off.
+
+        Applied under ``require_admin_token`` so an unauthenticated caller learns
+        nothing about the configuration. A feature that is off is a decision, so
+        it answers 403 with the module's own sentence rather than a generic fault
+        (P10-F08).
+        """
+
+        def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
+            @wraps(view)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                settings_registry.require_feature(
+                    resolved_settings, flag, tenant_key=_request_tenant()
+                )
+                return view(*args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
+    @app.errorhandler(settings_registry.FeatureDisabled)
+    def feature_disabled(exc: settings_registry.FeatureDisabled) -> Any:
+        """One answer for every module that refuses on a switched-off flag."""
+        return (
+            jsonify(
+                {
+                    "message": str(exc),
+                    "code": exc.code,
+                    "feature": exc.flag,
+                    "severity": "warning",
+                }
+            ),
+            403,
+        )
+
     @app.get("/health/live")
     def health_live():
         return jsonify({"service": "xp-prompt-api", "status": "alive"}), 200
@@ -351,6 +398,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/conversations")
     @require_admin_token
+    @feature_required("history")
     def conversation_create():
         payload = request.get_json(silent=True) or {}
         owner = _conversation_owner(payload)
@@ -372,6 +420,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/conversations")
     @require_admin_token
+    @feature_required("history")
     def conversation_list():
         owner = _conversation_owner()
         if owner is None:
@@ -1400,6 +1449,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/conversations/<conversation_id>/audit")
     @require_admin_token
+    @feature_required("diagnostics")
     def conversation_audit(conversation_id: str):
         """The turns of one conversation, newest first — statements hidden by default.
 
@@ -1448,6 +1498,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/datasets/spec")
     @require_admin_token
+    @feature_required("dataset")
     def dataset_spec_normalize():
         """Compile and judge a dataset proposal without storing anything (P6-F02).
 
@@ -1482,6 +1533,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/datasets/drafts")
     @require_admin_token
+    @feature_required("dataset")
     def dataset_draft_create():
         """Store a compiled draft — idempotently (P6-F05).
 
@@ -1525,6 +1577,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/datasets/drafts")
     @require_admin_token
+    @feature_required("dataset")
     def dataset_draft_list():
         owner = _conversation_owner(
             {"superset_user_id": request.args.get("superset_user_id")}
@@ -1551,6 +1604,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/datasets/drafts/<draft_id>")
     @require_admin_token
+    @feature_required("dataset")
     def dataset_draft_detail(draft_id: str):
         owner = _conversation_owner(
             {"superset_user_id": request.args.get("superset_user_id")}
@@ -1571,6 +1625,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/datasets/drafts/<draft_id>")
     @require_admin_token
+    @feature_required("dataset")
     def dataset_draft_update(draft_id: str):
         """Replace an open draft's proposal; a stale writer is refused (P6-F09)."""
         payload = request.get_json(silent=True) or {}
@@ -1620,6 +1675,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/datasets/drafts/<draft_id>/saved")
     @require_admin_token
+    @feature_required("dataset")
     def dataset_draft_mark_saved(draft_id: str):
         """Pin the draft to the dataset that now exists in Superset (P6-F08)."""
         payload = request.get_json(silent=True) or {}
@@ -1647,6 +1703,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/datasets/drafts/<draft_id>/scrap")
     @require_admin_token
+    @feature_required("dataset")
     def dataset_draft_scrap(draft_id: str):
         """Close a draft that produced nothing, so no half-object is left behind."""
         payload = request.get_json(silent=True) or {}
@@ -1671,6 +1728,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/charts/recommend")
     @require_admin_token
+    @feature_required("chart")
     def chart_recommend():
         """Recommend visualizations for a dataset, and say why the rest were dropped.
 
@@ -1730,6 +1788,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/charts/contracts")
     @require_admin_token
+    @feature_required("chart")
     def chart_contracts():
         """What each supported visualization accepts — the operator's reference."""
         return (
@@ -1748,6 +1807,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/charts/drafts")
     @require_admin_token
+    @feature_required("chart")
     def chart_draft_create():
         """Store a validated chart configuration, idempotently.
 
@@ -1793,6 +1853,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/charts/drafts")
     @require_admin_token
+    @feature_required("chart")
     def chart_draft_list():
         owner = _conversation_owner(
             {"superset_user_id": request.args.get("superset_user_id")}
@@ -1826,6 +1887,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/charts/drafts/<draft_id>")
     @require_admin_token
+    @feature_required("chart")
     def chart_draft_detail(draft_id: str):
         owner = _conversation_owner(
             {"superset_user_id": request.args.get("superset_user_id")}
@@ -1847,6 +1909,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/charts/drafts/<draft_id>")
     @require_admin_token
+    @feature_required("chart")
     def chart_draft_update(draft_id: str):
         """Replace an open draft's configuration; a stale writer is refused (P7-F07)."""
         payload = request.get_json(silent=True) or {}
@@ -1894,6 +1957,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/charts/drafts/<draft_id>/runs")
     @require_admin_token
+    @feature_required("chart")
     def chart_draft_run(draft_id: str):
         """Count one preview render (P7-F06); accountability, not bookkeeping for its own sake."""
         payload = request.get_json(silent=True) or {}
@@ -1910,6 +1974,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/charts/drafts/<draft_id>/saved")
     @require_admin_token
+    @feature_required("chart")
     def chart_draft_mark_saved(draft_id: str):
         """Pin the draft to the chart that now exists in Superset (P7-F09)."""
         payload = request.get_json(silent=True) or {}
@@ -1935,6 +2000,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/charts/drafts/<draft_id>/scrap")
     @require_admin_token
+    @feature_required("chart")
     def chart_draft_scrap(draft_id: str):
         """Close a draft that produced nothing (P7-F10)."""
         payload = request.get_json(silent=True) or {}
@@ -1959,6 +2025,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/dashboards/plan")
     @require_admin_token
+    @feature_required("dashboard")
     def dashboard_plan_build():
         """Plan a dashboard from a goal, reusing whatever already exists.
 
@@ -1989,6 +2056,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/dashboards/layout")
     @require_admin_token
+    @feature_required("dashboard")
     def dashboard_layout_build():
         """Turn saved charts into validated position metadata plus safe native filters.
 
@@ -2028,6 +2096,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/dashboards/preview")
     @require_admin_token
+    @feature_required("dashboard")
     def dashboard_preview_build():
         """Validate every chart-data result and assemble a read-only preview.
 
@@ -2067,6 +2136,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/dashboards/publish")
     @require_admin_token
+    @feature_required("dashboard")
     def dashboard_publish_start():
         """Open a publish attempt, refusing access the caller may not assign.
 
@@ -2151,6 +2221,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/dashboards/publish/<publish_id>/published")
     @require_admin_token
+    @feature_required("dashboard")
     def dashboard_publish_complete(publish_id: str):
         """Record the dashboard and objects a successful attempt created."""
         if not _is_uuid(publish_id):
@@ -2188,6 +2259,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/dashboards/publish/<publish_id>/failed")
     @require_admin_token
+    @feature_required("dashboard")
     def dashboard_publish_fail(publish_id: str):
         """Close a failed attempt, keeping one cleanup outcome per object."""
         if not _is_uuid(publish_id):
@@ -2220,6 +2292,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/dashboards/publish/<publish_id>")
     @require_admin_token
+    @feature_required("dashboard")
     def dashboard_publish_detail(publish_id: str):
         """What did this attempt create, and what became of it (P8-F10)."""
         if not _is_uuid(publish_id):
@@ -2247,6 +2320,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/summary")
     @require_admin_token
+    @feature_required("usage")
     def usage_summary():
         """Totals behind the admin cards, with the cost labelled estimated.
 
@@ -2281,6 +2355,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/attempts")
     @require_admin_token
+    @feature_required("usage")
     def usage_attempts():
         """The newest attempts, one row per provider call (P9-F02)."""
         tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
@@ -2303,6 +2378,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/reconciliation")
     @require_admin_token
+    @feature_required("usage")
     def usage_reconciliation():
         """Ledger quality: missing usage, unpriced models, impossible counts."""
         tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
@@ -2316,6 +2392,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/prices")
     @require_admin_token
+    @feature_required("usage")
     def usage_price_list():
         tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
         try:
@@ -2336,6 +2413,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/usage/prices")
     @require_admin_token
+    @feature_required("usage")
     def usage_price_publish():
         """Publish a new price version; an old one is closed, never edited."""
         payload = request.get_json(silent=True) or {}
@@ -2380,6 +2458,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/outbox")
     @require_admin_token
+    @feature_required("usage")
     def usage_outbox_status():
         """How much usage work is waiting, and what gave up (P9-F06)."""
         tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
@@ -2405,6 +2484,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/usage/outbox/drain")
     @require_admin_token
+    @feature_required("usage")
     def usage_outbox_drain():
         """Apply waiting usage events now, instead of waiting for the worker."""
         payload = request.get_json(silent=True) or {}
@@ -2420,6 +2500,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/usage/outbox/<event_id>/requeue")
     @require_admin_token
+    @feature_required("usage")
     def usage_outbox_requeue(event_id: str):
         """Requeue a dead-lettered event once the cause has been fixed."""
         if not _is_uuid(event_id):
@@ -2436,8 +2517,30 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     # --- Budgets and alerts (P9-F09) -------------------------------------
 
+    @app.get("/ai/usage/alerts")
+    @require_admin_token
+    @feature_required("usage")
+    def usage_alerts():
+        """Whether alerts are enabled, where they are addressed, and what crossed a line.
+
+        ``delivered`` is always false: this deployment decides and addresses the
+        alert, and has no transport to send it. Reporting that honestly is better
+        than an operator believing an inbox is being watched (P10-F07).
+        """
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            body = alerts.report(resolved_settings, tenant_key=tenant_key)
+        except budgets.BudgetError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not read alerts ({_error_class(exc)})", 503)
+        return jsonify(body), 200
+
     @app.get("/ai/usage/budgets")
     @require_admin_token
+    @feature_required("usage")
     def usage_budget_list():
         """Every budget with its live window, so the admin sees headroom."""
         tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
@@ -2453,6 +2556,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/usage/budgets")
     @require_admin_token
+    @feature_required("usage")
     def usage_budget_define():
         """Create or replace one budget; the scope decides what it constrains."""
         payload = request.get_json(silent=True) or {}
@@ -2466,9 +2570,9 @@ def create_app(settings: Settings | None = None) -> Flask:
                 scope_ref=str(payload.get("scope_ref") or ""),
                 cost_micros_limit=_optional_int(payload.get("cost_micros_limit")),
                 tokens_limit=_optional_int(payload.get("tokens_limit")),
-                warn_percent=int(
-                    payload.get("warn_percent") or budgets.DEFAULT_WARN_PERCENT
-                ),
+                # Absent means "the deployment's warning line", not a hardcoded
+                # 80: the form leaves the field empty and the service decides.
+                warn_percent=_optional_int(payload.get("warn_percent")),
                 hard_stop=bool(payload.get("hard_stop", True)),
                 enabled=bool(payload.get("enabled", True)),
                 currency=str(payload.get("currency") or ""),
@@ -2485,6 +2589,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.delete("/ai/usage/budgets/<budget_id>")
     @require_admin_token
+    @feature_required("usage")
     def usage_budget_delete(budget_id: str):
         if not _is_uuid(budget_id):
             return _admin_error("Budget not found", 404)
@@ -2503,6 +2608,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/billing/imports")
     @require_admin_token
+    @feature_required("usage")
     def usage_billing_imports():
         tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
         try:
@@ -2520,6 +2626,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/usage/billing/imports")
     @require_admin_token
+    @feature_required("usage")
     def usage_billing_import():
         """Store one provider billing export and match it to recorded attempts.
 
@@ -2563,12 +2670,14 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/billing/source")
     @require_admin_token
+    @feature_required("usage")
     def usage_billing_source():
         """Whether an export source is configured; never the URL or the token."""
         return jsonify(billing.source_status(resolved_settings)), 200
 
     @app.post("/ai/usage/billing/fetch")
     @require_admin_token
+    @feature_required("usage")
     def usage_billing_fetch():
         """Fetch the provider's billing export now instead of waiting for the job."""
         payload = request.get_json(silent=True) or {}
@@ -2593,6 +2702,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.get("/ai/usage/billing/imports/<import_id>/variance")
     @require_admin_token
+    @feature_required("usage")
     def usage_billing_variance(import_id: str):
         """Estimated against billed, with the unmatched counts that explain it."""
         if not _is_uuid(import_id):

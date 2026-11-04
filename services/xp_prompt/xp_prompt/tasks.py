@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from xp_prompt import billing, jobs, usage
+from xp_prompt import alerts, billing, jobs, usage
 from xp_prompt.celery_app import app
 from xp_prompt.config import Settings
 from xp_prompt.providers.registry import DEFAULT_TENANT_KEY
@@ -129,7 +129,35 @@ def reconcile_usage() -> dict[str, Any]:
                 report["missing_usage"],
                 ",".join(report["price_gaps"]) or "-",
             )
+        _report_breaches(settings, tenant_key)
     return {"tenants": len(reports), "unhealthy": unhealthy, "reports": reports}
+
+
+def _report_breaches(settings: Settings, tenant_key: str) -> None:
+    """Name the budgets that crossed their warning line, and who is addressed.
+
+    The alert is emitted here rather than in a route because a budget breach is
+    discovered when the window moves, not when an admin opens a page. No mail is
+    sent — there is no transport in this runtime — so the log line records the
+    recipient the stored setting names and nothing claims delivery (P10-F07).
+    """
+    try:
+        state = alerts.report(settings, tenant_key=tenant_key)
+    except Exception:  # pragma: no cover - a sweep must not fail on an alert
+        logger.warning("usage_alerts_failed tenant=%s", tenant_key, exc_info=True)
+        return
+    if not state["breaches"]:
+        return
+    worst = state["breaches"][0]
+    logger.warning(
+        "usage_alert tenant=%s breaches=%d worst=%s percent=%d recipient=%s "
+        "delivered=false",
+        tenant_key,
+        state["count"],
+        worst["state"],
+        worst["percent_used"],
+        state["recipient"] or "-",
+    )
 
 
 @app.task(name="xp_prompt.fetch_billing_exports")

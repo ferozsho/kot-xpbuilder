@@ -75,6 +75,21 @@ class SettingError(ValueError):
         self.code = code
 
 
+class FeatureDisabled(RuntimeError):
+    """A capability the tenant has switched off (P10-F08).
+
+    Its own type rather than a bare ``RuntimeError`` so the API can answer 403 for
+    every module at once: a feature that is off is a decision, not a fault, and a
+    caller must not have to guess which module said no.
+    """
+
+    code = "feature_disabled"
+
+    def __init__(self, flag: str, message: str = "") -> None:
+        super().__init__(message or f"{flag} is switched off for this tenant")
+        self.flag = flag
+
+
 @dataclass(frozen=True, slots=True)
 class Setting:
     """One known setting, with the bounds that make it safe to change."""
@@ -455,11 +470,30 @@ def effective(
 def feature_enabled(
     settings: Settings, flag: str, *, tenant_key: str = "default"
 ) -> bool:
-    """Is a feature switched on? Unknown flags are off, not on by accident."""
+    """Is a feature switched on? An unknown flag is off, not on by accident.
+
+    Read through :func:`live`, so an unreadable table leaves the capability as the
+    registry declares it rather than refusing work during an outage. The two
+    failures are different: an unknown *name* is a programming error and stays off,
+    an unreachable *database* is an incident and must not disable the product.
+    """
     key = f"feature.{flag}"
     if key not in BY_KEY:
         return False
-    return bool(effective(settings, tenant_key=tenant_key).get(key, False))
+    resolved = live(settings, tenant_key=tenant_key).get(key)
+    return bool(resolved.value) if resolved is not None else False
+
+
+def require_feature(
+    settings: Settings, flag: str, *, tenant_key: str = "default"
+) -> None:
+    """Refuse the work when the tenant has switched the capability off.
+
+    Called where the work starts, so a route, a job and a scheduled task all
+    honour the same switch without each of them remembering to look.
+    """
+    if not feature_enabled(settings, flag, tenant_key=tenant_key):
+        raise FeatureDisabled(f"feature.{flag}")
 
 
 def live(
@@ -859,14 +893,27 @@ def _json(value: Any) -> str:
 
 
 def _load(value: Any) -> Any:
+    """Decode one stored value without mistaking text for broken JSON.
+
+    A driver that hands back the JSON *text* must be decoded, but a ``text``
+    setting is itself a string: parsing ``ops@example.org`` as JSON fails, and
+    returning ``None`` on that failure silently turned the only configured
+    recipient into "nobody". Only a string that decodes to something else, or
+    that was quoted as a JSON string, is treated as JSON text.
+    """
     import json
 
-    if isinstance(value, str | bytes):
-        try:
-            return json.loads(value)
-        except (TypeError, ValueError):
-            return None
-    return value
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    if not isinstance(value, str):
+        return value
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return value
+    if isinstance(decoded, str) and value[:1] != '"':
+        return value
+    return decoded
 
 
 def _text(value: Any, limit: int) -> str:
