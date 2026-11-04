@@ -30,6 +30,9 @@ from xp_prompt import (
     __version__,
     artifacts,
     audit,
+    chart_catalog,
+    chart_profile,
+    chart_rules,
     chat,
     conversations,
     cost_guard,
@@ -1528,6 +1531,62 @@ def create_app(settings: Settings | None = None) -> Flask:
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not scrap the draft ({_error_class(exc)})", 503)
         return jsonify({"draft": draft.to_public_dict()}), 200
+
+    # --- Chart recommendations (P7-F01/F02/F03) --------------------------
+
+    @app.post("/ai/charts/recommend")
+    @require_admin_token
+    def chart_recommend():
+        """Recommend visualizations for a dataset, and say why the rest were dropped.
+
+        The proxy reports what this deployment can render (it is the only component
+        that can ask the deployment) and what was measured about the fields; this
+        endpoint owns the rule engine and the control contracts, so a recommendation
+        can never name a viz type the deployment does not have or a control that viz
+        type does not read.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        catalog = chart_catalog.Catalog.from_payload(payload)
+        profile = chart_profile.profile(
+            payload.get("columns"),
+            measured=payload.get("measured"),
+            row_count=payload.get("row_count") or 0,
+            grain=payload.get("grain"),
+        )
+        recommendation = chart_rules.recommend(
+            profile,
+            catalog,
+            row_limit=payload.get("row_limit") or chart_rules.DEFAULT_ROW_LIMIT,
+        )
+        logger.info(
+            "chart_recommend outcome=%s candidates=%d available=%d",
+            "ok" if recommendation.candidates else "empty",
+            len(recommendation.candidates),
+            len(catalog.available),
+        )
+        body = recommendation.to_public_dict()
+        body["catalog"] = catalog.to_public_dict()
+        if payload.get("include_profile"):
+            body["profile"] = profile.to_public_dict()
+        return jsonify(body), 200
+
+    @app.get("/ai/charts/contracts")
+    @require_admin_token
+    def chart_contracts():
+        """What each supported visualization accepts — the operator's reference."""
+        return (
+            jsonify(
+                {
+                    "result": [
+                        contract.to_public_dict()
+                        for contract in chart_catalog.VIZ_CONTRACTS.values()
+                    ]
+                }
+            ),
+            200,
+        )
 
     @app.get("/ai/providers/types")
     @require_admin_token

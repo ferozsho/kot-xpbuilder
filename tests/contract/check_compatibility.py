@@ -1115,6 +1115,36 @@ def check_ai_sql_guard(compatibility: dict) -> None:
         if permission not in permissions:
             raise AssertionError(f'the dataset API needs {permission}')
 
+    # P7-F01/F02/F03: the recommendation is bounded by what the deployment can render,
+    # the profile is explicit, and every candidate passes its own control contract.
+    catalog_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'chart_catalog.py'
+    if not catalog_path.exists():
+        raise AssertionError('chart_catalog.py must exist')
+    catalog_source = catalog_path.read_text(encoding='utf-8')
+    for marker in ('VIZ_CONTRACTS', 'def accepts', 'def supported', 'def validate'):
+        if marker not in catalog_source:
+            raise AssertionError(f'the chart catalog lost {marker}')
+    profile_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'chart_profile.py'
+    if not profile_path.exists():
+        raise AssertionError('chart_profile.py must exist')
+    profile_source = profile_path.read_text(encoding='utf-8')
+    for marker in ('def profile(', 'def fingerprint_of', 'LOW_CARDINALITY'):
+        if marker not in profile_source:
+            raise AssertionError(f'the chart profile lost {marker}')
+    rules_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'chart_rules.py'
+    if not rules_path.exists():
+        raise AssertionError('chart_rules.py must exist')
+    rules_source = rules_path.read_text(encoding='utf-8')
+    for marker in ('def recommend(', 'class Elimination', 'catalog.validate('):
+        if marker not in rules_source:
+            raise AssertionError(f'the chart rules lost {marker}')
+    if 'MAX_CANDIDATES' not in rules_source:
+        raise AssertionError('a recommendation must be bounded')
+    if '/ai/charts/recommend' not in service:
+        raise AssertionError('the service must expose /ai/charts/recommend')
+    if '/ai/charts/contracts' not in service:
+        raise AssertionError('the service must expose the control contracts')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.
