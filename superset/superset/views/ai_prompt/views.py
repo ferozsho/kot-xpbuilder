@@ -42,6 +42,7 @@ from superset import db, security_manager
 from superset.exceptions import SupersetSecurityException
 from superset.models.core import Database
 from superset.superset_typing import FlaskResponse
+from superset.utils.json import loads as json_loads
 from superset.views.ai_provider.views import call_xp_prompt
 from superset.views.base import BaseSupersetView
 
@@ -270,23 +271,10 @@ class AIPromptView(BaseSupersetView):
                 {"message": _("No authenticated user"), "severity": "danger"}, 401
             )
         payload = _body()
-        question = str(payload.get("question") or "").strip()
-        if not question:
-            return self.json_response(
-                {"message": _("question is required"), "severity": "danger"}, 400
-            )
-        datasets = authorized_datasets()
-        database = _database_for(payload, datasets)
-        if database is None:
-            return self.json_response(
-                {
-                    "message": _(
-                        "Choose a database: the workspace is authorized for several"
-                    ),
-                    "severity": "danger",
-                },
-                400,
-            )
+        question, database, failure = _turn_target(payload)
+        if failure is not None:
+            body, status = failure
+            return self.json_response(body, status)
 
         schema_name = str(payload.get("schema") or "").strip() or None
         candidate_status, candidate = call_xp_prompt(
@@ -297,35 +285,39 @@ class AIPromptView(BaseSupersetView):
                 "question": question,
                 "database": database.database_name,
                 "max_rows": MAX_PREVIEW_ROWS,
-                "datasets": datasets,
+                "datasets": authorized_datasets(),
             },
         )
         if candidate_status != 200:
             return self.json_response(candidate, candidate_status)
 
-        try:
-            security_manager.raise_for_access(
-                database=database, sql=candidate["sql"], schema=schema_name
-            )
-        except SupersetSecurityException:
-            return self.json_response(
-                {
-                    "message": _("Not authorized to run this query"),
-                    "severity": "danger",
-                },
-                403,
-            )
+        failure = _authorize(database, candidate["sql"], schema_name)
+        if failure is not None:
+            body, status = failure
+            return self.json_response(body, status)
 
-        started = time.monotonic()
-        try:
-            frame = database.get_df(candidate["sql"], schema=schema_name)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("XP Prompt SQL turn failed: %s", type(exc).__name__)
-            return self.json_response(
-                {"message": _("The query could not be executed"), "severity": "danger"},
-                400,
-            )
-        duration_ms = round((time.monotonic() - started) * 1000)
+        # Cost gate (P4-F08): measure here, decide in the service. Refusing before
+        # execution is the only useful place to refuse.
+        failure, plan = _cost_gate(owner, database, candidate["sql"], schema_name)
+        if failure is not None:
+            body, status = failure
+            return self.json_response(body, status)
+
+        frame, duration_ms, failure = _execute(
+            database, candidate["sql"], schema_name
+        )
+        if failure is not None:
+            body, status = failure
+            return self.json_response(body, status)
+
+        # The wall-clock budget is a soft gate: the statement has run, so the
+        # honest response is to refuse to present it as a cheap answer rather than
+        # to pretend it never happened (a hard timeout belongs to the read-only
+        # database role's statement timeout).
+        slow = _runtime_budget_failure(duration_ms, plan)
+        if slow is not None:
+            body, status = slow
+            return self.json_response(body, status)
 
         preview = frame.head(MAX_PREVIEW_ROWS)
         result_status, verdict = call_xp_prompt(
@@ -346,21 +338,20 @@ class AIPromptView(BaseSupersetView):
         if result_status != 200:
             return self.json_response(verdict, result_status)
 
-        blocks = [*candidate.get("blocks", []), *verdict.get("blocks", [])]
-        store_status, stored = call_xp_prompt(
-            "POST",
-            f"/ai/conversations/{conversation_id}/blocks",
-            payload={
-                "superset_user_id": owner,
-                "question": question,
-                "content": candidate.get("rationale") or "",
-                "blocks": blocks,
-                "kind": "answer",
-                "intent": "query",
-                "correlation_id": candidate.get("correlation_id"),
-            },
+        blocks = [
+            *candidate.get("blocks", []),
+            *verdict.get("blocks", []),
+            *_plan_warnings(plan),
+        ]
+        stored, store_status = _store_turn(
+            owner,
+            conversation_id,
+            question=question,
+            content=candidate.get("rationale") or "",
+            blocks=blocks,
+            correlation_id=candidate.get("correlation_id"),
         )
-        if store_status not in (200, 201):
+        if store_status != 201:
             return self.json_response(stored, store_status)
 
         return self.json_response(
@@ -371,6 +362,7 @@ class AIPromptView(BaseSupersetView):
                 "limit": candidate.get("limit"),
                 "tables": candidate.get("tables", []),
                 "database": database.database_name,
+                "plan": plan.get("code"),
             },
             201,
         )
@@ -547,6 +539,283 @@ MAX_DATASET_SQL_CHARS = 8_000
 #: Rendered row-level predicates travel with the dataset; the service re-bounds and
 #: parses them before they reach a statement.
 MAX_RLS_CHARS = 2_000
+#: A plan probe is a read of the planner only, so its own output is bounded hard:
+#: a pathological plan is refused by the service anyway, not summarised here.
+MAX_PLAN_ROWS = 200
+
+
+def _explain_estimate(
+    database: Any, sql: str, schema_name: str | None
+) -> dict[str, Any]:
+    """A normalized cost estimate for a statement, or an honest "unavailable".
+
+    The estimate is measured here because this is the only component with a
+    database connection; the *decision* is not made here (P4-F08 owns the budget in
+    the service). ``EXPLAIN`` plans a statement without running it, so the probe is
+    read-only even for a query that would be expensive.
+
+    An unmeasurable statement is reported as ``unavailable`` rather than guessed:
+    the service decides whether that is acceptable for this deployment.
+    """
+    backend = (getattr(database, "backend", "") or "").split("://", 1)[0]
+    try:
+        if backend in {"postgresql", "postgres", "postgresql+psycopg2"}:
+            frame = database.get_df(f"EXPLAIN (FORMAT JSON) {sql}", schema=schema_name)
+            plan = _postgres_plan(frame)
+        elif backend in {"mysql", "mariadb", "mysql+pymysql"}:
+            frame = database.get_df(f"EXPLAIN {sql}", schema=schema_name)
+            plan = _mysql_plan(frame)
+        else:
+            return {"source": "unavailable"}
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.info("XP Prompt cost probe unavailable: %s", type(exc).__name__)
+        return {"source": "unavailable"}
+    if plan is None:
+        return {"source": "unavailable"}
+    return plan
+
+
+def _postgres_plan(frame: Any) -> dict[str, Any] | None:
+    """PostgreSQL ``EXPLAIN (FORMAT JSON)`` -> rows/cost/nodes.
+
+    ``rows`` is the **largest** row estimate anywhere in the plan, not the root's:
+    an aggregate reports one output row while the scan beneath it may read
+    millions, and the row budget is about what the query reads.
+    """
+    if frame is None or frame.empty:
+        return None
+    raw = frame.iloc[0, 0]
+    document = raw
+    if isinstance(raw, str):
+        try:
+            document = json_loads(raw)
+        except ValueError:
+            return None
+    if isinstance(document, list):
+        document = document[0] if document else None
+    root = (document or {}).get("Plan") if isinstance(document, dict) else None
+    if not isinstance(root, dict):
+        return None
+    nodes, widest = _plan_stats(root)
+    cost = _number(root.get("Total Cost"))
+    return {
+        "source": "explain",
+        "rows": widest if widest > 0 else None,
+        "cost": float(cost) if cost is not None else None,
+        "plan_nodes": nodes,
+    }
+
+
+def _mysql_plan(frame: Any) -> dict[str, Any] | None:
+    """MySQL/MariaDB ``EXPLAIN`` -> the product of the per-table row estimates."""
+    if frame is None or frame.empty:
+        return None
+    rows = 1
+    seen = False
+    for value in frame.get("rows", []):
+        estimate = _number(value)
+        if estimate is None:
+            continue
+        rows *= max(1, int(estimate))
+        seen = True
+    if not seen:
+        return None
+    return {"source": "explain", "rows": rows, "cost": None, "plan_nodes": len(frame)}
+
+
+def _plan_stats(plan: dict[str, Any]) -> tuple[int, int]:
+    """(node count, widest row estimate) for one plan subtree."""
+    nodes = 1
+    widest = int(_number(plan.get("Plan Rows")) or 0)
+    for child in plan.get("Plans") or []:
+        if not isinstance(child, dict):
+            continue
+        child_nodes, child_widest = _plan_stats(child)
+        nodes += child_nodes
+        widest = max(widest, child_widest)
+    return nodes, widest
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _plan_warnings(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Surface what the cost gate decided, so the transcript is not silent about it."""
+    code = str(plan.get("code") or "")
+    estimate = plan.get("estimate") or {}
+    if code == "plan_unavailable":
+        return [{"type": "warnings", "items": [_("No cost estimate was available.")]}]
+    rows = estimate.get("rows")
+    if code == "ok" and isinstance(rows, int) and rows > 0:
+        return [
+            {
+                "type": "warnings",
+                "items": [
+                    _("Estimated %(rows)s rows from the query plan.")
+                    % {"rows": f"{rows:,}"}
+                ],
+            }
+        ]
+    return []
+
+
+def _turn_target(
+    payload: dict[str, Any],
+) -> tuple[str, Any, tuple[dict[str, Any], int] | None]:
+    """What to ask, against which database — or why the request cannot proceed.
+
+    The database is resolved from the principal's authorized slice, never from an
+    id the browser picked, so a stale or hostile id cannot redirect the query.
+    """
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        return "", None, (
+            {"message": _("question is required"), "severity": "danger"},
+            400,
+        )
+    database = _database_for(payload, authorized_datasets())
+    if database is None:
+        return question, None, (
+            {
+                "message": _(
+                    "Choose a database: the workspace is authorized for several"
+                ),
+                "severity": "danger",
+            },
+            400,
+        )
+    return question, database, None
+
+
+def _authorize(
+    database: Any, sql: str, schema_name: str | None
+) -> tuple[dict[str, Any], int] | None:
+    """Superset's own access check, including the tables the SQL references."""
+    try:
+        security_manager.raise_for_access(
+            database=database, sql=sql, schema=schema_name
+        )
+    except SupersetSecurityException:
+        return (
+            {"message": _("Not authorized to run this query"), "severity": "danger"},
+            403,
+        )
+    return None
+
+
+def _execute(
+    database: Any, sql: str, schema_name: str | None
+) -> tuple[Any, int, tuple[dict[str, Any], int] | None]:
+    """Run the statement on Superset's own connection and time it.
+
+    Returns ``(frame, duration_ms, failure)``; on failure ``frame`` is ``None`` and
+    ``failure`` carries the body and status to send. The exception *type* is logged
+    and the message is not, so a driver error cannot echo user data.
+    """
+    started = time.monotonic()
+    try:
+        frame = database.get_df(sql, schema=schema_name)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("XP Prompt execution failed: %s", type(exc).__name__)
+        return (
+            None,
+            round((time.monotonic() - started) * 1000),
+            (
+                {"message": _("The query could not be executed"), "severity": "danger"},
+                400,
+            ),
+        )
+    return frame, round((time.monotonic() - started) * 1000), None
+
+
+def _store_turn(
+    owner: int,
+    conversation_id: str,
+    *,
+    question: str,
+    content: str,
+    blocks: list[dict[str, Any]],
+    correlation_id: str | None,
+) -> tuple[dict[str, Any], int]:
+    """Hand the finished turn back to the service, which owns the block contract."""
+    status, body = call_xp_prompt(
+        "POST",
+        f"/ai/conversations/{conversation_id}/blocks",
+        payload={
+            "superset_user_id": owner,
+            "question": question,
+            "content": content,
+            "blocks": blocks,
+            "kind": "answer",
+            "intent": "query",
+            "correlation_id": correlation_id,
+        },
+    )
+    if status in (200, 201):
+        return body, 201
+    return body, status
+
+
+def _cost_gate(
+    owner: int, database: Any, sql: str, schema_name: str | None
+) -> tuple[tuple[dict[str, Any], int] | None, dict[str, Any]]:
+    """Measure the statement here, ask the service whether it may run.
+
+    Returns ``(failure, plan)``: ``failure`` is ``None`` when the statement is
+    within budget, otherwise the response body and status to send. The service owns
+    the budget so a caller cannot talk its own query into being cheap.
+    """
+    estimate = _explain_estimate(database, sql, schema_name)
+    status, plan = call_xp_prompt(
+        "POST",
+        "/ai/sql/plan",
+        payload={
+            "superset_user_id": owner,
+            "estimate": estimate,
+            "max_rows": MAX_PREVIEW_ROWS,
+        },
+    )
+    if status != 200:
+        return (plan, status), {}
+    if not plan.get("allowed"):
+        return (
+            {
+                "message": plan.get("message") or _("The query is too expensive"),
+                "severity": "warning",
+                "plan_code": plan.get("code"),
+            },
+            422,
+        ), plan
+    return None, plan
+
+
+def _runtime_budget_failure(
+    duration_ms: int, plan: dict[str, Any]
+) -> tuple[dict[str, Any], int] | None:
+    """Refuse to present a slow answer as a cheap one (soft wall-clock budget)."""
+    budget = plan.get("budget") or {}
+    try:
+        max_runtime_ms = int(budget.get("max_runtime_ms") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not max_runtime_ms or duration_ms <= max_runtime_ms:
+        return None
+    return (
+        {
+            "message": _(
+                "This query took %(ms)s ms, above the %(budget)s ms budget. Narrow "
+                "the question and try again."
+            )
+            % {"ms": duration_ms, "budget": max_runtime_ms},
+            "severity": "warning",
+            "plan_code": "runtime_budget_exceeded",
+        },
+        422,
+    )
 
 
 def _cell(value: Any) -> str:

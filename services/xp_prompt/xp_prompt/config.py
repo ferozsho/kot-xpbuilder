@@ -48,6 +48,28 @@ def _optional(env: Mapping[str, str], name: str) -> str | None:
     return value or None
 
 
+def _float(env: Mapping[str, str], name: str, default: float) -> float:
+    raw = env.get(name, str(default)).strip()
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _boolean(env: Mapping[str, str], name: str, default: bool) -> bool:
+    raw = env.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean")
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Validated XP Prompt process settings.
@@ -74,6 +96,13 @@ class Settings:
     deepseek_api_key: str | None = field(default=None, repr=False)
     deepseek_model: str = "deepseek-flash"
     deepseek_endpoint: str = "https://api.deepseek.com"
+    #: Cost guard (P4-F08). Defaults are deliberately generous enough for a
+    #: reporting question and small enough that a runaway join is refused.
+    max_estimated_rows: int = 5_000_000
+    max_estimated_cost: float = 1_000_000.0
+    max_plan_nodes: int = 400
+    max_runtime_ms: int = 20_000
+    require_plan: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -134,6 +163,31 @@ class Settings:
                 if _optional(source, "XP_PROMPT_DEEPSEEK_ENDPOINT")
                 else "https://api.deepseek.com"
             ),
+            max_estimated_rows=_integer(
+                source,
+                "XP_PROMPT_MAX_ESTIMATED_ROWS",
+                5_000_000,
+                minimum=1_000,
+                maximum=1_000_000_000,
+            ),
+            max_estimated_cost=_float(
+                source, "XP_PROMPT_MAX_ESTIMATED_COST", 1_000_000.0
+            ),
+            max_plan_nodes=_integer(
+                source,
+                "XP_PROMPT_MAX_PLAN_NODES",
+                400,
+                minimum=10,
+                maximum=10_000,
+            ),
+            max_runtime_ms=_integer(
+                source,
+                "XP_PROMPT_MAX_RUNTIME_MS",
+                20_000,
+                minimum=1_000,
+                maximum=600_000,
+            ),
+            require_plan=_boolean(source, "XP_PROMPT_REQUIRE_PLAN", False),
         )
 
     def safe_summary(self) -> dict[str, object]:

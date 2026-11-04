@@ -723,6 +723,29 @@ def check_ai_sql_guard(compatibility: dict) -> None:
             'execution must re-apply row-level scope before running a statement'
         )
 
+    # P4-F08: the deployment measures the plan where the connection is, and the
+    # service owns the budget — a caller must not be able to grade its own query.
+    cost_guard_path = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'cost_guard.py'
+    )
+    if not cost_guard_path.exists():
+        raise AssertionError('cost_guard.py must exist')
+    cost_guard_source = cost_guard_path.read_text(encoding='utf-8')
+    for marker in ('def evaluate', 'PLAN_UNAVAILABLE', 'ESTIMATED_ROWS_TOO_HIGH'):
+        if marker not in cost_guard_source:
+            raise AssertionError(f'the cost guard lost {marker}')
+    if '/ai/sql/plan' not in service:
+        raise AssertionError('the service must expose /ai/sql/plan')
+    if 'cost_guard.evaluate(' not in service:
+        raise AssertionError('the plan route must use the cost guard')
+    for marker in ('def _explain_estimate', 'def _postgres_plan', 'def _cost_gate'):
+        if marker not in proxy_source:
+            raise AssertionError(f'the cost gate is missing from the proxy: {marker}')
+    if '"/ai/sql/plan"' not in proxy_source:
+        raise AssertionError('the joined turn must ask the service to judge its cost')
+    if 'runtime_budget_exceeded' not in proxy_source:
+        raise AssertionError('the wall-clock budget must be enforced in the turn')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

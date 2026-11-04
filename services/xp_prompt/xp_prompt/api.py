@@ -31,6 +31,7 @@ from xp_prompt import (
     artifacts,
     chat,
     conversations,
+    cost_guard,
     jobs,
     responses,
     result_validation,
@@ -115,6 +116,16 @@ def create_app(settings: Settings | None = None) -> Flask:
     _configure_logging()
     app = Flask(__name__)
     resolved_settings = settings or Settings.from_env()
+
+    def _cost_budget() -> cost_guard.Budget:
+        """The deployment's cost budget (P4-F08), from validated settings."""
+        return cost_guard.Budget(
+            max_rows=resolved_settings.max_estimated_rows,
+            max_cost=resolved_settings.max_estimated_cost,
+            max_plan_nodes=resolved_settings.max_plan_nodes,
+            max_runtime_ms=resolved_settings.max_runtime_ms,
+            require_plan=resolved_settings.require_plan,
+        )
 
     def _record_health(provider_id: str, error: ProviderError | None) -> None:
         """Best-effort passive health write; never fails the probe response."""
@@ -830,6 +841,30 @@ def create_app(settings: Settings | None = None) -> Flask:
             status = 400 if exc.code in {"dialect_ambiguous", "unsupported_dialect"} else 422
             return _admin_error(f"SQL candidate rejected (sql_blocked: {exc.code})", status)
         return jsonify(result), 200
+
+    @app.post("/ai/sql/plan")
+    @require_admin_token
+    def sql_plan_verdict():
+        """Decide whether a statement's cost fits the budget (P4-F08).
+
+        Superset measures (it is the only component with a connection) and sends a
+        normalized estimate; this endpoint owns the budget, so a caller cannot make
+        its own query cheaper by reporting a friendlier number.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        estimate = cost_guard.Estimate.from_payload(payload.get("estimate"))
+        verdict = cost_guard.evaluate(estimate, _cost_budget())
+        logger.info(
+            "sql_plan outcome=%s code=%s source=%s rows=%s nodes=%s",
+            "allowed" if verdict.allowed else "refused",
+            verdict.code,
+            verdict.estimate.source,
+            verdict.estimate.rows,
+            verdict.estimate.plan_nodes,
+        )
+        return jsonify(verdict.to_public_dict()), 200
 
     @app.post("/ai/sql/result")
     @require_admin_token
