@@ -31,7 +31,9 @@ from xp_prompt import (
     artifacts,
     audit,
     chart_catalog,
+    chart_draft,
     chart_profile,
+    chart_ranking,
     chart_rules,
     chat,
     conversations,
@@ -1560,14 +1562,35 @@ def create_app(settings: Settings | None = None) -> Flask:
             catalog,
             row_limit=payload.get("row_limit") or chart_rules.DEFAULT_ROW_LIMIT,
         )
+        ranking = chart_ranking.Ranking(
+            order=tuple(candidate.id for candidate in recommendation.candidates)
+        )
+        if payload.get("rank_with_model"):
+            ranking = chart_ranking.rank(
+                resolved_settings,
+                tenant_key=str(
+                    payload.get("tenant") or registry.DEFAULT_TENANT_KEY
+                ),
+                candidates=recommendation.candidates,
+                question=str(payload.get("question") or ""),
+            )
+            recommendation = chart_rules.Recommendation(
+                candidates=chart_ranking.apply_order(
+                    recommendation.candidates, ranking
+                ),
+                eliminated=recommendation.eliminated,
+                profile_fingerprint=recommendation.profile_fingerprint,
+            )
         logger.info(
-            "chart_recommend outcome=%s candidates=%d available=%d",
+            "chart_recommend outcome=%s candidates=%d available=%d ranking=%s",
             "ok" if recommendation.candidates else "empty",
             len(recommendation.candidates),
             len(catalog.available),
+            ranking.source,
         )
         body = recommendation.to_public_dict()
         body["catalog"] = catalog.to_public_dict()
+        body["ranking"] = ranking.to_public_dict()
         if payload.get("include_profile"):
             body["profile"] = profile.to_public_dict()
         return jsonify(body), 200
@@ -1587,6 +1610,217 @@ def create_app(settings: Settings | None = None) -> Flask:
             ),
             200,
         )
+
+    # --- Chart drafts (P7-F05/F09) ---------------------------------------
+
+    @app.post("/ai/charts/drafts")
+    @require_admin_token
+    def chart_draft_create():
+        """Store a validated chart configuration, idempotently.
+
+        The configuration must pass the target visualization's control contract, so a
+        draft cannot carry a control its viz type does not read.
+        """
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        catalog = chart_catalog.Catalog.from_payload(payload)
+        try:
+            draft = chart_draft.create_draft(
+                resolved_settings,
+                tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                catalog=catalog,
+                viz_type=str(payload.get("viz_type") or ""),
+                title=str(payload.get("title") or ""),
+                dataset_id=int(payload.get("dataset_id") or 0),
+                dataset_name=str(payload.get("dataset_name") or ""),
+                database=str(payload.get("database") or ""),
+                form_data=payload.get("form_data"),
+                rationale=str(payload.get("rationale") or ""),
+                candidate_id=str(payload.get("candidate_id") or ""),
+                ranking_source=str(payload.get("ranking_source") or ""),
+                description=str(payload.get("description") or ""),
+                profile_fingerprint=str(payload.get("profile_fingerprint") or ""),
+                conversation_id=str(payload.get("conversation_id") or "").strip()
+                or None,
+                job_id=str(payload.get("job_id") or "").strip() or None,
+                correlation_id=str(payload.get("correlation_id") or ""),
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except chart_draft.ChartDraftError as exc:
+            return (
+                jsonify({"message": str(exc), "code": exc.code, "severity": "danger"}),
+                422,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not store the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict()}), 201
+
+    @app.get("/ai/charts/drafts")
+    @require_admin_token
+    def chart_draft_list():
+        owner = _conversation_owner(
+            {"superset_user_id": request.args.get("superset_user_id")}
+        )
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            drafts = chart_draft.list_drafts(
+                resolved_settings,
+                tenant_key=str(
+                    request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+                ),
+                superset_user_id=owner,
+                status=str(request.args.get("status") or ""),
+                conversation_id=str(request.args.get("conversation_id") or ""),
+                dataset_id=(
+                    int(request.args["dataset_id"])
+                    if str(request.args.get("dataset_id") or "").isdigit()
+                    else None
+                ),
+                limit=int(request.args.get("limit") or chart_draft.DEFAULT_LIST_LIMIT),
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not list drafts ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {"count": len(drafts), "result": [draft.to_public_dict() for draft in drafts]}
+            ),
+            200,
+        )
+
+    @app.get("/ai/charts/drafts/<draft_id>")
+    @require_admin_token
+    def chart_draft_detail(draft_id: str):
+        owner = _conversation_owner(
+            {"superset_user_id": request.args.get("superset_user_id")}
+        )
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            draft = chart_draft.get_draft(
+                resolved_settings,
+                draft_id,
+                tenant_key=str(
+                    request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+                ),
+                superset_user_id=owner,
+            )
+        except chart_draft.ChartDraftNotFound:
+            return _admin_error("Draft not found", 404)
+        return jsonify({"draft": draft.to_public_dict()}), 200
+
+    @app.post("/ai/charts/drafts/<draft_id>")
+    @require_admin_token
+    def chart_draft_update(draft_id: str):
+        """Replace an open draft's configuration; a stale writer is refused (P7-F07)."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        catalog = chart_catalog.Catalog.from_payload(payload)
+        expected = payload.get("expected_version")
+        try:
+            draft = chart_draft.update_draft(
+                resolved_settings,
+                draft_id,
+                tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                catalog=catalog,
+                viz_type=str(payload.get("viz_type") or ""),
+                title=str(payload.get("title") or ""),
+                form_data=payload.get("form_data"),
+                rationale=str(payload.get("rationale") or ""),
+                expected_version=int(expected) if expected is not None else None,
+            )
+        except chart_draft.ChartDraftNotFound:
+            return _admin_error("Draft not found", 404)
+        except chart_draft.ChartDraftConflict as exc:
+            return (
+                jsonify(
+                    {
+                        "message": _draft_conflict_message(exc),
+                        "code": "stale_draft",
+                        "current_version": exc.actual,
+                        "severity": "warning",
+                    }
+                ),
+                409,
+            )
+        except chart_draft.ChartDraftError as exc:
+            status = 409 if exc.code == "not_open" else 422
+            return (
+                jsonify({"message": str(exc), "code": exc.code, "severity": "danger"}),
+                status,
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not update the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict()}), 200
+
+    @app.post("/ai/charts/drafts/<draft_id>/runs")
+    @require_admin_token
+    def chart_draft_run(draft_id: str):
+        """Count one preview render (P7-F06); accountability, not bookkeeping for its own sake."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        chart_draft.record_run(
+            resolved_settings,
+            draft_id,
+            tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+            superset_user_id=owner,
+        )
+        return jsonify({"recorded": True}), 200
+
+    @app.post("/ai/charts/drafts/<draft_id>/saved")
+    @require_admin_token
+    def chart_draft_mark_saved(draft_id: str):
+        """Pin the draft to the chart that now exists in Superset (P7-F09)."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            draft = chart_draft.mark_saved(
+                resolved_settings,
+                draft_id,
+                tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                slice_id=int(payload.get("slice_id") or 0),
+            )
+        except chart_draft.ChartDraftError as exc:
+            status = 404 if exc.code == "not_found" else 422
+            return _admin_error(f"Draft refused ({exc.code}): {exc}", status)
+        except chart_draft.ChartDraftNotFound:
+            return _admin_error("Draft not found", 404)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not save the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict()}), 200
+
+    @app.post("/ai/charts/drafts/<draft_id>/scrap")
+    @require_admin_token
+    def chart_draft_scrap(draft_id: str):
+        """Close a draft that produced nothing (P7-F10)."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            draft = chart_draft.scrap_draft(
+                resolved_settings,
+                draft_id,
+                tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                reason=str(payload.get("reason") or ""),
+            )
+        except chart_draft.ChartDraftNotFound:
+            return _admin_error("Draft not found", 404)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not scrap the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict()}), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

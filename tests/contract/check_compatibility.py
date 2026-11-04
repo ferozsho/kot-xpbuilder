@@ -1145,6 +1145,51 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if '/ai/charts/contracts' not in service:
         raise AssertionError('the service must expose the control contracts')
 
+    # P7-F05/F09: a chart draft is validated against its viz contract, versioned and
+    # tied to the dataset it reads; P7-F04: the model may reorder, never add.
+    chart_draft_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'chart_draft.py'
+    if not chart_draft_path.exists():
+        raise AssertionError('chart_draft.py must exist')
+    chart_draft_source = chart_draft_path.read_text(encoding='utf-8')
+    for marker in (
+        'def validate_form',
+        'def create_draft',
+        'def update_draft',
+        'def mark_saved',
+        'def scrap_draft',
+        'ChartDraftConflict',
+    ):
+        if marker not in chart_draft_source:
+            raise AssertionError(f'chart_draft.py lost {marker}')
+    if 'catalog.validate(' not in chart_draft_source:
+        raise AssertionError('a chart draft must be validated against its contract')
+    chart_migration = (
+        ROOT
+        / 'services'
+        / 'xp_prompt'
+        / 'migrations'
+        / 'versions'
+        / '20261103_13_ai_chart_draft.py'
+    )
+    if not chart_migration.exists():
+        raise AssertionError('chart drafts need their own migration')
+    if 'uq_ai_chart_draft_idempotency' not in chart_migration.read_text(
+        encoding='utf-8'
+    ):
+        raise AssertionError('a replayed chart draft must be idempotent')
+
+    ranking_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'chart_ranking.py'
+    if not ranking_path.exists():
+        raise AssertionError('chart_ranking.py must exist')
+    ranking_source = ranking_path.read_text(encoding='utf-8')
+    for marker in ('def rank(', 'def clamp(', 'def apply_order('):
+        if marker not in ranking_source:
+            raise AssertionError(f'chart_ranking.py lost {marker}')
+    if 'if name in known' not in ranking_source:
+        raise AssertionError('model ranking must be clamped to offered candidates')
+    if '/ai/charts/drafts' not in service:
+        raise AssertionError('the service must expose the chart draft API')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.
