@@ -62,6 +62,9 @@ services:
   # One-shot (or watching) frontend builder. Off by default: `profiles` keeps it
   # out of `up`, so it only runs when asked for. node_modules lives in a named
   # volume, which is what makes the second and later builds fast.
+  #
+  # The system packages are the same ones the image build installs for webpack:
+  # `simple-zstd` shells out to the zstd binary, and node-gyp needs a toolchain.
   frontend:
     profiles: ["frontend"]
     image: node:20-trixie-slim
@@ -72,6 +75,8 @@ services:
       NPM_CONFIG_CACHE: /tmp/.npm
       NODE_OPTIONS: --max_old_space_size=8192
       CYPRESS_INSTALL_BINARY: "0"
+      # `build-dev` for a one-shot build, `dev` for webpack --watch.
+      FRONTEND_SCRIPT: ${FRONTEND_SCRIPT:-build-dev}
     volumes:
       - ./superset/superset-frontend:/app/superset-frontend
       - xp-frontend-node-modules:/app/superset-frontend/node_modules
@@ -82,8 +87,12 @@ services:
       - sh
       - -lc
       - >-
+        if ! command -v zstd >/dev/null 2>&1; then
+          apt-get update -qq &&
+          apt-get install -y -qq --no-install-recommends zstd make g++ python3;
+        fi;
         [ -d node_modules/webpack ] || npm ci --no-audit --no-fund;
-        npm run build-dev
+        npm run "$${FRONTEND_SCRIPT}"
 
 volumes:
   xp-frontend-node-modules:

@@ -77,13 +77,11 @@ frontend() {
     local mode="${1:-build}"
     if [ "$mode" = "watch" ]; then
         echo "bin/dev: webpack is watching superset-frontend (Ctrl-C to stop)"
-        compose --profile frontend run --rm --service-ports frontend \
-            sh -lc '[ -d node_modules/webpack ] || npm ci --no-audit --no-fund; npm run dev'
+        FRONTEND_SCRIPT=dev compose --profile frontend run --rm --service-ports frontend
         return
     fi
     echo "bin/dev: building the frontend into superset/superset/static/assets"
-    compose --profile frontend run --rm frontend sh -lc \
-        '[ -d node_modules/webpack ] || npm ci --no-audit --no-fund; npm run build-dev'
+    FRONTEND_SCRIPT=build-dev compose --profile frontend run --rm frontend
     # The builder runs as root in its container; hand the output back to you.
     docker run --rm -v "$ROOT/superset/superset/static:/static" alpine:3.20 \
         chown -R "$(id -u):$(id -g)" /static

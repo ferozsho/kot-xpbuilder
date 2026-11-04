@@ -76,11 +76,14 @@ interface DatasetPanelProps {
   /** The last statement of this conversation, if there is one. */
   source?: DatasetSource;
   conversationId?: string;
+  /** Told when a dataset is saved, so the chart step knows what to build on. */
+  onSaved?: (dataset: { dataset_id: number; name: string }) => void;
 }
 
 export default function DatasetPanel({
   source,
   conversationId,
+  onSaved,
 }: DatasetPanelProps) {
   const { addDangerToast, addSuccessToast } = useToasts();
   const [draft, setDraft] = useState<DatasetDraftRecord | null>(null);
@@ -128,6 +131,10 @@ export default function DatasetPanel({
       const response = await saveDatasetDraft(draft.id);
       setSaved(response);
       setDraft({ ...draft, status: 'saved' });
+      onSaved?.({
+        dataset_id: response.dataset.dataset_id,
+        name: response.dataset.name,
+      });
       addSuccessToast(
         t('Dataset saved with %(count)s columns', {
           count: response.dataset.columns,
@@ -138,7 +145,7 @@ export default function DatasetPanel({
     } finally {
       setBusy(false);
     }
-  }, [addDangerToast, addSuccessToast, draft]);
+  }, [addDangerToast, addSuccessToast, draft, onSaved]);
 
   const discard = useCallback(async () => {
     if (!draft) {

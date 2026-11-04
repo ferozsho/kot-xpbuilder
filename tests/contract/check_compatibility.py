@@ -1190,6 +1190,68 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if '/ai/charts/drafts' not in service:
         raise AssertionError('the service must expose the chart draft API')
 
+    # P7-F06/F07/F08/F10: the render goes through Superset's own chart-data path in the
+    # caller's context, the save goes through the chart command, and a failed save
+    # closes its draft.
+    for marker in (
+        'def api_charts_recommend',
+        'def api_chart_draft_create',
+        'def api_chart_preview',
+        'def api_chart_draft_save',
+        'def api_chart_draft_scrap',
+    ):
+        if marker not in proxy_source:
+            raise AssertionError(f'the chart API lost {marker}')
+    for marker in (
+        'QueryContextFactory',
+        'ChartDataCommand',
+        'CreateChartCommand',
+        'raise_for_access(datasource=dataset)',
+        'def _scrap_chart_draft',
+    ):
+        if marker not in proxy_source:
+            raise AssertionError(f'the chart path lost {marker}')
+    if 'def _chart_catalog_payload' not in proxy_source:
+        raise AssertionError('the chart catalog must be declared by the deployment')
+    if 'VIZ_TYPE_DENYLIST' not in proxy_source:
+        raise AssertionError('the deployment denylist must narrow the catalog')
+    permissions = (
+        ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
+    ).read_text(encoding='utf-8')
+    for permission in (
+        'can_api_charts_recommend',
+        'can_api_chart_draft_create',
+        'can_api_chart_preview',
+        'can_api_chart_draft_save',
+    ):
+        if permission not in permissions:
+            raise AssertionError(f'the chart API needs {permission}')
+    chart_panel = (
+        ROOT
+        / 'superset'
+        / 'superset-frontend'
+        / 'src'
+        / 'features'
+        / 'aiPrompt'
+        / 'ChartPanel.tsx'
+    )
+    if not chart_panel.exists():
+        raise AssertionError('the chart loop needs a workspace panel')
+    chart_panel_source = chart_panel.read_text(encoding='utf-8')
+    for marker in ('recommendCharts', 'createChartDraft', 'previewChart', 'saveChart'):
+        if marker not in chart_panel_source:
+            raise AssertionError(f'the chart panel lost {marker}')
+    if 'onSaved' not in (
+        ROOT
+        / 'superset'
+        / 'superset-frontend'
+        / 'src'
+        / 'features'
+        / 'aiPrompt'
+        / 'DatasetPanel.tsx'
+    ).read_text(encoding='utf-8'):
+        raise AssertionError('a saved dataset must hand off to the chart step')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

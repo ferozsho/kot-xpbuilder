@@ -462,7 +462,8 @@ class AIPromptView(BaseSupersetView):
                 "superset_user_id": owner,
                 "columns": [str(column) for column in preview.columns],
                 "rows": [
-                    list(row) for row in preview.itertuples(index=False, name=None)
+                    [_cell(value) for value in row]
+                    for row in preview.itertuples(index=False, name=None)
                 ],
                 "row_count": int(len(frame)),
                 "truncated": len(frame) > len(preview),
@@ -1655,11 +1656,11 @@ def _chart_dataset_summary(dataset: Any) -> dict[str, Any]:
 
 def _chart_frame(
     dataset: Any, draft: dict[str, Any]
-) -> tuple[Any, str]:
+) -> tuple[Any, str | None]:
     """Run a draft's configuration through the chart-data path (P7-F06).
 
-    Returns ``(frame, error_text)``; the frame is the real result set for this user, and
-    ``error_text`` is the exception's own text, bounded, for the Phase 5 taxonomy.
+    Returns ``(frame, None)`` on success, or ``(None, error_text)`` with the exception's
+    own text, bounded, for the Phase 5 taxonomy.
     """
     import pandas as pd
 
@@ -1680,7 +1681,11 @@ def _chart_frame(
         command.validate()
         result = command.run()
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("XP Prompt chart render failed: %s", type(exc).__name__)
+        logger.warning(
+            "XP Prompt chart render failed: %s: %s",
+            type(exc).__name__,
+            str(exc)[:200],
+        )
         return None, f"{type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS]
     rows: list[dict[str, Any]] = []
     if isinstance(result, dict):
@@ -1688,7 +1693,7 @@ def _chart_frame(
         if queries_result:
             rows = list(queries_result[0].get("data") or [])
     frame = pd.DataFrame(rows)
-    return frame, ""
+    return frame, None
 
 
 def _chart_query(draft: dict[str, Any]) -> dict[str, Any]:

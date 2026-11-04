@@ -38,6 +38,8 @@ import {
   sendMessage,
 } from './api';
 import ResponseBlocks from './blocks';
+import ChartPanel from './ChartPanel';
+import type { ChartDataset } from './ChartPanel';
 import DatasetPanel from './DatasetPanel';
 import JobPanel from './JobPanel';
 import RepairPanel from './RepairPanel';
@@ -221,6 +223,8 @@ export default function AIPromptPage() {
   const [lastTurn, setLastTurn] = useState<
     { question: string; sql: string; database?: string } | undefined
   >();
+  //: The dataset a chart can be built on, once one has been saved.
+  const [chartDataset, setChartDataset] = useState<ChartDataset | undefined>();
   //: Generation the rendered thread belongs to. Sent with every turn so the
   //: server can reject a context that was reset elsewhere.
   const [contextVersion, setContextVersion] = useState<number | undefined>();
@@ -588,7 +592,16 @@ export default function AIPromptPage() {
 
           <JobPanel conversationId={activeId} />
 
-          <DatasetPanel source={lastTurn} conversationId={activeId ?? undefined} />
+          <DatasetPanel
+            source={lastTurn}
+            conversationId={activeId ?? undefined}
+            onSaved={setChartDataset}
+          />
+
+          <ChartPanel
+            dataset={chartDataset}
+            conversationId={activeId ?? undefined}
+          />
 
           <RepairPanel />
 

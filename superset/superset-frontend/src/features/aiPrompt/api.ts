@@ -390,3 +390,112 @@ export async function scrapDatasetDraft(
     jsonPayload: { reason },
   });
 }
+
+// --- Charts (P7-F03/F05/F06/F08) ---------------------------------------
+
+/** One visualization the rules (and optionally the model) proposed. */
+export interface ChartCandidate {
+  id: string;
+  viz_type: string;
+  family: string;
+  title: string;
+  form_data: Record<string, unknown>;
+  rationale: string;
+  score: number;
+  factors?: Record<string, number>;
+}
+
+export interface ChartRecommendationResponse {
+  candidates: ChartCandidate[];
+  eliminated: { viz_type: string; family: string; reason: string }[];
+  catalog: { available: string[]; denied: string[] };
+  dataset: { dataset_id: number; name: string };
+  /** Whether the deployment could measure cardinalities from a sample. */
+  measured: boolean;
+  ranking: { order: string[]; source: string; notes: string };
+}
+
+export interface ChartPreviewResponse {
+  columns: string[];
+  rows: string[][];
+  row_count: number;
+  truncated: boolean;
+  viz_type?: string;
+  blocks: unknown[];
+}
+
+export interface ChartDraftEnvelope {
+  draft: {
+    id: string;
+    viz_type: string;
+    title: string;
+    version: number;
+    status: string;
+  };
+}
+
+export interface ChartSavedResponse {
+  chart: { slice_id: number; name: string; viz_type: string };
+  blocks: unknown[];
+}
+
+export async function recommendCharts(payload: {
+  dataset_id: number;
+  question?: string;
+  rank_with_model?: boolean;
+}): Promise<ChartRecommendationResponse> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/charts/recommend/`,
+    jsonPayload: payload,
+  });
+  return json as ChartRecommendationResponse;
+}
+
+export async function createChartDraft(payload: {
+  dataset_id: number;
+  candidate: ChartCandidate;
+  rankingSource?: string;
+  conversationId?: string;
+  idempotencyKey: string;
+}): Promise<ChartDraftEnvelope> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/charts/drafts/`,
+    jsonPayload: {
+      dataset_id: payload.dataset_id,
+      candidate: payload.candidate,
+      ranking_source: payload.rankingSource,
+      conversation_id: payload.conversationId,
+      idempotency_key: payload.idempotencyKey,
+    },
+  });
+  return json as ChartDraftEnvelope;
+}
+
+/** Render the draft's data through Superset, as the current user. */
+export async function previewChart(
+  draftId: string,
+): Promise<ChartPreviewResponse> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/charts/preview/`,
+    jsonPayload: { draft_id: draftId },
+  });
+  return json as ChartPreviewResponse;
+}
+
+export async function saveChart(draftId: string): Promise<ChartSavedResponse> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/charts/drafts/${draftId}/save/`,
+    jsonPayload: {},
+  });
+  return json as ChartSavedResponse;
+}
+
+export async function scrapChartDraft(
+  draftId: string,
+  reason: string,
+): Promise<void> {
+  await SupersetClient.post({
+    endpoint: `${BASE}/charts/drafts/${draftId}/scrap/`,
+    jsonPayload: { reason },
+  });
+}
