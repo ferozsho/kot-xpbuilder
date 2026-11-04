@@ -38,6 +38,7 @@ import {
   sendMessage,
 } from './api';
 import ResponseBlocks from './blocks';
+import DatasetPanel from './DatasetPanel';
 import JobPanel from './JobPanel';
 import RepairPanel from './RepairPanel';
 import { ConversationRecord, MessageRecord } from './types';
@@ -216,6 +217,10 @@ export default function AIPromptPage() {
   const [sending, setSending] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [runningSql, setRunningSql] = useState(false);
+  //: The last statement this conversation ran, so a dataset can be built from it.
+  const [lastTurn, setLastTurn] = useState<
+    { question: string; sql: string; database?: string } | undefined
+  >();
   //: Generation the rendered thread belongs to. Sent with every turn so the
   //: server can reject a context that was reset elsewhere.
   const [contextVersion, setContextVersion] = useState<number | undefined>();
@@ -406,6 +411,11 @@ export default function AIPromptPage() {
               })
             : t('Query ran in %(ms)s ms', { ms: response.duration_ms }),
         );
+        setLastTurn({
+          question,
+          sql: response.sql,
+          database: response.database,
+        });
       } catch (caught) {
         setError(await describeError(caught));
         if (conversationId) {
@@ -577,6 +587,8 @@ export default function AIPromptPage() {
           )}
 
           <JobPanel conversationId={activeId} />
+
+          <DatasetPanel source={lastTurn} conversationId={activeId ?? undefined} />
 
           <RepairPanel />
 

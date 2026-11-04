@@ -5,5 +5,5 @@ newest applied migration. Forgetting to bump it turns the API container
 ``unhealthy`` even though the database is correct.
 """
 
-SCHEMA_REVISION = "20261103_11"
+SCHEMA_REVISION = "20261103_12"
 

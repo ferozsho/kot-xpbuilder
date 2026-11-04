@@ -221,6 +221,7 @@ def check(
     connection_names: Any = None,
     virtual_tables: Any = None,
     rls_targets: Any = None,
+    enforce_limit: bool = True,
 ) -> GuardResult:
     """Validate one candidate statement and return a safe, limit-enforced SQL.
 
@@ -246,6 +247,11 @@ def check(
     cannot omit or widen the scope: the predicate is applied by this function, not
     requested from the prompt. A clause that does not parse is refused rather than
     silently dropped.
+
+    ``enforce_limit=False`` is for a **dataset definition** (P6-F02): the text is
+    stored as a governed query and executed later by Superset, so a preview cap
+    would become part of the dataset. Every other rule still applies, and previews
+    of that dataset still run through the capped path.
     """
     text = (sql or "").strip()
     if not text:
@@ -288,7 +294,11 @@ def check(
         normalised_dialect,
     )
 
-    capped, limit, wrapped = _enforce_limit(statement, max_rows)
+    capped, limit, wrapped = (
+        _enforce_limit(statement, max_rows)
+        if enforce_limit
+        else (statement, 0, False)
+    )
 
     return GuardResult(
         sql=capped.sql(dialect=normalised_dialect),

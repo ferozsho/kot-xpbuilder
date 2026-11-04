@@ -48,6 +48,11 @@ PERMISSIONS = (
     "can_api_repair_metrics",
     "can_api_repair_patterns",
     "can_api_repair_pattern_action",
+    "can_api_dataset_equivalents",
+    "can_api_dataset_drafts",
+    "can_api_dataset_draft_create",
+    "can_api_dataset_draft_save",
+    "can_api_dataset_draft_scrap",
 )
 VIEW_MENU = "AIPrompt"
 

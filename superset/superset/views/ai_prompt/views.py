@@ -29,6 +29,7 @@ once, and the compatibility contract keeps asserting it against the service.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any
@@ -326,6 +327,248 @@ class AIPromptView(BaseSupersetView):
         payload["superset_user_id"] = owner
         status, body = call_xp_prompt(
             "POST", f"/ai/sql/patterns/{pattern_id}/{action}", payload=payload
+        )
+        return self.json_response(body, status)
+
+    # --- Dataset drafts and save (P6-F01/F03/F06/F07/F09/F10) ------------
+
+    @expose("/api/datasets/equivalents/", methods=("POST",))
+    @has_access_api
+    def api_dataset_equivalents(self) -> FlaskResponse:
+        """Does an equivalent dataset the caller may use already exist? (P6-F01)
+
+        Answered from the *authorized* slice, so the search itself cannot reveal a
+        dataset the caller could not open. Reuse is the default answer: creating a
+        second copy of the same query is the expensive mistake.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        database_name = str(payload.get("database") or "").strip()
+        if not database_name:
+            return self.json_response(
+                {"message": _("database is required"), "severity": "danger"}, 400
+            )
+        matches = _dataset_equivalents(
+            database_name,
+            sql=str(payload.get("sql") or ""),
+            table_name=str(payload.get("table_name") or ""),
+        )
+        return self.json_response(
+            {"count": len(matches), "result": matches}, 200
+        )
+
+    @expose("/api/datasets/drafts/", methods=("GET",))
+    @has_access_api
+    def api_dataset_drafts(self) -> FlaskResponse:
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        status, body = call_xp_prompt(
+            "GET", f"/ai/datasets/drafts?superset_user_id={owner}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/datasets/drafts/", methods=("POST",))
+    @has_access_api
+    def api_dataset_draft_create(self) -> FlaskResponse:
+        """Preview, judge, and store a draft — without creating anything (P6-F03/F05).
+
+        The preview runs through the same guarded execution as any SQL turn
+        (re-validated, authorized, cost-checked, capped), because a dataset built on a
+        definition that was never safe to run would be safe for nobody. The service
+        then compiles the spec and applies the quality rules.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        spec = payload.get("spec") if isinstance(payload.get("spec"), dict) else {}
+        database, failure = _dataset_database(spec)
+        if failure is not None:
+            return self.json_response(*failure)
+        schema_name = str(spec.get("schema") or "").strip() or None
+        sql = str(spec.get("sql") or "").strip()
+
+        profile: dict[str, Any] = {}
+        if sql:
+            profile, failure = _dataset_preview(
+                owner,
+                database,
+                sql=sql,
+                schema_name=schema_name,
+                columns=(
+                    spec.get("columns")
+                    if isinstance(spec.get("columns"), list)
+                    else []
+                ),
+                grain=(
+                    spec.get("grain") if isinstance(spec.get("grain"), list) else []
+                ),
+            )
+            if failure is not None:
+                return self.json_response(*failure)
+            # A caller that only knows the statement still gets a typed draft: the
+            # columns come from what the preview actually observed (P6-F02).
+            if not (isinstance(spec.get("columns"), list) and spec.get("columns")):
+                spec["columns"] = [
+                    {
+                        "name": entry.get("name"),
+                        "type": entry.get("observed_type") or "other",
+                    }
+                    for entry in (profile.get("columns") or [])
+                    if entry.get("name")
+                ]
+
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/datasets/drafts",
+            payload={
+                "superset_user_id": owner,
+                "spec": spec,
+                "profile": profile,
+                "datasets": authorized_datasets(),
+                "conversation_id": str(payload.get("conversation_id") or "").strip(),
+                "job_id": str(payload.get("job_id") or "").strip(),
+                "correlation_id": str(payload.get("correlation_id") or ""),
+                "idempotency_key": str(payload.get("idempotency_key") or ""),
+            },
+        )
+        if status not in (200, 201):
+            return self.json_response(body, status)
+        return self.json_response(
+            {
+                "draft": body.get("draft"),
+                "quality": (body.get("draft") or {}).get("quality") or {},
+                "profile": _profile_summary(profile),
+            },
+            201,
+        )
+
+    @expose("/api/datasets/drafts/<draft_id>/save/", methods=("POST",))
+    @has_access_api
+    def api_dataset_draft_save(self, draft_id: str) -> FlaskResponse:
+        """Create the dataset through Superset's own command, then verify it (F06/F07).
+
+        Authorization, schema detection, uniqueness and metadata writes are all
+        Superset's: this view assembles the payload and confirms the result by reading
+        the dataset back. A failure never leaves a half-object: the draft is scrapped
+        and the failure is classified by the Phase 5 taxonomy (P6-F10).
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        status, body = call_xp_prompt(
+            "GET",
+            f"/ai/datasets/drafts/{draft_id}?superset_user_id={owner}&include_sql=true",
+        )
+        if status != 200:
+            return self.json_response(body, status)
+        draft = body.get("draft") or {}
+        if draft.get("status") != "draft":
+            return self.json_response(
+                {
+                    "message": _("This draft is %(status)s and cannot be saved again")
+                    % {"status": draft.get("status")},
+                    "severity": "warning",
+                    "code": "not_open",
+                },
+                409,
+            )
+        spec = draft.get("spec") or {}
+        database, failure = _dataset_database(spec)
+        if failure is not None:
+            return self.json_response(*failure)
+
+        # Never create a second copy of something that already exists (P6-F09).
+        matches = _dataset_equivalents(
+            database.database_name,
+            sql=str(draft.get("sql") or ""),
+            table_name=str(spec.get("table") or ""),
+        )
+        if matches and not bool(_body().get("allow_duplicate")):
+            _scrap_draft(owner, draft_id, "duplicate_dataset")
+            return self.json_response(
+                {
+                    "message": _(
+                        "An equivalent dataset already exists. Open it, or rename this "
+                        "one to save a copy."
+                    ),
+                    "severity": "warning",
+                    "code": "duplicate_dataset",
+                    "matches": matches,
+                },
+                409,
+            )
+
+        try:
+            dataset = _create_dataset(
+                owner,
+                database,
+                draft,
+                spec,
+                schema_name=str(spec.get("schema") or "").strip(),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            hint, kind = _classify_failure(owner, "", f"{type(exc).__name__}: {exc}")
+            _scrap_draft(owner, draft_id, f"save_failed:{kind}")
+            logger.warning("XP Prompt dataset save failed: %s", type(exc).__name__)
+            return self.json_response(
+                {
+                    "message": hint,
+                    "severity": "danger",
+                    "code": "dataset_save_failed",
+                    "failure": kind,
+                },
+                422,
+            )
+
+        call_xp_prompt(
+            "POST",
+            f"/ai/datasets/drafts/{draft_id}/saved",
+            payload={
+                "superset_user_id": owner,
+                "dataset_id": int(dataset.id),
+                "owners": [
+                    str(getattr(getattr(g, "user", None), "username", "") or "")
+                ],
+            },
+        )
+        verified = _verify_dataset(dataset.id)
+        return self.json_response(
+            {
+                "dataset": verified,
+                "blocks": _dataset_saved_blocks(verified, spec),
+                "quality": draft.get("quality") or {},
+            },
+            201,
+        )
+
+    @expose("/api/datasets/drafts/<draft_id>/scrap/", methods=("POST",))
+    @has_access_api
+    def api_dataset_draft_scrap(self, draft_id: str) -> FlaskResponse:
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        status, body = call_xp_prompt(
+            "POST",
+            f"/ai/datasets/drafts/{draft_id}/scrap",
+            payload={
+                "superset_user_id": owner,
+                "reason": str(payload.get("reason") or "discarded"),
+            },
         )
         return self.json_response(body, status)
 
@@ -728,6 +971,13 @@ MAX_PLAN_ROWS = 200
 #: How many corrections one turn may try. The service owns the real budget; this is
 #: only the loop's own backstop so a bad reply cannot spin here (P5-F06).
 MAX_REPAIR_ROUNDS = 2
+#: How many equivalent datasets are worth showing before the answer is "reuse one".
+MAX_EQUIVALENTS = 5
+#: A profile is computed over a bounded sample: aggregates only, never a value.
+MAX_PROFILE_ROWS = 1_000
+MAX_PROFILE_COLUMNS = 200
+MAX_DESCRIPTION_CHARS = 1_000
+MAX_EXPRESSION_CHARS = 1_000
 
 
 def _explain_estimate(
@@ -1045,6 +1295,351 @@ def _repair_summary(
         "source": repair.get("source"),
         "pattern_id": repair.get("pattern_id") or None,
     }
+
+
+def _sql_digest(sql: str) -> str:
+    """Whitespace-insensitive identity for "the same query" (never the text itself)."""
+    text = " ".join((sql or "").split()).lower()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
+def _dataset_equivalents(
+    database_name: str, *, sql: str = "", table_name: str = ""
+) -> list[dict[str, Any]]:
+    """Existing datasets the caller may already use for this definition (P6-F01).
+
+    The search runs over the *authorized* slice, never the metadata table directly, so
+    an equivalence check cannot disclose a dataset the caller could not open.
+    """
+    digest = _sql_digest(sql)
+    wanted_table = (table_name or "").strip().lower()
+    matches: list[dict[str, Any]] = []
+    for dataset in authorized_datasets():
+        if str(dataset.get("database") or "") != database_name:
+            continue
+        stored_sql = str(dataset.get("sql") or "")
+        stored_table = str(dataset.get("name") or "").strip().lower()
+        if digest and stored_sql and _sql_digest(stored_sql) == digest:
+            kind = "virtual"
+        elif (
+            not digest
+            and wanted_table
+            and stored_table == wanted_table
+            and not stored_sql
+        ):
+            kind = "physical"
+        else:
+            continue
+        matches.append(
+            {
+                "dataset_id": dataset.get("dataset_id"),
+                "name": dataset.get("name"),
+                "schema": dataset.get("schema") or "",
+                "database": database_name,
+                "kind": kind,
+            }
+        )
+        if len(matches) >= MAX_EQUIVALENTS:
+            break
+    return matches
+
+
+def _dataset_database(
+    spec: dict[str, Any]
+) -> tuple[Any, tuple[dict[str, Any], int] | None]:
+    """Resolve the target database from the *authorized* slice, never from an id."""
+    name = str((spec or {}).get("database") or "").strip()
+    if not name:
+        return None, ({"message": _("database is required"), "severity": "danger"}, 400)
+    allowed = {
+        str(dataset.get("database") or "") for dataset in authorized_datasets()
+    }
+    if name not in allowed:
+        return None, (
+            {
+                "message": _("You are not authorized for that database"),
+                "severity": "danger",
+                "code": "database_not_authorized",
+            },
+            403,
+        )
+    database = (
+        db.session.query(Database)
+        .filter(Database.database_name == name)
+        .one_or_none()
+    )
+    if database is None:
+        return None, ({"message": _("Database not found"), "severity": "danger"}, 404)
+    return database, None
+
+
+def _dataset_preview(
+    owner: int,
+    database: Any,
+    *,
+    sql: str,
+    schema_name: str | None,
+    columns: list[Any],
+    grain: list[Any],
+) -> tuple[dict[str, Any], tuple[dict[str, Any], int] | None]:
+    """Measure a definition through the guarded path (P6-F03).
+
+    Re-validation, Superset's own authorization, and the capped execution are the same
+    three steps a SQL turn takes: a dataset draft may not be built from a statement that
+    was never safe to run.
+    """
+    validate_status, validated = call_xp_prompt(
+        "POST",
+        "/ai/sql/validate",
+        payload={
+            "superset_user_id": owner,
+            "sql": sql,
+            "database": database.database_name,
+            "schema": schema_name,
+            "max_rows": MAX_PREVIEW_ROWS,
+            "datasets": authorized_datasets(),
+        },
+    )
+    if validate_status != 200:
+        return {}, (validated, validate_status)
+    try:
+        security_manager.raise_for_access(
+            database=database, sql=validated["sql"], schema=schema_name
+        )
+    except SupersetSecurityException:
+        return {}, (
+            {"message": _("Not authorized to run this query"), "severity": "danger"},
+            403,
+        )
+    frame, _duration_ms, error_text = _execute(database, validated["sql"], schema_name)
+    if error_text:
+        hint, kind = _classify_failure(owner, "", error_text)
+        return {}, (
+            {"message": hint, "severity": "danger", "failure": kind},
+            400,
+        )
+    return _profile(frame, columns=columns, grain=grain), None
+
+
+def _profile(
+    frame: Any, *, columns: list[Any], grain: list[Any]
+) -> dict[str, Any]:
+    """What the sample says about the data: nulls, cardinality, types, grain.
+
+    Only aggregates leave this function — no value and no row. The service turns them
+    into quality warnings (P6-F04).
+    """
+    sample = frame.head(MAX_PROFILE_ROWS)
+    row_count = int(len(frame))
+    declared = {
+        str(entry.get("name") or "").lower(): str(entry.get("type") or "").lower()
+        for entry in columns
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    entries: list[dict[str, Any]] = []
+    for name in list(sample.columns)[:MAX_PROFILE_COLUMNS]:
+        series = sample[name]
+        null_count = int(series.isna().sum())
+        try:
+            distinct = int(series.nunique(dropna=True))
+        except TypeError:  # unhashable cell values
+            distinct = 0
+        observed = _observed_type(series)
+        entry: dict[str, Any] = {
+            "name": str(name),
+            "null_count": null_count,
+            "distinct_count": distinct,
+            "observed_type": observed,
+        }
+        wanted = declared.get(str(name).lower(), "")
+        if wanted in {"date", "datetime"} and observed != "datetime":
+            invalid = _invalid_dates(series)
+            if invalid is not None:
+                entry["invalid_dates"] = max(0, invalid - null_count)
+        entries.append(entry)
+
+    duplicate_grain = 0
+    wanted_grain = [str(name) for name in grain if str(name or "").strip()]
+    subset = [name for name in wanted_grain if name in sample.columns]
+    if wanted_grain and len(subset) == len(wanted_grain) and subset:
+        duplicate_grain = int(sample.duplicated(subset=subset).sum())
+    return {
+        "row_count": row_count,
+        "sampled": row_count > len(sample),
+        "duplicate_grain": duplicate_grain,
+        "columns": entries,
+    }
+
+
+def _profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
+    """The preview the browser may see: counts, never values."""
+    return {
+        "row_count": profile.get("row_count", 0),
+        "sampled": bool(profile.get("sampled")),
+        "duplicate_grain": profile.get("duplicate_grain", 0),
+        "columns": len(profile.get("columns") or []),
+    }
+
+
+def _observed_type(series: Any) -> str:
+    """What the sample actually looks like, in the service's small vocabulary."""
+    import pandas as pd
+
+    kind = getattr(getattr(series, "dtype", None), "kind", "")
+    if kind in {"i", "u"}:
+        return "integer"
+    if kind == "f":
+        return "decimal"
+    if kind == "b":
+        return "boolean"
+    if kind in {"M", "m"}:
+        return "datetime"
+    values = series.dropna().head(50)
+    if values.empty:
+        return "other"
+    try:
+        pd.to_numeric(values)
+    except (TypeError, ValueError):
+        return "text"
+    return "decimal"
+
+
+def _invalid_dates(series: Any) -> int | None:
+    """How many non-null values fail to parse as a date, when that is answerable."""
+    import pandas as pd
+
+    values = series.dropna().head(MAX_PROFILE_ROWS)
+    if values.empty:
+        return 0
+    try:
+        parsed = pd.to_datetime(values, errors="coerce", format="mixed")
+    except (TypeError, ValueError):
+        return None
+    return int(parsed.isna().sum())
+
+
+def _create_dataset(
+    owner: int,
+    database: Any,
+    draft: dict[str, Any],
+    spec: dict[str, Any],
+    *,
+    schema_name: str,
+) -> Any:
+    """Create the dataset through Superset's command, then add declared metrics.
+
+    The command performs uniqueness, table/SQL existence and `raise_for_access`, and
+    `fetch_metadata()` detects the columns — so the object this returns is the one
+    Superset itself considers valid.
+    """
+    from superset.commands.dataset.create import CreateDatasetCommand
+    from superset.daos.dataset import DatasetDAO
+
+    users = []
+    for name in spec.get("owners") or []:
+        user = security_manager.find_user(username=str(name))
+        if user is not None:
+            users.append(int(user.id))
+    if not users:
+        users = [int(owner)]
+
+    statement = str(draft.get("sql") or "").strip()
+    data: dict[str, Any] = {
+        "database": int(database.id),
+        "schema": schema_name or None,
+        "table_name": str(spec.get("table") or spec.get("name") or draft.get("name")),
+        "sql": statement or None,
+        "owners": users,
+        "description": str(spec.get("description") or "")[:MAX_DESCRIPTION_CHARS],
+    }
+    temporal = str(spec.get("temporal_column") or "").strip()
+    if temporal:
+        data["main_dtc"] = temporal
+    dataset = CreateDatasetCommand(data).run()
+
+    metrics = [
+        {
+            "metric_name": str(metric.get("name") or "")[:255],
+            "expression": str(metric.get("expression") or "")[:MAX_EXPRESSION_CHARS],
+            "description": str(metric.get("description") or "")[:255] or None,
+        }
+        for metric in (spec.get("metrics") or [])
+        if isinstance(metric, dict) and metric.get("name") and metric.get("expression")
+    ]
+    if metrics:
+        DatasetDAO.update_metrics(dataset, metrics)
+        db.session.commit()
+    return dataset
+
+
+def _verify_dataset(dataset_id: int) -> dict[str, Any]:
+    """Read the saved dataset back: columns detected, metrics attached (P6-F07)."""
+    from superset.daos.dataset import DatasetDAO
+
+    dataset = DatasetDAO.find_by_id(int(dataset_id))
+    if dataset is None:  # pragma: no cover - deleted between create and read
+        return {"dataset_id": int(dataset_id), "verified": False, "columns": 0}
+    columns = [column.column_name for column in (dataset.columns or [])]
+    metrics = [metric.metric_name for metric in (dataset.metrics or [])]
+    return {
+        "dataset_id": int(dataset.id),
+        "name": dataset.table_name,
+        "schema": dataset.schema or "",
+        "database": getattr(dataset.database, "database_name", ""),
+        "sql": bool(dataset.sql),
+        "columns": len(columns),
+        "column_names": columns[:MAX_SLICE_COLUMNS],
+        "metrics": metrics,
+        "owners": [getattr(owner, "username", "") for owner in (dataset.owners or [])],
+        "verified": bool(columns),
+    }
+
+
+def _dataset_saved_blocks(
+    verified: dict[str, Any], spec: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """What the transcript records after a save: the object, and how to open it."""
+    notes = [
+        _("%(count)s columns were detected.")
+        % {"count": verified.get("columns", 0)},
+    ]
+    if not verified.get("verified"):
+        notes.append(
+            _(
+                "Superset could not detect columns; check the definition in the "
+                "dataset editor."
+            )
+        )
+    if spec.get("metrics"):
+        notes.append(
+            _("%(count)s metric(s) were added.")
+            % {"count": len(verified.get("metrics") or [])}
+        )
+    return [
+        {"type": "warnings", "items": notes},
+        {
+            "type": "links",
+            "items": [
+                {
+                    "label": _("Open the dataset"),
+                    "entity_type": "dataset",
+                    "entity_id": str(verified.get("dataset_id") or ""),
+                }
+            ],
+        },
+    ]
+
+
+def _scrap_draft(owner: int, draft_id: str, reason: str) -> None:
+    """Close a draft nothing was created from; never let this raise into the turn."""
+    try:
+        call_xp_prompt(
+            "POST",
+            f"/ai/datasets/drafts/{draft_id}/scrap",
+            payload={"superset_user_id": owner, "reason": reason},
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("XP Prompt draft scrap failed: %s", type(exc).__name__)
 
 
 def _run_with_repair(

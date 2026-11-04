@@ -90,3 +90,41 @@ def validate(
         "limit": guarded.limit,
         "schema_fingerprint": schema.fingerprint,
     }
+
+
+def validate_definition(
+    sql: str,
+    *,
+    schema: SchemaSlice,
+    database: str | None = None,
+    dialect: str | None = None,
+) -> dict[str, Any]:
+    """Validate SQL that will be *stored* as a dataset definition (P6-F02).
+
+    Same rules as :func:`validate` — one read-only statement, the allowlist, no
+    denied functions, row-level scope — but no preview cap, because this text becomes
+    the dataset rather than one page of its output. Nothing executes here.
+    """
+    resolved = resolve_dialect(schema, database=database, dialect=dialect)
+    guarded = sql_guard.check(
+        sql,
+        dialect=resolved,
+        allowed_tables=schema.allowed_tables(database=database),
+        connection_names=schema.connection_names(),
+        virtual_tables=schema.virtual_tables(database=database),
+        rls_targets=schema.rls_targets(database=database),
+        enforce_limit=False,
+    )
+    semantics = sql_semantics.validate(
+        guarded.model_sql or guarded.sql, schema=schema, dialect=resolved
+    )
+    if not semantics.ok:
+        raise sql_guard.SqlPolicyError(semantics.code, semantics.message())
+    return {
+        "sql": guarded.sql,
+        "dialect": guarded.dialect,
+        "tables": list(guarded.tables),
+        "inlined": list(guarded.inlined),
+        "rls_applied": list(guarded.rls_applied),
+        "schema_fingerprint": schema.fingerprint,
+    }

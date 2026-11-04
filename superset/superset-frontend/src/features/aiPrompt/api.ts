@@ -285,3 +285,108 @@ export async function actOnPattern(
   });
   return json as { id: string; state: string };
 }
+
+// --- Dataset drafts (P6-F02/F03/F05) ----------------------------------
+
+/** One stored dataset proposal, with what was measured about it. */
+export interface DatasetDraftRecord {
+  id: string;
+  name: string;
+  kind: string;
+  database: string;
+  status: string;
+  version: number;
+  quality_ok: boolean;
+  quality: {
+    codes?: string[];
+    blocking?: boolean;
+    requires_confirmation?: boolean;
+    warnings?: { code: string; message: string; column?: string }[];
+  };
+  fingerprint: string;
+  superset_dataset_id?: number | null;
+  sql_hidden: boolean;
+}
+
+export interface DatasetQualityWarning {
+  code: string;
+  severity: string;
+  column?: string;
+  message: string;
+}
+
+export interface DatasetDraftResponse {
+  draft: DatasetDraftRecord;
+  quality: {
+    ok?: boolean;
+    blocking?: boolean;
+    codes?: string[];
+    warnings?: DatasetQualityWarning[];
+  };
+  profile?: {
+    row_count?: number;
+    sampled?: boolean;
+    duplicate_grain?: number;
+    columns?: number;
+  };
+}
+
+export interface DatasetSavedResponse {
+  dataset: {
+    dataset_id: number;
+    name: string;
+    schema?: string;
+    columns: number;
+    metrics: string[];
+    verified: boolean;
+  };
+  blocks: unknown[];
+}
+
+/**
+ * Build a draft from a statement that already ran. The proxy previews it through
+ * the guarded path, so the draft is measured rather than assumed.
+ */
+export async function createDatasetDraft(payload: {
+  question: string;
+  sql: string;
+  database?: string;
+  conversationId?: string;
+  idempotencyKey: string;
+}): Promise<DatasetDraftResponse> {
+  const spec: Record<string, unknown> = {
+    name: payload.question.slice(0, 100) || 'dataset',
+    kind: 'virtual',
+    database: payload.database,
+    sql: payload.sql,
+  };
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/datasets/drafts/`,
+    jsonPayload: {
+      spec,
+      conversation_id: payload.conversationId,
+      idempotency_key: payload.idempotencyKey,
+    },
+  });
+  return json as DatasetDraftResponse;
+}
+
+export async function saveDatasetDraft(
+  draftId: string,
+): Promise<DatasetSavedResponse> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/datasets/drafts/${draftId}/save/`,
+    jsonPayload: {},
+  });
+  return json as DatasetSavedResponse;
+}
+
+export async function scrapDatasetDraft(
+  draftId: string,
+  reason: string,
+): Promise<void> {
+  await SupersetClient.post({
+    endpoint: `${BASE}/datasets/drafts/${draftId}/scrap/`,
+    jsonPayload: { reason },
+  });
+}

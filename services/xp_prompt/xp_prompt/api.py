@@ -33,6 +33,9 @@ from xp_prompt import (
     chat,
     conversations,
     cost_guard,
+    dataset_draft,
+    dataset_quality,
+    dataset_spec,
     failures,
     jobs,
     patterns,
@@ -121,6 +124,14 @@ def _sql_candidate_message(exc: BaseException) -> str:
     if reason and reason != code:
         return f"SQL candidate rejected ({code}): {reason}"
     return f"SQL candidate rejected ({code})"
+
+
+def _draft_conflict_message(exc: dataset_draft.DraftConflict) -> str:
+    """A stale writer is told which version it lost to, not just "conflict"."""
+    return (
+        f"This draft was edited elsewhere (you had version {exc.expected}, "
+        f"it is now at {exc.actual}). Reload it before saving."
+    )
 
 
 def create_app(settings: Settings | None = None) -> Flask:
@@ -1294,6 +1305,229 @@ def create_app(settings: Settings | None = None) -> Flask:
             ),
             200,
         )
+
+    # --- Dataset drafts (P6-F02/F04/F05/F08/F09) -------------------------
+
+    @app.post("/ai/datasets/spec")
+    @require_admin_token
+    def dataset_spec_normalize():
+        """Compile and judge a dataset proposal without storing anything (P6-F02).
+
+        The proxy builds the proposal from a statement it has already executed once;
+        this endpoint owns the shape, the guard on the definition, the type
+        vocabulary and the quality rules, so a caller cannot decide for itself
+        whether a draft is sound.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            slice_ = schema_slice.SchemaSlice.from_payload(payload)
+            spec = dataset_spec.from_payload(payload.get("spec") or payload, schema=slice_)
+        except dataset_spec.DatasetSpecError as exc:
+            return (
+                jsonify({"message": str(exc), "code": exc.code, "severity": "danger"}),
+                422,
+            )
+        verdict = dataset_quality.check(
+            spec, payload.get("profile"), confirmed=bool(payload.get("confirmed"))
+        )
+        return (
+            jsonify(
+                {
+                    "spec": spec.to_public_dict(include_sql=True),
+                    "quality": verdict.to_public_dict(),
+                }
+            ),
+            200,
+        )
+
+    @app.post("/ai/datasets/drafts")
+    @require_admin_token
+    def dataset_draft_create():
+        """Store a compiled draft — idempotently (P6-F05).
+
+        The same ``idempotency_key`` returns the same draft, so a double-submitted
+        create cannot become two datasets. A blocking quality verdict is stored with
+        the draft; whether it may be saved anyway is the caller's policy decision,
+        recorded rather than silently taken here.
+        """
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            slice_ = schema_slice.SchemaSlice.from_payload(payload)
+            spec = dataset_spec.from_payload(payload.get("spec") or {}, schema=slice_)
+        except dataset_spec.DatasetSpecError as exc:
+            return (
+                jsonify({"message": str(exc), "code": exc.code, "severity": "danger"}),
+                422,
+            )
+        verdict = dataset_quality.check(spec, payload.get("profile"))
+        try:
+            draft = dataset_draft.create_draft(
+                resolved_settings,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                spec=spec,
+                quality=verdict.to_public_dict(),
+                conversation_id=str(payload.get("conversation_id") or "").strip()
+                or None,
+                job_id=str(payload.get("job_id") or "").strip() or None,
+                correlation_id=str(payload.get("correlation_id") or ""),
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except dataset_draft.DraftInputError as exc:
+            return _admin_error(f"Draft rejected ({exc.code})", 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not store the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict(include_sql=True)}), 201
+
+    @app.get("/ai/datasets/drafts")
+    @require_admin_token
+    def dataset_draft_list():
+        owner = _conversation_owner(
+            {"superset_user_id": request.args.get("superset_user_id")}
+        )
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            drafts = dataset_draft.list_drafts(
+                resolved_settings,
+                tenant_key=str(request.args.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                status=str(request.args.get("status") or ""),
+                conversation_id=str(request.args.get("conversation_id") or ""),
+                limit=int(request.args.get("limit") or dataset_draft.DEFAULT_LIST_LIMIT),
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not list drafts ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {"count": len(drafts), "result": [d.to_public_dict() for d in drafts]}
+            ),
+            200,
+        )
+
+    @app.get("/ai/datasets/drafts/<draft_id>")
+    @require_admin_token
+    def dataset_draft_detail(draft_id: str):
+        owner = _conversation_owner(
+            {"superset_user_id": request.args.get("superset_user_id")}
+        )
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        reveal = str(request.args.get("include_sql") or "").lower() in {"1", "true"}
+        try:
+            draft = dataset_draft.get_draft(
+                resolved_settings,
+                draft_id,
+                tenant_key=str(request.args.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+            )
+        except dataset_draft.DraftNotFound:
+            return _admin_error("Draft not found", 404)
+        return jsonify({"draft": draft.to_public_dict(include_sql=reveal)}), 200
+
+    @app.post("/ai/datasets/drafts/<draft_id>")
+    @require_admin_token
+    def dataset_draft_update(draft_id: str):
+        """Replace an open draft's proposal; a stale writer is refused (P6-F09)."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            slice_ = schema_slice.SchemaSlice.from_payload(payload)
+            spec = dataset_spec.from_payload(payload.get("spec") or {}, schema=slice_)
+        except dataset_spec.DatasetSpecError as exc:
+            return (
+                jsonify({"message": str(exc), "code": exc.code, "severity": "danger"}),
+                422,
+            )
+        verdict = dataset_quality.check(spec, payload.get("profile"))
+        expected = payload.get("expected_version")
+        try:
+            draft = dataset_draft.update_draft(
+                resolved_settings,
+                draft_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                spec=spec,
+                quality=verdict.to_public_dict(),
+                expected_version=int(expected) if expected is not None else None,
+            )
+        except dataset_draft.DraftNotFound:
+            return _admin_error("Draft not found", 404)
+        except dataset_draft.DraftConflict as exc:
+            return (
+                jsonify(
+                    {
+                        "message": _draft_conflict_message(exc),
+                        "code": "stale_draft",
+                        "current_version": exc.actual,
+                        "severity": "warning",
+                    }
+                ),
+                409,
+            )
+        except dataset_draft.DraftStateError as exc:
+            return _admin_error(f"Draft refused ({exc.code}): {exc}", 409)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not update the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict(include_sql=True)}), 200
+
+    @app.post("/ai/datasets/drafts/<draft_id>/saved")
+    @require_admin_token
+    def dataset_draft_mark_saved(draft_id: str):
+        """Pin the draft to the dataset that now exists in Superset (P6-F08)."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            draft = dataset_draft.mark_saved(
+                resolved_settings,
+                draft_id,
+                tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                dataset_id=int(payload.get("dataset_id") or 0),
+                owners=payload.get("owners"),
+            )
+        except dataset_draft.DraftInputError as exc:
+            return _admin_error(str(exc), 400)
+        except dataset_draft.DraftNotFound:
+            return _admin_error("Draft not found", 404)
+        except dataset_draft.DraftStateError as exc:
+            return _admin_error(f"Draft refused ({exc.code}): {exc}", 409)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not save the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict()}), 200
+
+    @app.post("/ai/datasets/drafts/<draft_id>/scrap")
+    @require_admin_token
+    def dataset_draft_scrap(draft_id: str):
+        """Close a draft that produced nothing, so no half-object is left behind."""
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        try:
+            draft = dataset_draft.scrap_draft(
+                resolved_settings,
+                draft_id,
+                tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+                superset_user_id=owner,
+                reason=str(payload.get("reason") or ""),
+            )
+        except dataset_draft.DraftNotFound:
+            return _admin_error("Draft not found", 404)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not scrap the draft ({_error_class(exc)})", 503)
+        return jsonify({"draft": draft.to_public_dict()}), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token

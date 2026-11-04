@@ -1006,6 +1006,115 @@ def check_ai_sql_guard(compatibility: dict) -> None:
         if marker not in panel_source:
             raise AssertionError(f'the repair panel lost {marker}')
 
+    # P6-F02/F04/F05/F08/F09: a dataset draft is compiled, judged, and stored before
+    # anything is created in Superset — and its statement is never executed inlined
+    # without the same guard.
+    spec_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'dataset_spec.py'
+    if not spec_path.exists():
+        raise AssertionError('dataset_spec.py must exist')
+    spec_source = spec_path.read_text(encoding='utf-8')
+    for marker in ('def from_payload', 'def normalise_type', 'def fingerprint_of'):
+        if marker not in spec_source:
+            raise AssertionError(f'dataset_spec.py lost {marker}')
+    if 'validate_definition(' not in spec_source:
+        raise AssertionError(
+            'a stored dataset definition must be validated by the guard'
+        )
+    execution_source = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'sql_execution.py'
+    ).read_text(encoding='utf-8')
+    if 'def validate_definition' not in execution_source:
+        raise AssertionError('a dataset definition needs its own validation path')
+    if 'enforce_limit=False' not in execution_source:
+        raise AssertionError(
+            'a dataset definition must not carry a preview cap'
+        )
+
+    quality_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'dataset_quality.py'
+    if not quality_path.exists():
+        raise AssertionError('dataset_quality.py must exist')
+    quality_source = quality_path.read_text(encoding='utf-8')
+    for code in (
+        'empty_result',
+        'duplicate_grain',
+        'null_in_grain',
+        'type_drift',
+        'invalid_dates',
+        'metric_not_numeric',
+    ):
+        if code not in quality_source:
+            raise AssertionError(f'the quality rules lost "{code}"')
+
+    draft_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'dataset_draft.py'
+    if not draft_path.exists():
+        raise AssertionError('dataset_draft.py must exist')
+    draft_source = draft_path.read_text(encoding='utf-8')
+    for marker in (
+        'def create_draft',
+        'def update_draft',
+        'def mark_saved',
+        'def scrap_draft',
+        'DraftConflict',
+    ):
+        if marker not in draft_source:
+            raise AssertionError(f'dataset_draft.py lost {marker}')
+    if 'idempotency_key' not in draft_source:
+        raise AssertionError('a replayed dataset create must be idempotent')
+    draft_migration = (
+        ROOT
+        / 'services'
+        / 'xp_prompt'
+        / 'migrations'
+        / 'versions'
+        / '20261103_12_ai_dataset_draft.py'
+    )
+    if not draft_migration.exists():
+        raise AssertionError('dataset drafts need their own migration')
+    if 'uq_ai_dataset_draft_idempotency' not in draft_migration.read_text(
+        encoding='utf-8'
+    ):
+        raise AssertionError('the idempotency key must be unique in its tenant')
+    if '/ai/datasets/drafts' not in service:
+        raise AssertionError('the service must expose the dataset draft API')
+
+    # P6-F01/F03/F06/F07/F09/F10: the proxy resolves equivalence from the authorized
+    # slice, previews through the guarded path, and saves through Superset's command.
+    for marker in (
+        'def api_dataset_equivalents',
+        'def api_dataset_draft_create',
+        'def api_dataset_draft_save',
+        'def api_dataset_draft_scrap',
+    ):
+        if marker not in proxy_source:
+            raise AssertionError(f'the dataset API lost {marker}')
+    if 'CreateDatasetCommand' not in proxy_source:
+        raise AssertionError('a dataset must be saved through Superset CreateDatasetCommand')
+    if 'DatasetDAO.update_metrics' not in proxy_source:
+        raise AssertionError('declared metrics must be attached through the DAO')
+    if '_dataset_equivalents(' not in proxy_source:
+        raise AssertionError('a duplicate dataset must be detected before saving')
+    if 'def _verify_dataset' not in proxy_source:
+        raise AssertionError('a saved dataset must be read back')
+    if 'def _scrap_draft' not in proxy_source:
+        raise AssertionError('a failed save must close its draft')
+    for marker in ('/ai/sql/validate', 'raise_for_access('):
+        if marker not in proxy_source:
+            raise AssertionError(f'a dataset preview must reuse {marker}')
+    if 'authorized_datasets()' not in proxy_source.split('def _dataset_equivalents')[1][:600]:
+        raise AssertionError(
+            'equivalence must be answered from the authorized slice'
+        )
+    permissions = (
+        ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
+    ).read_text(encoding='utf-8')
+    for permission in (
+        'can_api_dataset_equivalents',
+        'can_api_dataset_draft_create',
+        'can_api_dataset_draft_save',
+    ):
+        if permission not in permissions:
+            raise AssertionError(f'the dataset API needs {permission}')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.
