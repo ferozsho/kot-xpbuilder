@@ -78,6 +78,8 @@ ADMIN_ONLY_PERMISSIONS: tuple[str, ...] = (
     "can_api_usage_outbox_drain",
     "can_api_usage_billing_imports",
     "can_api_usage_billing_variance",
+    "can_api_usage_billing_source",
+    "can_api_usage_billing_fetch",
 )
 VIEW_MENU = "AIPrompt"
 

@@ -19,6 +19,7 @@
 import { SupersetClient } from '@superset-ui/core';
 import {
   BillingImport,
+  BillingSource,
   BillingVariance,
   Budget,
   BudgetPayload,
@@ -173,4 +174,23 @@ export async function fetchBillingVariance(
     endpoint: `${BASE}/billing/imports/${importId}/variance/`,
   });
   return json as BillingVariance;
+}
+
+export async function fetchBillingSource(): Promise<BillingSource> {
+  const { json } = await SupersetClient.get({
+    endpoint: `${BASE}/billing/source/`,
+  });
+  return json as BillingSource;
+}
+
+export async function fetchBillingExport(): Promise<{
+  rows: number;
+  replayed: boolean;
+  source: string;
+}> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/billing/fetch/`,
+    jsonPayload: {},
+  });
+  return json as { rows: number; replayed: boolean; source: string };
 }

@@ -19,6 +19,28 @@ TENANT_ID = "11111111-1111-1111-1111-111111111111"
 IMPORT_ID = "22222222-2222-2222-2222-222222222222"
 
 
+def _settings(**overrides) -> Settings:
+    """Settings with optional billing-source fields, built from the same fixture."""
+    base = {
+        "XP_PROMPT_POSTGRES_HOST": "127.0.0.1",
+        "XP_PROMPT_POSTGRES_PORT": "5432",
+        "XP_PROMPT_POSTGRES_USER": "xprompt",
+        "XP_PROMPT_POSTGRES_PASSWORD": "database-secret",
+        "XP_PROMPT_POSTGRES_DB": "xprompt",
+        "XP_PROMPT_REDIS_HOST": "127.0.0.1",
+        "XP_PROMPT_REDIS_PORT": "6379",
+        "XP_PROMPT_REDIS_PASSWORD": "redis-secret",
+        "XP_PROMPT_REDIS_DB": "2",
+        "XP_PROMPT_QDRANT_URL": "http://xp-prompt-qdrant:6333",
+        "XP_PROMPT_SERVICE_SECRET": ROOT_SECRET,
+    }
+    if overrides.get("billing_source_url"):
+        base["XP_PROMPT_BILLING_SOURCE_URL"] = overrides["billing_source_url"]
+    if overrides.get("billing_source_token"):
+        base["XP_PROMPT_BILLING_SOURCE_TOKEN"] = overrides["billing_source_token"]
+    return Settings.from_env(base)
+
+
 def settings() -> Settings:
     return Settings.from_env(
         {
@@ -292,6 +314,119 @@ class VarianceTests(unittest.TestCase):
             [],
         )
         self.assertEqual(body["unattributed_attempts"], 3)
+
+
+class FetchTests(unittest.TestCase):
+    """Fetching an export is the one place a URL from settings is dereferenced."""
+
+    def test_a_source_must_be_https(self) -> None:
+        with self.assertRaises(billing.BillingError) as caught:
+            billing._assert_fetchable("http://example.com/export.json")
+        self.assertEqual(caught.exception.code, "unsafe_source")
+
+    def test_a_localhost_source_is_refused(self) -> None:
+        for url in (
+            "https://localhost/export.json",
+            "https://127.0.0.1/export.json",
+            "https://metadata.google.internal/computeMetadata/v1/",
+        ):
+            with self.assertRaises(billing.BillingError) as caught:
+                billing._assert_fetchable(url)
+            self.assertEqual(caught.exception.code, "unsafe_source", url)
+
+    def test_a_private_address_is_refused(self) -> None:
+        for url in ("https://10.0.0.5/x", "https://192.168.1.2/x", "https://[fd00::1]/x"):
+            with self.assertRaises(billing.BillingError):
+                billing._assert_fetchable(url)
+
+    def test_a_public_host_is_allowed(self) -> None:
+        billing._assert_fetchable("https://billing.example.com/export.json")
+
+    def test_an_unconfigured_source_says_so(self) -> None:
+        with self.assertRaises(billing.BillingError) as caught:
+            billing.fetch_export(_settings(billing_source_url=None), tenant_key="default")
+        self.assertEqual(caught.exception.code, "not_configured")
+
+    def test_the_period_defaults_to_the_previous_day(self) -> None:
+        start, end = billing._export_period({}, None, None)
+        self.assertEqual((end - start).days, 1)
+        self.assertEqual(end.utcoffset().total_seconds(), 0)
+
+    def test_the_export_period_wins_over_the_default(self) -> None:
+        start, end = billing._export_period(
+            {"period_start": "2026-11-01T00:00:00Z", "period_end": "2026-11-02T00:00:00Z"},
+            None,
+            None,
+        )
+        self.assertEqual(start.day, 1)
+        self.assertEqual(end.day, 2)
+
+    def test_a_naive_timestamp_is_read_as_utc(self) -> None:
+        parsed = billing._iso({"period_start": "2026-11-01T00:00:00"}, "period_start")
+        self.assertEqual(parsed.utcoffset().total_seconds(), 0)
+
+    def test_the_source_label_keeps_only_the_host(self) -> None:
+        label = billing._source_label("https://billing.example.com/e.json?sig=secret")
+        self.assertEqual(label, "fetch:billing.example.com")
+        self.assertNotIn("secret", label)
+
+    def test_source_status_never_returns_the_url_or_token(self) -> None:
+        # The config parser already refuses credentials, queries and fragments,
+        # so the remaining leak to guard against is the token.
+        status = billing.source_status(
+            _settings(
+                billing_source_url="https://billing.example.com/e.json",
+                billing_source_token="super-secret",
+            )
+        )
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["host"], "billing.example.com")
+        self.assertNotIn("super-secret", str(status))
+
+    def test_a_fetched_export_is_imported_like_a_pasted_one(self) -> None:
+        body = {
+            "provider": "Google Gemini",
+            "currency": "USD",
+            "period_start": "2026-11-01T00:00:00Z",
+            "period_end": "2026-11-02T00:00:00Z",
+            "rows": [{"model": "m", "actual_micros": 5}],
+        }
+        with (
+            mock.patch.object(billing, "_get_json", return_value=body),
+            mock.patch.object(
+                billing,
+                "record_import",
+                return_value=(billing.Import(
+                    id=IMPORT_ID,
+                    provider="Google Gemini",
+                    period_start=None,
+                    period_end=None,
+                    currency="USD",
+                    source="fetch:billing.example.com",
+                    row_count=1,
+                    total_actual_micros=5,
+                    created_at=None,
+                ), False),
+            ) as record,
+        ):
+            outcome = billing.fetch_export(
+                _settings(billing_source_url="https://billing.example.com/e.json"),
+                tenant_key="default",
+            )
+        self.assertEqual(outcome["rows"], 1)
+        self.assertFalse(outcome["replayed"])
+        self.assertEqual(record.call_args.kwargs["provider"], "Google Gemini")
+
+    def test_an_export_without_rows_is_refused(self) -> None:
+        with (
+            mock.patch.object(billing, "_get_json", return_value={"provider": "x"}),
+            self.assertRaises(billing.BillingError) as caught,
+        ):
+            billing.fetch_export(
+                _settings(billing_source_url="https://billing.example.com/e.json"),
+                tenant_key="default",
+            )
+        self.assertEqual(caught.exception.code, "invalid_export")
 
 
 if __name__ == "__main__":

@@ -2543,6 +2543,36 @@ def create_app(settings: Settings | None = None) -> Flask:
         body["replayed"] = replayed
         return jsonify(body), 200 if replayed else 201
 
+    @app.get("/ai/usage/billing/source")
+    @require_admin_token
+    def usage_billing_source():
+        """Whether an export source is configured; never the URL or the token."""
+        return jsonify(billing.source_status(resolved_settings)), 200
+
+    @app.post("/ai/usage/billing/fetch")
+    @require_admin_token
+    def usage_billing_fetch():
+        """Fetch the provider's billing export now instead of waiting for the job."""
+        payload = request.get_json(silent=True) or {}
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            outcome = billing.fetch_export(
+                resolved_settings,
+                tenant_key=tenant_key,
+                provider=payload.get("provider"),
+                currency=payload.get("currency"),
+                period_start=_parse_timestamp(payload.get("period_start")),
+                period_end=_parse_timestamp(payload.get("period_end")),
+            )
+        except billing.BillingError as exc:
+            status = 409 if exc.code == "not_configured" else 422
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), status
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not fetch billing ({_error_class(exc)})", 503)
+        return jsonify(outcome), 200 if outcome["replayed"] else 201
+
     @app.get("/ai/usage/billing/imports/<import_id>/variance")
     @require_admin_token
     def usage_billing_variance(import_id: str):

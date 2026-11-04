@@ -120,9 +120,16 @@ class Settings:
     #: entirely, so nothing is ever reused automatically.
     pattern_evidence_threshold: int = 2
     pattern_auto_promote: bool = True
+    #: Provider billing export source (P9-F10). When a URL is set, the scheduled
+    #: task fetches the export instead of waiting for an operator to paste rows;
+    #: when it is unset, imports stay manual and nothing pretends otherwise.
+    billing_source_url: str | None = None
+    billing_source_token: str | None = field(default=None, repr=False)
+    billing_source_provider: str | None = None
+    billing_source_currency: str = "USD"
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
         source = os.environ if env is None else env
         return cls(
             postgres_host=_required(source, "XP_PROMPT_POSTGRES_HOST"),
@@ -180,6 +187,20 @@ class Settings:
                 if _optional(source, "XP_PROMPT_DEEPSEEK_ENDPOINT")
                 else "https://api.deepseek.com"
             ),
+            billing_source_url=(
+                _http_url(source, "XP_PROMPT_BILLING_SOURCE_URL")
+                if _optional(source, "XP_PROMPT_BILLING_SOURCE_URL")
+                else None
+            ),
+            billing_source_token=_optional(
+                source, "XP_PROMPT_BILLING_SOURCE_TOKEN"
+            ),
+            billing_source_provider=_optional(
+                source, "XP_PROMPT_BILLING_SOURCE_PROVIDER"
+            ),
+            billing_source_currency=(
+                _optional(source, "XP_PROMPT_BILLING_SOURCE_CURRENCY") or "USD"
+            ).upper(),
             max_estimated_rows=_integer(
                 source,
                 "XP_PROMPT_MAX_ESTIMATED_ROWS",
@@ -261,5 +282,10 @@ class Settings:
             "deepseek_configured": bool(self.deepseek_api_key),
             "deepseek_model": self.deepseek_model,
             "deepseek_endpoint": self.deepseek_endpoint,
+            # The URL itself is not returned: a diagnostics endpoint has no need
+            # to advertise the deployment's internal endpoints.
+            "billing_source_configured": bool(self.billing_source_url),
+            "billing_source_provider": self.billing_source_provider,
+            "billing_source_currency": self.billing_source_currency,
         }
 

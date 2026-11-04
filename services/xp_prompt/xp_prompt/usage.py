@@ -446,6 +446,14 @@ def tenant_identifier(settings: Settings, tenant_key: str) -> str:
         return _tenant_id(cursor, tenant_key)
 
 
+def tenant_keys(settings: Settings) -> list[str]:
+    """Every provisioned tenant key, so a sweep can cover all of them."""
+    with connect(settings) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT key FROM ai_tenant ORDER BY key")
+        rows = cursor.fetchall()
+    return [str(row["key"]) for row in rows]
+
+
 def cost_of(settings: Settings, attempts: Iterable[Any]) -> tuple[int, int]:
     """Total estimated cost in micros and total tokens for a set of attempts.
 

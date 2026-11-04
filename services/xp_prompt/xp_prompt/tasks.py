@@ -11,9 +11,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from xp_prompt import jobs, usage
+from xp_prompt import billing, jobs, usage
 from xp_prompt.celery_app import app
 from xp_prompt.config import Settings
+from xp_prompt.providers.registry import DEFAULT_TENANT_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -85,4 +86,68 @@ def drain_usage_outbox(limit: int = 25) -> dict[str, Any]:
         outcome["failed"],
     )
     return outcome
+
+
+@app.task(name="xp_prompt.reconcile_usage")
+def reconcile_usage() -> dict[str, Any]:
+    """Check every tenant's ledger on a schedule, not when someone remembers.
+
+    Each finding is counted and logged at a severity an operator will notice; the
+    point is that a negative token count or a dead-lettered event is discovered by
+    the system rather than by a support ticket. A tenant that cannot be read is
+    reported and skipped so one broken row cannot stop the sweep.
+    """
+    settings = Settings.from_env()
+    reports: dict[str, Any] = {}
+    unhealthy: list[str] = []
+    for tenant_key in usage.tenant_keys(settings):
+        try:
+            report = usage.reconcile(settings, tenant_key=tenant_key)
+        except Exception:  # pragma: no cover - one tenant must not stop the sweep
+            logger.warning("usage_reconcile_failed tenant=%s", tenant_key,
+                           exc_info=True)
+            continue
+        reports[tenant_key] = report
+        if not report["healthy"]:
+            unhealthy.append(tenant_key)
+            logger.warning(
+                "usage_reconcile_unhealthy tenant=%s negative=%d unfinished=%d "
+                "inconsistent=%d dead_letter=%d pending=%d",
+                tenant_key,
+                report["negative_tokens"],
+                report["unfinished"],
+                report["inconsistent_totals"],
+                report["outbox_dead_letter"],
+                report["outbox_pending"],
+            )
+        elif report["unpriced"] or report["missing_usage"]:
+            logger.info(
+                "usage_reconcile_gaps tenant=%s unpriced=%d missing_usage=%d "
+                "price_gaps=%s",
+                tenant_key,
+                report["unpriced"],
+                report["missing_usage"],
+                ",".join(report["price_gaps"]) or "-",
+            )
+    return {"tenants": len(reports), "unhealthy": unhealthy, "reports": reports}
+
+
+@app.task(name="xp_prompt.fetch_billing_exports")
+def fetch_billing_exports() -> dict[str, Any]:
+    """Pull the provider's billing export when a source is configured (P9-F10).
+
+    Unconfigured is not a failure: a deployment may prefer to paste exports by
+    hand, and pretending to fetch would be worse than saying so.
+    """
+    settings = Settings.from_env()
+    status = billing.source_status(settings)
+    if not status["configured"]:
+        logger.info("billing_fetch_skipped reason=not_configured")
+        return {"fetched": False, "reason": "not_configured"}
+    try:
+        outcome = billing.fetch_export(settings, tenant_key=DEFAULT_TENANT_KEY)
+    except billing.BillingError as exc:
+        logger.warning("billing_fetch_failed code=%s message=%s", exc.code, exc)
+        return {"fetched": False, "reason": exc.code, "message": str(exc)}
+    return {"fetched": True, **outcome}
 

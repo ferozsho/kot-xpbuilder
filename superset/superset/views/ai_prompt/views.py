@@ -666,6 +666,22 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    @expose("/api/usage/billing/source/", methods=("GET",))
+    @has_access_api
+    def api_usage_billing_source(self) -> FlaskResponse:
+        """Whether an export source is configured. The URL and token stay server-side."""
+        status, body = call_xp_prompt("GET", "/ai/usage/billing/source")
+        return self.json_response(body, status)
+
+    @expose("/api/usage/billing/fetch/", methods=("POST",))
+    @has_access_api
+    def api_usage_billing_fetch(self) -> FlaskResponse:
+        """Fetch the provider's export now, instead of waiting for the nightly job."""
+        status, body = call_xp_prompt(
+            "POST", "/ai/usage/billing/fetch", payload=_body()
+        )
+        return self.json_response(body, status)
+
     @expose("/api/dashboards/plan/", methods=("POST",))
     @has_access_api
     def api_dashboard_plan(self) -> FlaskResponse:

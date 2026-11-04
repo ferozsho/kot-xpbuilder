@@ -22,12 +22,16 @@ What this module guarantees:
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
+from urllib.parse import urlparse
 
 from xp_prompt.config import Settings
 from xp_prompt.db import connect
@@ -223,6 +227,104 @@ def record_import(
     return _import(row), False
 
 
+def fetch_export(
+    settings: Settings,
+    *,
+    tenant_key: str,
+    provider: str | None = None,
+    currency: str | None = None,
+    period_start: datetime | None = None,
+    period_end: datetime | None = None,
+    source_url: str | None = None,
+    token: str | None = None,
+) -> dict[str, Any]:
+    """Pull a billing export from the configured source and import it.
+
+    This is what turns "an operator pastes rows" into "the export is fetched". It
+    is deliberately narrow:
+
+    * the source must be **https**, and the host must not be a loopback, private or
+      metadata address — a server-side fetch of an admin-supplied URL is an SSRF
+      primitive unless it is constrained (a hostname that later resolves to a
+      private address is not caught here; the setting is operator-controlled and
+      this is documented rather than pretended away);
+    * the body must be JSON: either a list of rows, or an object with ``rows``;
+    * a period is required, taken from the body or the arguments, and defaulted to
+      the previous UTC day so a daily job needs no state;
+    * the token is sent as a bearer header and never logged.
+
+    Everything else is :func:`record_import`, so a fetched export is matched and
+    stored exactly like a pasted one.
+    """
+    url = (source_url or settings.billing_source_url or "").strip()
+    if not url:
+        raise BillingError(
+            "not_configured",
+            "no billing source is configured; set XP_PROMPT_BILLING_SOURCE_URL",
+        )
+    _assert_fetchable(url)
+    secret = token if token is not None else settings.billing_source_token
+    body = _get_json(url, secret)
+
+    rows = body.get("rows") if isinstance(body, Mapping) else body
+    if not isinstance(rows, list):
+        raise BillingError(
+            "invalid_export", "the billing export must be a list of rows"
+        )
+    resolved_provider = (
+        provider
+        or (body.get("provider") if isinstance(body, Mapping) else None)
+        or settings.billing_source_provider
+    )
+    if not resolved_provider:
+        raise BillingError(
+            "provider_required",
+            "the export did not name a provider; set "
+            "XP_PROMPT_BILLING_SOURCE_PROVIDER",
+        )
+    resolved_currency = (
+        currency
+        or (body.get("currency") if isinstance(body, Mapping) else None)
+        or settings.billing_source_currency
+    )
+    start, end = _export_period(body, period_start, period_end)
+
+    record, replayed = record_import(
+        settings,
+        tenant_key=tenant_key,
+        provider=str(resolved_provider),
+        period_start=start,
+        period_end=end,
+        currency=str(resolved_currency),
+        rows=rows,
+        source=_source_label(url),
+    )
+    logger.info(
+        "billing_fetch provider=%s rows=%d import=%s replayed=%s",
+        resolved_provider,
+        len(rows),
+        record.id,
+        replayed,
+    )
+    return {
+        "import": record.to_public_dict(),
+        "replayed": replayed,
+        "rows": len(rows),
+        "source": _source_label(url),
+    }
+
+
+def source_status(settings: Settings) -> dict[str, Any]:
+    """Whether a billing source is configured, without revealing the URL or token."""
+    url = (settings.billing_source_url or "").strip()
+    return {
+        "configured": bool(url),
+        "provider": settings.billing_source_provider or "",
+        "currency": settings.billing_source_currency,
+        "host": _host(url) if url else "",
+    }
+
+
 def list_imports(
     settings: Settings, *, tenant_key: str, limit: int = DEFAULT_LIST_LIMIT
 ) -> list[Import]:
@@ -388,6 +490,127 @@ def _match(cursor: Any, import_id: str, provider: str) -> int:
         (str(import_id), provider),
     )
     return len(cursor.fetchall() or [])
+
+
+#: Addresses a billing source may never point at. Fetching an admin-supplied URL
+#: server-side is an SSRF primitive, so the obvious targets are refused outright.
+_BLOCKED_HOSTS = frozenset(
+    {
+        "localhost",
+        "localhost.localdomain",
+        "metadata.google.internal",
+        "metadata",
+        "instance-data",
+    }
+)
+FETCH_TIMEOUT_SECONDS = 20
+MAX_EXPORT_BYTES = 8 * 1024 * 1024
+
+
+def _assert_fetchable(url: str) -> None:
+    """Refuse anything that is not a plain https call to a public host."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise BillingError(
+            "unsafe_source", "the billing source must use https"
+        )
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise BillingError("unsafe_source", "the billing source has no host")
+    if host in _BLOCKED_HOSTS:
+        raise BillingError(
+            "unsafe_source", "the billing source may not be an internal host"
+        )
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return  # a name, not a literal: nothing more can be checked here
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+    ):
+        raise BillingError(
+            "unsafe_source", "the billing source may not be a private address"
+        )
+
+
+def _get_json(url: str, token: str | None) -> Any:
+    """One bounded GET, parsed as JSON; errors stay content-free."""
+    headers = {"Accept": "application/json", "User-Agent": "xp-prompt-billing/1"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request_ = urllib_request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib_request.urlopen(
+            request_, timeout=FETCH_TIMEOUT_SECONDS
+        ) as response:
+            raw = response.read(MAX_EXPORT_BYTES + 1)
+    except urllib_error.HTTPError as exc:
+        raise BillingError(
+            "fetch_failed", f"the billing source answered HTTP {exc.code}"
+        ) from exc
+    except (urllib_error.URLError, TimeoutError, OSError) as exc:
+        raise BillingError(
+            "fetch_failed", f"the billing source could not be reached "
+            f"({type(exc).__name__})"
+        ) from exc
+    if len(raw) > MAX_EXPORT_BYTES:
+        raise BillingError("export_too_large", "the billing export is too large")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise BillingError(
+            "invalid_export", "the billing export is not valid JSON"
+        ) from exc
+
+
+def _export_period(
+    body: Any,
+    period_start: datetime | None,
+    period_end: datetime | None,
+) -> tuple[datetime, datetime]:
+    """The period the export covers, defaulted to the previous UTC day."""
+    start = period_start or (_iso(body, "period_start") if body else None)
+    end = period_end or (_iso(body, "period_end") if body else None)
+    if start is None or end is None:
+        end = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=1)
+    if end <= start:
+        raise BillingError("invalid_period", "period_end must be after period_start")
+    return start, end
+
+
+def _iso(body: Any, key: str) -> datetime | None:
+    if not isinstance(body, Mapping):
+        return None
+    value = body.get(key)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        # A naive timestamp in a cost report is UTC. Using the host's local
+        # timezone would shift the billing window by wherever the worker runs.
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _source_label(url: str) -> str:
+    """A storable description of where an export came from: host, never the URL."""
+    host = _host(url)
+    return f"fetch:{host}"[:MAX_SOURCE_CHARS] if host else "fetch"
+
+
+def _host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "")[:128]
+    except ValueError:
+        return ""
 
 
 def _fingerprint(provider: str, lines: list[Line]) -> str:

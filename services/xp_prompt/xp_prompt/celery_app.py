@@ -5,6 +5,7 @@ from __future__ import annotations
 from urllib.parse import quote_plus
 
 from celery import Celery
+from celery.schedules import crontab
 
 from xp_prompt.config import Settings
 
@@ -42,6 +43,26 @@ def create_celery_app(settings: Settings | None = None) -> Celery:
         task_time_limit=330,
         timezone="UTC",
         worker_prefetch_multiplier=1,
+        # Periodic maintenance runs on a beat process, so usage delivery and the
+        # ledger checks happen whether or not anyone opens the dashboard (P9-F06/F10).
+        # A deployment without `celery beat` simply never fires these; the API and
+        # operator actions still do the same work on demand.
+        beat_schedule={
+            "xp-prompt-drain-usage-outbox": {
+                "task": "xp_prompt.drain_usage_outbox",
+                "schedule": 60.0,
+                "args": (50,),
+            },
+            "xp-prompt-reconcile-usage": {
+                "task": "xp_prompt.reconcile_usage",
+                "schedule": crontab(minute="*/15"),
+            },
+            "xp-prompt-fetch-billing-exports": {
+                "task": "xp_prompt.fetch_billing_exports",
+                # Once a day, after most providers have closed the previous day.
+                "schedule": crontab(hour=4, minute=15),
+            },
+        },
     )
     return celery
 

@@ -195,3 +195,10 @@ export interface BillingVariance {
     difference_micros: number;
   }[];
 }
+
+export interface BillingSource {
+  configured: boolean;
+  provider: string;
+  currency: string;
+  host: string;
+}

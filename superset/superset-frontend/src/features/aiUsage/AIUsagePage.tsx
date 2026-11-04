@@ -34,7 +34,9 @@ import {
   describeError,
   drainOutbox,
   fetchAttempts,
+  fetchBillingExport,
   fetchBillingImports,
+  fetchBillingSource,
   fetchBillingVariance,
   fetchBudgets,
   fetchOutbox,
@@ -45,6 +47,7 @@ import {
 } from './api';
 import {
   BillingImport,
+  BillingSource,
   BillingVariance,
   Budget,
   ModelPrice,
@@ -201,6 +204,7 @@ export default function AIUsagePage() {
   const [outbox, setOutbox] = useState<OutboxStatus | null>(null);
   const [imports, setImports] = useState<BillingImport[]>([]);
   const [variance, setVariance] = useState<BillingVariance | null>(null);
+  const [source, setSource] = useState<BillingSource | null>(null);
   const [moduleFilter, setModuleFilter] = useState<string>('');
   const [busy, setBusy] = useState(false);
 
@@ -214,7 +218,7 @@ export default function AIUsagePage() {
   const refresh = useCallback(async () => {
     setBusy(true);
     try {
-      const [summaryBody, attemptRows, healthBody, budgetRows, priceRows, outboxBody, importRows] =
+      const [summaryBody, attemptRows, healthBody, budgetRows, priceRows, outboxBody, importRows, sourceBody] =
         await Promise.all([
           fetchSummary({ module: moduleFilter || undefined, group_by: 'module' }),
           fetchAttempts({ limit: 25, module: moduleFilter || undefined }),
@@ -223,6 +227,7 @@ export default function AIUsagePage() {
           fetchPrices(),
           fetchOutbox(),
           fetchBillingImports(),
+          fetchBillingSource(),
         ]);
       setSummary(summaryBody);
       setAttempts(attemptRows);
@@ -231,6 +236,7 @@ export default function AIUsagePage() {
       setPrices(priceRows);
       setOutbox(outboxBody);
       setImports(importRows);
+      setSource(sourceBody);
     } catch (error) {
       await fail(error);
     } finally {
@@ -255,6 +261,18 @@ export default function AIUsagePage() {
       const outcome = await drainOutbox();
       addSuccessToast(
         t('%s event(s) delivered, %s failed', outcome.delivered ?? 0, outcome.failed ?? 0),
+      );
+      await refresh();
+    } catch (error) {
+      await fail(error);
+    }
+  };
+
+  const onFetchBilling = async () => {
+    try {
+      const outcome = await fetchBillingExport();
+      addSuccessToast(
+        t('%s billing row(s) imported from %s', outcome.rows, outcome.source),
       );
       await refresh();
     } catch (error) {
@@ -585,7 +603,25 @@ export default function AIUsagePage() {
         />
       </Card>
 
-      <Card title={t('Provider billing')}>
+      <Card
+        title={t('Provider billing')}
+        extra={
+          <Toolbar>
+            <Hint style={{ margin: 0 }}>
+              {source?.configured
+                ? t('Fetched from %s', source.host)
+                : t('No export source configured; imports are manual')}
+            </Hint>
+            <Button
+              buttonStyle="secondary"
+              onClick={onFetchBilling}
+              disabled={!source?.configured}
+            >
+              {t('Fetch now')}
+            </Button>
+          </Toolbar>
+        }
+      >
         <Table
           size={TableSize.Small}
           data={imports}

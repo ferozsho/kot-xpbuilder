@@ -223,6 +223,39 @@ services:
     networks:
       - xpbuilder-internal
 
+  xp-prompt-beat:
+    <<: *x-xpbuilder-image
+    container_name: ${XPBUILDER_INSTANCE}_xp_prompt_beat
+    restart: unless-stopped
+    command:
+      - celery
+      - -A
+      - xp_prompt.celery_app:app
+      - beat
+      - -l
+      - INFO
+      # The application directory is read-only for the runtime user, so the
+      # scheduler's state file lives on the writable tmpfs instead of failing.
+      - --schedule=/tmp/celerybeat-schedule
+    # Beat serves no port, so the image's HTTP healthcheck can only ever report
+    # unhealthy; liveness here means the scheduler process exists.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pgrep -f "celery.*beat" > /dev/null
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    environment: *x-xp-prompt-environment
+    depends_on:
+      xp-prompt-db:
+        condition: service_healthy
+      superset-redis:
+        condition: service_healthy
+    networks:
+      - xpbuilder-internal
+
   xp-prompt-initialize:
     <<: *x-xpbuilder-image
     profiles: ["tools"]
