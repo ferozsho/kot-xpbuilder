@@ -71,12 +71,14 @@ def validate(
         max_rows=max_rows,
         connection_names=schema.connection_names(),
         virtual_tables=schema.virtual_tables(database=database),
+        rls_targets=schema.rls_targets(database=database),
     )
     return {
         "sql": guarded.sql,
         "dialect": guarded.dialect,
         "tables": list(guarded.tables),
         "inlined": list(guarded.inlined),
+        "rls_applied": list(guarded.rls_applied),
         "limit": guarded.limit,
         "schema_fingerprint": schema.fingerprint,
     }

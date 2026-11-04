@@ -544,6 +544,9 @@ MAX_CELL_CHARS = 200
 #: A virtual dataset's SQL is forwarded so the service can inline it; the service
 #: enforces the same bound, this is only here to keep one request small.
 MAX_DATASET_SQL_CHARS = 8_000
+#: Rendered row-level predicates travel with the dataset; the service re-bounds and
+#: parses them before they reach a statement.
+MAX_RLS_CHARS = 2_000
 
 
 def _cell(value: Any) -> str:
@@ -600,6 +603,13 @@ def authorized_datasets() -> list[dict[str, Any]]:
     physical table, so the pipeline needs the definition to reference it at all.
     It is included as-is (bounded) because it is admin-authored, and the service
     validates it before inlining; a templated definition is dropped there.
+
+    Row-level security is resolved here, by Superset, because only Superset knows
+    the principal's roles and how to render the rule (``{{ current_username() }}``
+    and friends). The rendered clauses travel with the dataset and the service
+    applies them to every reference; a dataset whose rules cannot be rendered is
+    left out of the slice entirely, so a policy failure can only remove data from
+    the answer, never widen it.
     """
     from superset import security_manager
 
@@ -619,6 +629,17 @@ def authorized_datasets() -> list[dict[str, Any]]:
             )[:MAX_SLICE_COLUMNS]
         ]
         definition = getattr(datasource, "sql", None) or ""
+        try:
+            rls_filters = [
+                str(rule) for rule in datasource.get_sqla_row_level_filters()
+            ]
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "Skipping dataset %s: its row-level rules could not be rendered (%s)",
+                getattr(datasource, "id", "?"),
+                type(exc).__name__,
+            )
+            continue
         datasets.append(
             {
                 "dataset_id": datasource.id,
@@ -627,6 +648,7 @@ def authorized_datasets() -> list[dict[str, Any]]:
                 "database": database.database_name,
                 "dialect": (database.backend or "").split("://", 1)[0],
                 "sql": str(definition)[:MAX_DATASET_SQL_CHARS],
+                "rls": [clause[:MAX_RLS_CHARS] for clause in rls_filters],
                 "columns": columns,
             }
         )

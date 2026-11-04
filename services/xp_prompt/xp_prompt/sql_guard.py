@@ -58,6 +58,8 @@ SUPPORTED_DIALECTS: tuple[str, ...] = (
 MAX_SQL_CHARS = 20_000
 MAX_ROWS = 1_000
 MIN_ROWS = 1
+#: A rendered row-level predicate is bounded before it is parsed or inlined.
+MAX_RLS_CHARS = 2_000
 
 #: Functions that read files, execute commands, reach the network, waste time, or
 #: mutate state. Compared upper-cased against ``sql_name()``/anonymous names.
@@ -188,6 +190,8 @@ class GuardResult:
     read_only: bool = True
     #: Datasets whose governed SQL was inlined as a CTE, for audit.
     inlined: tuple[str, ...] = ()
+    #: Datasets a mandatory row-level predicate was applied to, for audit.
+    rls_applied: tuple[str, ...] = ()
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -198,6 +202,7 @@ class GuardResult:
             "wrapped": self.wrapped,
             "read_only": self.read_only,
             "inlined": list(self.inlined),
+            "rls_applied": list(self.rls_applied),
         }
 
 
@@ -209,6 +214,7 @@ def check(
     max_rows: int = MAX_ROWS,
     connection_names: Any = None,
     virtual_tables: Any = None,
+    rls_targets: Any = None,
 ) -> GuardResult:
     """Validate one candidate statement and return a safe, limit-enforced SQL.
 
@@ -227,6 +233,13 @@ def check(
     those have no physical table, so a reference to one is replaced by a CTE
     holding the governed query. The dataset SQL is admin-authored and is itself
     validated (one statement, a query, no denial) before it is inlined.
+
+    ``rls_targets`` maps every reference form of a dataset with row-level security
+    to ``(dataset name, mandatory predicate)``. Every reference is wrapped in a CTE
+    that carries the predicate, so a model — or a caller replaying a statement —
+    cannot omit or widen the scope: the predicate is applied by this function, not
+    requested from the prompt. A clause that does not parse is refused rather than
+    silently dropped.
     """
     text = (sql or "").strip()
     if not text:
@@ -263,7 +276,10 @@ def check(
     _reject_system_schemas(tables)
     if allowed_tables is not None:
         _reject_unlisted_tables(tables, allowed_tables)
-    _inline_virtual_datasets(statement, definitions, inlined, normalised_dialect)
+    scoped = _apply_dataset_scope(
+        statement, definitions, _rls_definitions(rls_targets, normalised_dialect),
+        normalised_dialect,
+    )
 
     capped, limit, wrapped = _enforce_limit(statement, max_rows)
 
@@ -275,6 +291,7 @@ def check(
         wrapped=wrapped,
         read_only=True,
         inlined=inlined,
+        rls_applied=scoped,
     )
 
 
@@ -384,28 +401,97 @@ def _normalise_virtual_references(
     return tuple(sorted(found))
 
 
-def _inline_virtual_datasets(
+def _rls_definitions(rls_targets: Any, dialect: str) -> dict[str, tuple[str, str]]:
+    """Validate the mandatory predicates Superset rendered for this principal.
+
+    ``rls_targets`` is ``{reference form: (dataset name, predicate)}``. The
+    predicate is SQL that Superset produced from its own RLS rules (identity and
+    Jinja rendering stay there), so it is trusted in *intent* but still validated
+    in *shape*: bounded, comment-free, and parseable as a condition. A policy that
+    cannot be parsed is refused rather than dropped — silently dropping it would
+    hand the caller the rows the policy exists to hide.
+    """
+    if not isinstance(rls_targets, dict) or not rls_targets:
+        return {}
+    validated: dict[str, tuple[str, str]] = {}
+    for reference, value in rls_targets.items():
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            continue
+        name = str(value[0] or "").strip()
+        clause = str(value[1] or "").strip()
+        if not name or not clause:
+            continue
+        if len(clause) > MAX_RLS_CHARS:
+            raise SqlPolicyError("rls_invalid", "a row-level policy is too large")
+        if _EXECUTABLE_COMMENT in clause:
+            raise SqlPolicyError("rls_invalid", "a row-level policy is obfuscated")
+        try:
+            exp.condition(clause, dialect=dialect)
+        except (SqlglotError, ValueError) as exc:
+            raise SqlPolicyError(
+                "rls_invalid", "a row-level policy could not be parsed"
+            ) from exc
+        validated[str(reference).strip().lower()] = (name, clause)
+    return validated
+
+
+def _apply_dataset_scope(
     statement: exp.Expression,
     definitions: dict[str, tuple[str, str]],
-    names: tuple[str, ...],
+    scoped: dict[str, tuple[str, str]],
     dialect: str,
-) -> None:
-    """Prepend one CTE per referenced virtual dataset, holding its own query.
+) -> tuple[str, ...]:
+    """Reference every dataset through a CTE that carries its policy.
 
-    The dataset definition is admin-authored but is treated as untrusted input: it
-    must parse as exactly one query with no denied function, so nothing that could
-    not itself pass the guard runs on its behalf. It is deliberately *not* checked
-    against the allowlist — the model never wrote it, and its base tables may not be
-    separately exposed as datasets.
+    Two things are folded into one pass because they are the same operation: a
+    *virtual* dataset is a governed query that has to be inlined, and a dataset
+    with row-level security has to be narrowed. Both become a CTE named after the
+    dataset, so the generated SQL references the governed thing rather than the
+    raw one — and the policy is applied by this function, never requested from the
+    model.
     """
-    if not names:
-        return
+    planned: dict[str, tuple[str, exp.Expression]] = {}
+    applied: list[str] = []
+    for table in list(statement.find_all(exp.Table)):
+        key = (table.name or "").lower()
+        reference = ".".join(
+            str(part).lower() for part in (table.catalog, table.db, key) if part
+        )
+        alias: str | None = None
+        target = scoped.get(reference) or scoped.get(key)
+        clause = target[1] if target else ""
+        if key in definitions:
+            canonical, query = definitions[key]
+            body = _virtual_dataset_query(query, dialect)
+            alias = canonical
+            if clause:
+                body = _narrow(body, clause)
+        elif target:
+            alias, clause = target
+            # The CTE body is the original reference; the alias belongs to the
+            # caller's expression and is preserved on the rewritten node.
+            source = table.copy()
+            source.set("alias", None)
+            body = _narrow(source, clause)
+        else:
+            continue
+        if alias.lower() not in planned:
+            planned[alias.lower()] = (alias, body)
+        if clause:
+            applied.append(alias.lower())
+        table.set("this", exp.to_identifier(alias, quoted=True))
+        table.set("db", None)
+        table.set("catalog", None)
+
+    if not planned:
+        return ()
+
     existing_cte_names = {
         cte.alias_or_name.lower()
         for cte in statement.find_all(exp.CTE)
         if cte.alias_or_name
     }
-    for name in names:
+    for name in planned:
         if name in existing_cte_names:
             raise SqlPolicyError(
                 "virtual_dataset_conflict",
@@ -413,12 +499,10 @@ def _inline_virtual_datasets(
             )
     ctes = [
         exp.CTE(
-            this=_virtual_dataset_query(definitions[name][1], dialect),
-            alias=exp.TableAlias(
-                this=exp.to_identifier(definitions[name][0], quoted=True)
-            ),
+            this=body,
+            alias=exp.TableAlias(this=exp.to_identifier(alias, quoted=True)),
         )
-        for name in names
+        for alias, body in (planned[name] for name in sorted(planned))
     ]
     current = statement.args.get("with_")
     if isinstance(current, exp.With):
@@ -426,6 +510,15 @@ def _inline_virtual_datasets(
         current.set("expressions", [*ctes, *list(current.expressions)])
     else:
         statement.set("with_", exp.With(expressions=ctes, recursive=False))
+
+    return tuple(sorted(set(applied)))
+
+
+def _narrow(source: exp.Expression, clause: str) -> exp.Expression:
+    """``source`` restricted to the mandatory predicate."""
+    alias = exp.TableAlias(this=exp.to_identifier("xp_rls_source"))
+    derived = exp.Subquery(this=source, alias=alias)
+    return exp.select("*").from_(derived).where(exp.condition(clause))
 
 
 def _virtual_dataset_query(query: str, dialect: str) -> exp.Expression:

@@ -263,6 +263,102 @@ class VirtualDatasetTest(unittest.TestCase):
         self.assertNotIn('WITH', result.sql.upper())
 
 
+class RowLevelSecurityTest(unittest.TestCase):
+    """A mandatory predicate is applied by the guard, not asked of the model.
+
+    Superset renders the clause (identity and Jinja stay there); the guard's job is
+    to make sure every reference to that dataset carries it.
+    """
+
+    RLS = {'public.mdl_user': ('mdl_user', 'deleted = 0'), 'mdl_user': ('mdl_user', 'deleted = 0')}
+
+    def test_a_physical_table_is_wrapped_with_the_predicate(self) -> None:
+        result = sql_guard.check(
+            'select count(*) from public.mdl_user',
+            allowed_tables={'public.mdl_user'},
+            rls_targets=self.RLS,
+        )
+
+        self.assertEqual(result.rls_applied, ('mdl_user',))
+        self.assertIn('deleted = 0', result.sql)
+        self.assertIn('WITH "mdl_user" AS', result.sql)
+
+    def test_a_model_alias_and_its_qualified_columns_survive(self) -> None:
+        result = sql_guard.check(
+            'select u.id from public.mdl_user u where u.id > 3',
+            allowed_tables={'public.mdl_user'},
+            rls_targets=self.RLS,
+        )
+
+        self.assertIn('FROM "mdl_user" AS u', result.sql)
+        self.assertIn('u.id > 3', result.sql)
+
+    def test_two_group_keys_are_anded(self) -> None:
+        result = sql_guard.check(
+            'select count(*) from public.mdl_user',
+            allowed_tables={'public.mdl_user'},
+            rls_targets={
+                'mdl_user': ('mdl_user', '(deleted = 0) AND (tenant_id = 7)'),
+            },
+        )
+
+        self.assertIn('deleted = 0', result.sql)
+        self.assertIn('tenant_id = 7', result.sql)
+
+    def test_a_self_join_scopes_both_references(self) -> None:
+        result = sql_guard.check(
+            'select a.id from public.mdl_user a join public.mdl_user b on b.id = a.id',
+            allowed_tables={'public.mdl_user'},
+            rls_targets=self.RLS,
+        )
+
+        self.assertEqual(result.sql.count('deleted = 0'), 1)
+        self.assertIn('JOIN "mdl_user" AS b', result.sql)
+
+    def test_a_virtual_dataset_is_scoped_inside_its_cte(self) -> None:
+        result = sql_guard.check(
+            'select count(*) from "Student Overview"',
+            allowed_tables={'student overview'},
+            virtual_tables={'Student Overview': 'SELECT tenant_id FROM public.students'},
+            rls_targets={'student overview': ('Student Overview', 'tenant_id = 7')},
+        )
+
+        self.assertEqual(result.inlined, ('student overview',))
+        self.assertEqual(result.rls_applied, ('student overview',))
+        self.assertIn('tenant_id = 7', result.sql)
+
+    def test_an_unparseable_policy_is_refused_not_dropped(self) -> None:
+        for clause in ('deleted =', '; drop table x', 'select 1'):
+            with self.subTest(clause=clause):
+                with self.assertRaises(sql_guard.SqlPolicyError) as raised:
+                    sql_guard.check(
+                        'select count(*) from public.mdl_user',
+                        allowed_tables={'public.mdl_user'},
+                        rls_targets={'mdl_user': ('mdl_user', clause)},
+                    )
+                self.assertEqual(raised.exception.code, 'rls_invalid')
+
+    def test_a_comment_in_a_policy_is_refused(self) -> None:
+        with self.assertRaises(sql_guard.SqlPolicyError) as raised:
+            sql_guard.check(
+                'select count(*) from public.mdl_user',
+                allowed_tables={'public.mdl_user'},
+                rls_targets={'mdl_user': ('mdl_user', '1 = 1 /*! or 1=1 */')},
+            )
+
+        self.assertEqual(raised.exception.code, 'rls_invalid')
+
+    def test_no_policy_means_no_change(self) -> None:
+        result = sql_guard.check(
+            'select count(*) from public.mdl_user',
+            allowed_tables={'public.mdl_user'},
+            rls_targets={},
+        )
+
+        self.assertEqual(result.rls_applied, ())
+        self.assertNotIn('WITH', result.sql.upper())
+
+
 class LimitTest(unittest.TestCase):
     def test_missing_limit_is_added(self) -> None:
         result = sql_guard.check("select id from mdl_user", max_rows=25)
@@ -362,10 +458,20 @@ class ResultShapeTest(unittest.TestCase):
 
         self.assertEqual(
             sorted(payload),
-            ["dialect", "inlined", "limit", "read_only", "sql", "tables", "wrapped"],
+            [
+                "dialect",
+                "inlined",
+                "limit",
+                "read_only",
+                "rls_applied",
+                "sql",
+                "tables",
+                "wrapped",
+            ],
         )
         self.assertTrue(payload["read_only"])
         self.assertEqual(payload["inlined"], [])
+        self.assertEqual(payload["rls_applied"], [])
 
 
 if __name__ == "__main__":

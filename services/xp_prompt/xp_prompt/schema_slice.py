@@ -41,6 +41,10 @@ MAX_PROMPT_CHARS = 12_000
 #: Jinja before executing, and this service cannot, so a templated dataset is
 #: unusable rather than half-usable.
 MAX_DATASET_SQL_CHARS = 8_000
+#: Row-level security clauses are rendered upstream; these bounds keep a bad policy
+#: from turning into an unbounded statement.
+MAX_RLS_CHARS = 2_000
+MAX_RLS_CLAUSES = 8
 
 #: Conservative identifier shape for a table/schema/column name. Anything outside
 #: it is dropped, not escaped.
@@ -91,10 +95,30 @@ class Dataset:
     #: name is a governed query, not a physical table, so referencing it requires
     #: inlining that query.
     query: str = ""
+    #: Row-level security clauses for this principal, already rendered by Superset
+    #: (Jinja and identity resolution stay there). They are ANDed and applied to
+    #: every reference, so a model cannot omit or widen them.
+    rls: tuple[str, ...] = ()
 
     @property
     def is_virtual(self) -> bool:
         return bool(self.query)
+
+    @property
+    def rls_clause(self) -> str:
+        """The mandatory predicate for this dataset, or an empty string."""
+        clauses = [f"({clause})" for clause in self.rls if clause.strip()]
+        return " AND ".join(clauses)
+
+    def reference_forms(self) -> tuple[str, ...]:
+        """Every lower-cased name a statement may use for this dataset."""
+        forms = [self.name.lower()]
+        if not self.is_virtual:
+            if self.schema:
+                forms.append(f"{self.schema}.{self.name}".lower())
+            if self.database:
+                forms.append(self.qualified_name.lower())
+        return tuple(forms)
 
     @property
     def qualified_name(self) -> str:
@@ -179,13 +203,7 @@ class SchemaSlice:
         for dataset in self.datasets:
             if database and dataset.database and dataset.database != database:
                 continue
-            names.add(dataset.name.lower())
-            if dataset.is_virtual:
-                continue
-            if dataset.schema:
-                names.add(f"{dataset.schema}.{dataset.name}".lower())
-            if dataset.database:
-                names.add(dataset.qualified_name.lower())
+            names.update(dataset.reference_forms())
         return frozenset(names)
 
     def virtual_tables(self, database: str | None = None) -> dict[str, str]:
@@ -203,6 +221,24 @@ class SchemaSlice:
             if dataset.is_virtual
             and not (database and dataset.database and dataset.database != database)
         }
+
+    def rls_targets(self, database: str | None = None) -> dict[str, tuple[str, str]]:
+        """Reference form -> (dataset name, mandatory predicate).
+
+        Keyed by every form a statement may use, because the guard has to recognise
+        the reference before it can scope it. Empty when this principal has no
+        row-level security — which is the common case.
+        """
+        targets: dict[str, tuple[str, str]] = {}
+        for dataset in self.datasets:
+            if database and dataset.database and dataset.database != database:
+                continue
+            clause = dataset.rls_clause
+            if not clause:
+                continue
+            for form in dataset.reference_forms():
+                targets[form] = (dataset.name, clause)
+        return targets
 
     def dialects(self) -> tuple[str, ...]:
         return tuple(sorted({dataset.dialect for dataset in self.datasets if dataset.dialect}))
@@ -242,6 +278,9 @@ class SchemaSlice:
                     "dialect": dataset.dialect,
                     "dataset_id": dataset.dataset_id,
                     "virtual": dataset.is_virtual,
+                    # Whether a policy applies, never the policy text: the
+                    # browser does not need the predicate and it may name tenants.
+                    "rls": bool(dataset.rls),
                     "columns": [column.name for column in dataset.columns],
                 }
                 for dataset in self.datasets
@@ -289,7 +328,29 @@ def _dataset(entry: Any) -> Dataset | None:
         dataset_id=_integer(entry.get("dataset_id")),
         columns=tuple(columns),
         query=_dataset_query(entry.get("sql")),
+        rls=_rls_clauses(entry.get("rls")),
     )
+
+
+def _rls_clauses(value: Any) -> tuple[str, ...]:
+    """Rendered row-level security clauses, bounded and de-duplicated.
+
+    The clauses come from Superset, which owns identity and Jinja rendering. They
+    are still bounded here: this is the last place that can stop a runaway policy
+    from being pasted into a statement.
+    """
+    if not isinstance(value, (list, tuple)):
+        return ()
+    clauses: list[str] = []
+    for raw in value:
+        text = " ".join(str(raw or "").split())
+        if not text or len(text) > MAX_RLS_CHARS:
+            continue
+        if text not in clauses:
+            clauses.append(text)
+        if len(clauses) >= MAX_RLS_CLAUSES:
+            break
+    return tuple(clauses)
 
 
 def _dataset_query(value: Any) -> str:
@@ -351,6 +412,13 @@ def _fingerprint(datasets: list[Dataset] | tuple[Dataset, ...]) -> str:
                 "query": (
                     hashlib.sha256(dataset.query.encode("utf-8")).hexdigest()
                     if dataset.query
+                    else ""
+                ),
+                # Policy is part of the slice identity: a cached answer produced
+                # under a different RLS scope must not be reused.
+                "rls": (
+                    hashlib.sha256("\n".join(dataset.rls).encode("utf-8")).hexdigest()
+                    if dataset.rls
                     else ""
                 ),
                 "columns": [

@@ -343,12 +343,14 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             category_icon="",
         )
 
-        # Conversational XP Prompt workspace. Top-level like Report Designer; the
+        # Conversational XP Ask workspace. Top-level like Report Designer; the
         # link name equals AIPromptView.class_permission_name so FAB's own menu
         # filtering hides it from roles without ``menu_access`` on ``AIPrompt``.
+        # Only the label is user-facing: the link name is the permission key and
+        # must stay ``AIPrompt``.
         appbuilder.add_link(
             "AIPrompt",
-            label=_("XP Prompt"),
+            label=_("XP Ask"),
             href=f"{app_root}/aiprompt/",
             icon="fa-comments",
             category="",

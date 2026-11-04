@@ -687,7 +687,7 @@ def check_ai_sql_guard(compatibility: dict) -> None:
             raise AssertionError(
                 f'the schema slice lost virtual dataset support: {marker}'
             )
-    for marker in ('def _inline_virtual_datasets', 'def _virtual_dataset_query'):
+    for marker in ('def _apply_dataset_scope', 'def _virtual_dataset_query'):
         if marker not in guard_source:
             raise AssertionError(f'the SQL guard lost virtual dataset inlining: {marker}')
     if 'virtual_tables=schema.virtual_tables(' not in execution_source:
@@ -697,6 +697,30 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if '"sql": str(definition)' not in proxy_source:
         raise AssertionError(
             'the proxy must forward a virtual dataset definition to the service'
+        )
+
+    # P4-F06: row-level security is rendered by Superset (it owns identity and
+    # Jinja) and applied by the guard to every reference — never requested from a
+    # prompt, never silently dropped.
+    if 'get_sqla_row_level_filters' not in proxy_source:
+        raise AssertionError(
+            'the slice must carry the principals rendered row-level rules'
+        )
+    if '"rls":' not in proxy_source:
+        raise AssertionError('the dataset payload must include its row-level rules')
+    for marker in ('def rls_targets', 'def rls_clause'):
+        if marker not in slice_source:
+            raise AssertionError(f'the schema slice lost row-level support: {marker}')
+    for marker in ('_rls_definitions(', '_apply_dataset_scope('):
+        if marker not in guard_source:
+            raise AssertionError(f'the SQL guard lost row-level rewriting: {marker}')
+    if 'rls_invalid' not in guard_source:
+        raise AssertionError(
+            'an unparseable row-level policy must be refused, not dropped'
+        )
+    if 'rls_targets=schema.rls_targets(' not in execution_source:
+        raise AssertionError(
+            'execution must re-apply row-level scope before running a statement'
         )
 
 

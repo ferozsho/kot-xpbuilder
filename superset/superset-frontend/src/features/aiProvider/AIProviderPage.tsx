@@ -500,7 +500,7 @@ export default function AIProviderPage() {
           </StyledTitle>
           <StyledSubtitle>
             {t(
-              'Keys are encrypted at rest in the XP Prompt database and are ' +
+              'Keys are encrypted at rest in the AI service database and are ' +
                 'never returned by the API after saving.',
             )}
           </StyledSubtitle>

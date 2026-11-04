@@ -68,6 +68,27 @@ class ResolveDialectTest(unittest.TestCase):
             sql_execution.resolve_dialect(slice_([]))
 
 
+class RowLevelSecurityTest(unittest.TestCase):
+    def test_the_policy_is_applied_at_execution_time_too(self) -> None:
+        schema = slice_(
+            [
+                {
+                    "name": "mdl_user",
+                    "schema": "public",
+                    "database": "lms",
+                    "dialect": "postgres",
+                    "rls": ["deleted = 0"],
+                    "columns": [{"name": "id", "type": "int"}],
+                }
+            ]
+        )
+
+        result = sql_execution.validate("select count(*) from mdl_user", schema=schema)
+
+        self.assertEqual(result["rls_applied"], ["mdl_user"])
+        self.assertIn("deleted = 0", result["sql"])
+
+
 class VirtualDatasetTest(unittest.TestCase):
     def test_a_virtual_dataset_is_inlined_before_execution(self) -> None:
         schema = slice_(

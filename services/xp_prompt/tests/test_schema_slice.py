@@ -239,6 +239,51 @@ class VirtualDatasetTest(unittest.TestCase):
         self.assertNotEqual(first.fingerprint, second.fingerprint)
 
 
+class RowLevelSecurityTest(unittest.TestCase):
+    def test_clauses_are_anded_per_dataset(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(rls=["deleted = 0", "tenant_id = 7"])]}
+        )
+
+        entry = slice_.datasets[0]
+        self.assertEqual(entry.rls_clause, "(deleted = 0) AND (tenant_id = 7)")
+
+    def test_every_reference_form_maps_to_the_policy(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(rls=["deleted = 0"])]}
+        )
+
+        targets = slice_.rls_targets()
+        self.assertEqual(
+            sorted(targets),
+            ["lms.public.mdl_user", "mdl_user", "public.mdl_user"],
+        )
+        self.assertEqual(targets["public.mdl_user"], ("mdl_user", "(deleted = 0)"))
+
+    def test_no_policy_is_invisible(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload({"datasets": [dataset()]})
+
+        self.assertEqual(slice_.rls_targets(), {})
+        self.assertFalse(slice_.to_public_dict()["tables"][0]["rls"])
+
+    def test_a_policy_changes_the_fingerprint(self) -> None:
+        first = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(rls=["tenant_id = 7"])]}
+        )
+        second = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(rls=["tenant_id = 8"])]}
+        )
+
+        self.assertNotEqual(first.fingerprint, second.fingerprint)
+
+    def test_an_oversized_policy_is_dropped(self) -> None:
+        slice_ = schema_slice.SchemaSlice.from_payload(
+            {"datasets": [dataset(rls=["x" * (schema_slice.MAX_RLS_CHARS + 1)])]}
+        )
+
+        self.assertEqual(slice_.datasets[0].rls, ())
+
+
 class PromptTest(unittest.TestCase):
     def test_prompt_lists_only_validated_names(self) -> None:
         slice_ = schema_slice.SchemaSlice.from_payload(

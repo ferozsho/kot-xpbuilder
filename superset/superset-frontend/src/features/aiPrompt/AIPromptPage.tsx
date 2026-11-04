@@ -330,7 +330,7 @@ export default function AIPromptPage() {
       );
       addSuccessToast(
         turn.clarification
-          ? t('XP Prompt needs one more detail')
+          ? t('XP Ask needs one more detail')
           : `${t('Answered by')} ${turn.provider} · ${turn.model}`,
       );
     } catch (caught) {
@@ -433,7 +433,7 @@ export default function AIPromptPage() {
     <StyledWrapper>
       <StyledHeader>
         <div>
-          <StyledTitle>{t('XP Prompt')}</StyledTitle>
+          <StyledTitle>{t('XP Ask')}</StyledTitle>
           <StyledSubtitle>
             {t(
               'Ask questions about your data. Answers are stored in your own ' +
