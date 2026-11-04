@@ -29,7 +29,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from xp_prompt import failures, patterns, sql_candidate, sql_execution
+from xp_prompt import (
+    failures,
+    patterns,
+    settings_registry,
+    sql_candidate,
+    sql_execution,
+)
 from xp_prompt import sql_guard
 from xp_prompt.config import Settings
 from xp_prompt.schema_slice import SchemaSlice
@@ -45,6 +51,10 @@ NONE = "none"
 MAX_FAILED_SQL_CHARS = 900
 #: A pattern is offered only if its re-validation produced a statement.
 MAX_REPAIR_CORRECTIONS = 1
+#: ``repair.pattern_auto_promote = false`` still records evidence, but promotion
+#: needs this many independent sources, which is more than can ever be collected
+#: (``patterns.MAX_EVIDENCE`` is the cap), so nothing is promoted by accident.
+PROMOTION_OFF = patterns.MAX_EVIDENCE + 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +108,14 @@ def propose(
     conversation_id: str | None = None,
 ) -> RepairAttempt:
     """Decide what, if anything, may be tried next for this failure."""
+    live = settings_registry.live(settings, tenant_key=tenant_key)
+    if not live["feature.self_healing"].value:
+        return RepairAttempt(
+            allowed=False,
+            reason="self_healing_disabled",
+            failure={},
+            explanation={"feature": "self_healing"},
+        )
     event = failures.classify(
         stage=stage,
         kind_hint=kind_hint,
@@ -106,7 +124,7 @@ def propose(
         errno=errno,
         message=message,
     )
-    budget = failures.budget_from_settings(settings)
+    budget = _repair_budget(settings, live)
     state = failures.RepairState(
         attempts=max(0, int(attempts)),
         elapsed_ms=max(0, int(elapsed_ms)),
@@ -178,6 +196,26 @@ def propose(
     )
 
 
+def _repair_budget(
+    settings: Settings, live: dict[str, settings_registry.Resolution]
+) -> failures.RepairBudget:
+    """The configured repair budget, with a stored attempt limit winning.
+
+    ``XP_PROMPT_REPAIR_MAX_ATTEMPTS`` stays the deployment default, so an existing
+    environment keeps working; an operator who writes ``repair.max_attempts`` gets
+    a change that applies to the next failure rather than the next restart.
+    """
+    budget = failures.budget_from_settings(settings)
+    attempt_limit = settings_registry.override(live, "repair.max_attempts")
+    if attempt_limit is None:
+        return budget
+    return failures.RepairBudget(
+        max_attempts=int(attempt_limit),
+        max_elapsed_ms=budget.max_elapsed_ms,
+        max_tokens=budget.max_tokens,
+    )
+
+
 def record_outcome(
     settings: Settings,
     *,
@@ -197,7 +235,20 @@ def record_outcome(
     A success on a generated correction creates the pattern that a later failure can
     reuse; a success on a pattern is more evidence for it. A failure is recorded
     against the *fix*, so it is never offered again for this failure (P5-F07).
+
+    Promotion follows the stored settings: a written
+    ``repair.pattern_evidence_threshold`` replaces the caller's default, and
+    ``repair.pattern_auto_promote = false`` records the evidence while refusing to
+    promote anything (P10-F05).
     """
+    live = settings_registry.live(settings, tenant_key=tenant_key)
+    stored_threshold = settings_registry.override(
+        live, "repair.pattern_evidence_threshold"
+    )
+    if stored_threshold is not None:
+        threshold = int(stored_threshold)
+    if not live["repair.pattern_auto_promote"].value:
+        threshold = PROMOTION_OFF
     fingerprint_value = str((failure or {}).get("fingerprint") or "")
     kind = str((failure or {}).get("kind") or "")
     stage = str((failure or {}).get("stage") or "execute")

@@ -132,11 +132,16 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
+#: Chat failures the platform decided on, as opposed to a provider that broke.
+_CHAT_REFUSALS = frozenset({"budget_exhausted", "feature_disabled"})
+
+
 def _chat_error_status(code: str) -> int:
     """A chat failure's status: a refusal is not the same as an outage."""
     return {
         "no_provider": 503,
         "budget_exhausted": 429,
+        "feature_disabled": 403,
     }.get(code, 502)
 
 
@@ -176,6 +181,7 @@ _SQL_CANDIDATE_STATUS = {
     "invalid_response": 502,
     "provider_error": 503,
     "no_provider": 503,
+    "feature_disabled": 403,
 }
 
 
@@ -468,12 +474,13 @@ def create_app(settings: Settings | None = None) -> Flask:
         except conversations.ConversationInputError as exc:
             return _admin_error(str(exc), 400)
         except chat.ChatError as exc:
-            # A budget refusal is a deliberate stop, not an upstream fault, so it
-            # answers 429 with the reason instead of a generic 502 (P9-F09).
+            # A budget refusal or a switched-off feature is a deliberate stop, not
+            # an upstream fault, so it answers with the module's own sentence and
+            # its own status instead of a generic 502 (P9-F09, P10-F08).
             status = _chat_error_status(exc.code)
             message = (
                 str(exc)
-                if exc.code == "budget_exhausted"
+                if exc.code in _CHAT_REFUSALS
                 else f"AI provider failed ({exc.code})"
             )
             return _admin_error(message, status)

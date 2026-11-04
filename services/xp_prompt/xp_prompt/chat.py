@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from xp_prompt import conversations, intents, responses
+from xp_prompt import conversations, intents, responses, settings_registry
 from xp_prompt import usage as usage_ledger
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
@@ -42,8 +42,11 @@ logger = logging.getLogger(__name__)
 #: How many prior messages are replayed as context. Older turns stay stored but
 #: are not resent, so a long chat cannot grow the prompt without bound.
 MAX_HISTORY_MESSAGES = 20
-#: Chat answers are short; a larger budget only buys latency and cost.
+#: Chat answers are short; a larger budget only buys latency and cost. The
+#: generation ceiling can lower this but never raise it (P10-F03).
 CHAT_MAX_OUTPUT_TOKENS = 1024
+#: Only used when no registry is consulted; the live value is
+#: ``generation.temperature_basis_points``.
 CHAT_TEMPERATURE = 0.2
 #: Hard limit for one turn: the whole prompt is dropped, not truncated, when the
 #: user message alone exceeds this.
@@ -106,6 +109,10 @@ def run_turn(
     the conversation, so the turn is rejected rather than answered from a
     history the caller has not seen.
     """
+    live = settings_registry.live(settings, tenant_key=tenant_key)
+    if not live["feature.chat"].value:
+        raise ChatError("feature_disabled", "chat is switched off for this tenant")
+
     conversation = conversations.get_conversation(
         settings,
         conversation_id,
@@ -157,7 +164,9 @@ def run_turn(
             decision=decision,
         )
 
-    request = _build_request(history, user_message.id, intent=decision.intent)
+    request = _build_request(
+        history, user_message.id, intent=decision.intent, live=live
+    )
 
     try:
         router = registry.resolve_router(
@@ -384,12 +393,17 @@ def _build_request(
     last_user_message_id: str,
     *,
     intent: str | None = None,
+    live: dict[str, settings_registry.Resolution] | None = None,
 ) -> ProviderRequest:
     """Turn stored history into one provider request.
 
     The budget is spent newest-first so the current turn is always included;
     messages whose body could not be decrypted (rotated secret) are skipped
     rather than sent as empty turns.
+
+    ``live`` carries the resolved generation settings. Without it the module's own
+    constants apply, so a caller that has no tenant (a test, or the probe that
+    tests a provider) still builds the same request it always did.
     """
     usable = [
         record
@@ -425,10 +439,32 @@ def _build_request(
     return ProviderRequest(
         operation="chat.turn",
         messages=tuple(messages),
-        max_output_tokens=CHAT_MAX_OUTPUT_TOKENS,
-        temperature=CHAT_TEMPERATURE,
+        max_output_tokens=_max_output_tokens(live),
+        temperature=_temperature(live),
+        reasoning_budget_tokens=_thinking_budget(live),
         correlation_id=uuid.uuid4().hex,
     )
+
+
+def _max_output_tokens(live: dict[str, settings_registry.Resolution] | None) -> int:
+    """The shorter of what chat asks for and the configured ceiling."""
+    if live is None:
+        return CHAT_MAX_OUTPUT_TOKENS
+    ceiling = int(live["generation.max_output_tokens"].value)
+    return max(1, min(CHAT_MAX_OUTPUT_TOKENS, ceiling))
+
+
+def _temperature(live: dict[str, settings_registry.Resolution] | None) -> float:
+    """Hundredths of a unit, so the stored value is an integer and not a float."""
+    if live is None:
+        return CHAT_TEMPERATURE
+    return int(live["generation.temperature_basis_points"].value) / 100.0
+
+
+def _thinking_budget(live: dict[str, settings_registry.Resolution] | None) -> int:
+    if live is None:
+        return 0
+    return max(0, int(live["generation.thinking_budget_tokens"].value))
 
 
 def _system_prompt(intent: str | None) -> str:

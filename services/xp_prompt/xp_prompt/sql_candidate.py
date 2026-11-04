@@ -33,6 +33,7 @@ from xp_prompt import (
     examples,
     question_plan,
     responses,
+    settings_registry,
     sql_execution,
     sql_guard,
     sql_semantics,
@@ -50,7 +51,11 @@ logger = logging.getLogger(__name__)
 #: but Gemini's thinking budget is charged against this limit: 1200 was observed to
 #: truncate mid-string on a two-table question, which the router (correctly) reports
 #: as ``structured_output_invalid`` because a partial document is unparseable.
+#: The candidate asks for the whole generation ceiling by default; the ceiling
+#: itself is ``generation.max_output_tokens`` and it can also lower this.
 CANDIDATE_MAX_TOKENS = 2048
+#: SQL generation stays deterministic whatever the chat temperature is: a repaired
+#: statement has to be reproducible before it can be validated against the data.
 CANDIDATE_TEMPERATURE = 0.0
 MAX_QUESTION_CHARS = 2_000
 MAX_RATIONALE_CHARS = 600
@@ -141,8 +146,12 @@ def build_request(
     plan: question_plan.QuestionPlan | None = None,
     examples: Any = None,
     repair_note: str = "",
+    live: dict[str, settings_registry.Resolution] | None = None,
 ) -> ProviderRequest:
-    """The one provider request this pipeline makes, built only from the slice."""
+    """The one provider request this pipeline makes, built only from the slice.
+
+    ``live`` carries the resolved settings; without it the module constants apply.
+    """
     text = (question or "").strip()
     if not text:
         raise SqlCandidateError("empty_question", "a question is required")
@@ -182,7 +191,7 @@ def build_request(
             ),
             Message("user", "\n\n".join(sections)),
         ),
-        max_output_tokens=CANDIDATE_MAX_TOKENS,
+        max_output_tokens=_max_output_tokens(live),
         temperature=CANDIDATE_TEMPERATURE,
         json_output=True,
         json_required_keys=REQUIRED_KEYS,
@@ -191,6 +200,14 @@ def build_request(
         reasoning_budget_tokens=0,
         correlation_id=correlation_id or uuid.uuid4().hex,
     )
+
+
+def _max_output_tokens(live: dict[str, settings_registry.Resolution] | None) -> int:
+    """The candidate budget, held under the platform's generation ceiling."""
+    if live is None:
+        return CANDIDATE_MAX_TOKENS
+    ceiling = int(live["generation.max_output_tokens"].value)
+    return max(1, min(CANDIDATE_MAX_TOKENS, ceiling))
 
 
 def generate(
@@ -221,6 +238,11 @@ def generate(
     was wrong.
     """
     resolved_dialect = _resolve_dialect(schema, database=database, dialect=dialect)
+    live = settings_registry.live(settings, tenant_key=tenant_key)
+    if not live["feature.sql"].value:
+        raise SqlCandidateError(
+            "feature_disabled", "SQL generation is switched off for this tenant"
+        )
     plan = question_plan.analyse(question, schema)
     if plan.blocking:
         # Ask instead of guessing: an invented column or an arbitrary pick between
@@ -258,6 +280,7 @@ def generate(
         plan=plan,
         examples=_example_block(settings, question, tenant_key, resolved_dialect),
         repair_note=repair_note,
+        live=live,
     )
 
     try:

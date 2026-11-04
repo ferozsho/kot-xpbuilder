@@ -219,11 +219,15 @@ REGISTRY: tuple[Setting, ...] = (
     Setting(
         key="generation.temperature_basis_points",
         kind=INT,
-        default=0,
+        default=20,
         minimum=0,
         maximum=200,
         owner="generation",
-        summary="Sampling temperature in hundredths (0-200 = 0.00-2.00).",
+        summary=(
+            "Sampling temperature in hundredths (0-200 = 0.00-2.00). SQL "
+            "generation keeps its own 0.00 so a validated statement is "
+            "reproducible."
+        ),
     ),
     Setting(
         key="generation.thinking_budget_tokens",
@@ -456,6 +460,46 @@ def feature_enabled(
     if key not in BY_KEY:
         return False
     return bool(effective(settings, tenant_key=tenant_key).get(key, False))
+
+
+def live(
+    settings: Settings, *, tenant_key: str = "default"
+) -> dict[str, Resolution]:
+    """Resolve every setting for a request path, without ever failing it.
+
+    Configuration is read on hot paths, so an unreadable table, a database outage
+    or a tenant that has not been provisioned must not turn a chat turn into a
+    500. The failure is logged and the documented defaults apply, which is the
+    same state a fresh deployment is in (P10-F11).
+    """
+    try:
+        return load(settings, tenant_key=tenant_key)
+    except Exception:  # noqa: BLE001 - configuration may not fail a request
+        logger.warning(
+            "ai_settings_unavailable using_registry_defaults tenant=%s",
+            tenant_key,
+            exc_info=True,
+        )
+        return {
+            setting.key: Resolution(setting.key, setting.default, "default", 0)
+            for setting in REGISTRY
+        }
+
+
+def override(
+    values: Mapping[str, Resolution], key: str
+) -> Any | None:
+    """The stored value for a key, or ``None`` when nothing has been written.
+
+    An override wins over the value a module was configured with, and its absence
+    leaves that configuration alone. That keeps a setting additive: a deployment
+    tuned through its environment does not silently change behaviour because a
+    new key exists.
+    """
+    resolution = values.get(key)
+    if resolution is None or resolution.source == "default":
+        return None
+    return resolution.value
 
 
 def stored(settings: Settings, *, tenant_key: str = "default") -> list[StoredSetting]:

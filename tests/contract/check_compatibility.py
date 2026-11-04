@@ -1675,6 +1675,37 @@ def check_ai_configuration(compatibility: dict) -> None:
     if '/aisettings/' not in routes_source:
         raise AssertionError('the SPA must route the AI settings page')
 
+    # A registry nothing reads is a form, not configuration. Each consumer below
+    # must actually consult the setting it is documented to honour, because a
+    # stored value that changes only the display is indistinguishable from a bug.
+    for marker in ('def live(', 'def override('):
+        if marker not in registry_source:
+            raise AssertionError(f'the registry must expose {marker}')
+
+    consumers = {
+        'chat.py': (
+            'settings_registry.live(',
+            'generation.max_output_tokens',
+            'generation.temperature_basis_points',
+            'generation.thinking_budget_tokens',
+            'feature.chat',
+        ),
+        'sql_candidate.py': ('feature.sql', 'generation.max_output_tokens'),
+        'repair.py': (
+            'feature.self_healing',
+            'repair.max_attempts',
+            'repair.pattern_evidence_threshold',
+            'repair.pattern_auto_promote',
+        ),
+    }
+    for name, markers in consumers.items():
+        source = (services / name).read_text(encoding='utf-8')
+        for marker in markers:
+            if marker not in source:
+                raise AssertionError(f'{name} must honour {marker}')
+    if '"feature_disabled": 403' not in api_source:
+        raise AssertionError('a switched-off feature must answer 403, not 502')
+
 
 def main():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
