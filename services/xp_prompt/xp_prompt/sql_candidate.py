@@ -28,7 +28,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from xp_prompt import cache, responses, sql_execution, sql_guard, sql_semantics
+from xp_prompt import (
+    cache,
+    examples,
+    question_plan,
+    responses,
+    sql_execution,
+    sql_guard,
+    sql_semantics,
+)
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.structured import StructuredOutputError, parse_json_object
@@ -127,6 +135,8 @@ def build_request(
     dialect: str,
     max_rows: int,
     correlation_id: str | None = None,
+    plan: question_plan.QuestionPlan | None = None,
+    examples: Any = None,
 ) -> ProviderRequest:
     """The one provider request this pipeline makes, built only from the slice."""
     text = (question or "").strip()
@@ -143,6 +153,14 @@ def build_request(
             "unsupported_dialect", f"unsupported SQL dialect: {dialect}"
         )
 
+    outline = plan.prompt_block() if plan is not None else ""
+    example_block = examples or ""
+    sections = [f"Question: {text}"]
+    if outline:
+        sections.append(f"What the question asks for:\n{outline}")
+    if example_block:
+        sections.append(example_block)
+    sections.append(f"Available data:\n{schema_text}")
     return ProviderRequest(
         operation="sql.candidate",
         messages=(
@@ -152,7 +170,7 @@ def build_request(
                     max_rows=max(1, int(max_rows)), dialect=normal_dialect
                 ),
             ),
-            Message("user", f"Question: {text}\n\nAvailable data:\n{schema_text}"),
+            Message("user", "\n\n".join(sections)),
         ),
         max_output_tokens=CANDIDATE_MAX_TOKENS,
         temperature=CANDIDATE_TEMPERATURE,
@@ -185,6 +203,12 @@ def generate(
     and reported.
     """
     resolved_dialect = _resolve_dialect(schema, database=database, dialect=dialect)
+    plan = question_plan.analyse(question, schema)
+    if plan.blocking:
+        # Ask instead of guessing: an invented column or an arbitrary pick between
+        # measures produces SQL that is plausible and wrong (P4-F01).
+        logger.info("sql_candidate outcome=clarification codes=%s", ",".join(plan.blocking))
+        raise SqlCandidateError("ambiguous_question", plan.clarification())
     key = cache.cache_key(
         tenant_key=tenant_key,
         question=question,
@@ -208,7 +232,12 @@ def generate(
         cache_status = cache.MISS
 
     request = build_request(
-        question, schema, dialect=resolved_dialect, max_rows=max_rows
+        question,
+        schema,
+        dialect=resolved_dialect,
+        max_rows=max_rows,
+        plan=plan,
+        examples=_example_block(settings, question, tenant_key, resolved_dialect),
     )
 
     try:
@@ -290,6 +319,16 @@ def generate(
         guarded.limit,
         cache_status,
     )
+    # Validated (guard + semantics), so it is precedent worth offering next time.
+    examples.record_example(
+        settings,
+        tenant_key=tenant_key,
+        question=question,
+        sql=guarded.sql,
+        dialect=guarded.dialect,
+        fingerprint=schema.fingerprint,
+        tables=guarded.tables,
+    )
 
     return SqlCandidate(
         sql=guarded.sql,
@@ -348,6 +387,24 @@ def _from_cache(
         blocks=tuple(blocks),
         cache_status=cache_status,
     )
+
+
+def _example_block(
+    settings: Settings, question: str, tenant_key: str, dialect: str
+) -> str:
+    """Few-shot precedent from this tenant's own validated statements (P4-F03)."""
+    try:
+        found = examples.find_examples(
+            settings,
+            tenant_key=tenant_key,
+            question=question,
+            dialect=dialect,
+            limit=examples.DEFAULT_LIMIT,
+        )
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.info("sql_examples outcome=error kind=prompt reason=%s", type(exc).__name__)
+        return ""
+    return examples.prompt_block(found)
 
 
 def _check_semantics(sql_text: str, dialect: str, schema: SchemaSlice) -> None:

@@ -41,6 +41,7 @@ from xp_prompt import (
     sql_execution,
     sql_guard,
 )
+
 from xp_prompt.config import Settings
 from xp_prompt.health import readiness
 from xp_prompt.providers import registry
@@ -91,6 +92,7 @@ _SQL_CANDIDATE_STATUS = {
     "no_schema": 409,
     "sql_blocked": 422,
     "semantic_invalid": 422,
+    "ambiguous_question": 422,
     "invalid_response": 502,
     "provider_error": 503,
     "no_provider": 503,

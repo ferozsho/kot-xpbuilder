@@ -842,6 +842,49 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if not migration.exists():
         raise AssertionError('the cache-status column needs its own migration')
 
+    # P4-F01: a materially ambiguous question is asked about, not guessed at.
+    plan_path = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'question_plan.py'
+    )
+    if not plan_path.exists():
+        raise AssertionError('question_plan.py must exist')
+    plan_source = plan_path.read_text(encoding='utf-8')
+    for marker in ('MEASURE_AMBIGUOUS', 'UNKNOWN_REFERENCE', 'BLOCKING_CODES'):
+        if marker not in plan_source:
+            raise AssertionError(f'question planning lost {marker}')
+    if 'ambiguous_question' not in candidate:
+        raise AssertionError('a blocking ambiguity must stop candidate generation')
+    if '"ambiguous_question": 422' not in service:
+        raise AssertionError('an ambiguous question must answer 422')
+    if 'question_plan.analyse(' not in candidate:
+        raise AssertionError('the candidate prompt must carry the question outline')
+
+    # P4-F03: examples are tenant-scoped, dialect-scoped and slice-scoped, and are
+    # only recorded after a statement passed both checks.
+    examples_path = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'examples.py'
+    )
+    if not examples_path.exists():
+        raise AssertionError('examples.py must exist')
+    examples_source = examples_path.read_text(encoding='utf-8')
+    for marker in ('def find_examples', 'def record_example', 'tenant_id = %s'):
+        if marker not in examples_source:
+            raise AssertionError(f'the example library lost {marker}')
+    if 'schema_fingerprint' not in examples_source:
+        raise AssertionError('examples must be scoped to the slice fingerprint')
+    if 'examples.record_example(' not in candidate:
+        raise AssertionError('a validated candidate must feed the example library')
+    example_migration = (
+        ROOT
+        / 'services'
+        / 'xp_prompt'
+        / 'migrations'
+        / 'versions'
+        / '20261103_09_ai_sql_example.py'
+    )
+    if not example_migration.exists():
+        raise AssertionError('the example library needs its own migration')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.
