@@ -2040,19 +2040,24 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
         except ProviderError as exc:
             duration_ms = round((time.monotonic() - started) * 1000)
+            # The provider's own sentence ("prepayment credits are depleted")
+            # explains what to do; the bare "http_402" alone reads like a
+            # connector bug. Stored text is capped to last_test_error VARCHAR(255).
+            detail = str(exc).strip()[:255]
             registry.record_test_result(
                 resolved_settings,
                 provider_id,
                 status="failed",
-                error=exc.code,
+                error=f"{exc.code}: {detail}"[:255] if detail else exc.code,
             )
             _record_health(provider_id, exc)
             logger.info(
                 "provider_test correlation_id=%s provider=%s outcome=failed "
-                "error_code=%s duration_ms=%d",
+                "error_code=%s detail=%s duration_ms=%d",
                 correlation_id,
                 record.name,
                 exc.code,
+                detail or "-",
                 duration_ms,
             )
             return (
@@ -2061,6 +2066,7 @@ def create_app(settings: Settings | None = None) -> Flask:
                         "status": "failed",
                         "error_code": exc.code,
                         "retryable": exc.retryable,
+                        "message": detail,
                         "duration_ms": duration_ms,
                         "correlation_id": correlation_id,
                     }

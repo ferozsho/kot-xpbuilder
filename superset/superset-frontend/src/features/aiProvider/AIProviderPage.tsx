@@ -358,8 +358,11 @@ export default function AIProviderPage() {
           `${t('Connection succeeded')} (${result.duration_ms ?? 0} ms)`,
         );
       } else {
+        const code = result.error_code ?? t('unknown error');
         addDangerToast(
-          `${t('Connection failed')}: ${result.error_code ?? t('unknown error')}`,
+          result.message
+            ? `${t('Connection failed')}: ${code} — ${result.message}`
+            : `${t('Connection failed')}: ${code}`,
         );
       }
       load();
