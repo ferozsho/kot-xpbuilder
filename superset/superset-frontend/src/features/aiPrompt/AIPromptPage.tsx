@@ -39,6 +39,7 @@ import {
 } from './api';
 import ResponseBlocks from './blocks';
 import JobPanel from './JobPanel';
+import RepairPanel from './RepairPanel';
 import { ConversationRecord, MessageRecord } from './types';
 
 const StyledWrapper = styled.div`
@@ -576,6 +577,8 @@ export default function AIPromptPage() {
           )}
 
           <JobPanel conversationId={activeId} />
+
+          <RepairPanel />
 
           <StyledComposer>
             <StyledTextarea

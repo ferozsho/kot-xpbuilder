@@ -913,6 +913,99 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if not repair_migration.exists():
         raise AssertionError('the repair ledger needs its own migration')
 
+    # P5-F02/F03/F08/F09: knowledge is tenant- and scope-scoped, only a promoted
+    # pattern is reusable, and a disabled one stays disabled.
+    patterns_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'patterns.py'
+    if not patterns_path.exists():
+        raise AssertionError('patterns.py must exist')
+    patterns_source = patterns_path.read_text(encoding='utf-8')
+    for marker in (
+        'def find(',
+        'def rank(',
+        'def promote(',
+        'def set_state(',
+        'def revalidate_stale(',
+        "state = 'promoted'",
+    ):
+        if marker not in patterns_source:
+            raise AssertionError(f'the pattern library lost {marker}')
+    if 'tenant_id = %s AND state = ' not in patterns_source:
+        raise AssertionError('pattern search must filter by tenant and state')
+    if 'def confidence(' not in patterns_source:
+        raise AssertionError('ranking must be explainable from validation history')
+    pattern_migration = (
+        ROOT
+        / 'services'
+        / 'xp_prompt'
+        / 'migrations'
+        / 'versions'
+        / '20261103_11_ai_repair_pattern.py'
+    )
+    if not pattern_migration.exists():
+        raise AssertionError('the pattern library needs its own migration')
+    if 'uq_ai_repair_pattern_scope' not in pattern_migration.read_text(encoding='utf-8'):
+        raise AssertionError('a correction must be unique within its scope')
+
+    # P5-F04/F05: a repair re-enters the same pipeline; it never bypasses it.
+    repair_path = ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'repair.py'
+    if not repair_path.exists():
+        raise AssertionError('repair.py must exist')
+    repair_source = repair_path.read_text(encoding='utf-8')
+    for marker in ('sql_execution.validate(', 'def propose(', 'def record_outcome('):
+        if marker not in repair_source:
+            raise AssertionError(f'the repair engine lost {marker}')
+    if 'bypass_cache=True' not in repair_source:
+        raise AssertionError('a repair must not replay the statement that failed')
+    if '/ai/sql/repair' not in service:
+        raise AssertionError('the service must expose /ai/sql/repair')
+    if '/ai/sql/patterns' not in service:
+        raise AssertionError('the service must expose the pattern review endpoints')
+    if 'repair_note' not in candidate:
+        raise AssertionError('the candidate prompt must be able to carry a repair note')
+    if 'def _repair(' not in proxy_source:
+        raise AssertionError('the proxy must run the repair loop')
+    for marker in ('MAX_REPAIR_ROUNDS', '/ai/sql/repair/outcome'):
+        if marker not in proxy_source:
+            raise AssertionError(f'the proxy repair loop lost {marker}')
+    if proxy_source.count('_authorize(database, expression, schema_name)') < 2:
+        raise AssertionError('a repaired statement must be authorized like a first one')
+    if 'raise_for_access(' not in proxy_source:
+        raise AssertionError('a repaired statement must pass Superset authorization')
+
+    # P5-F10: healing decisions are reviewable, and the review carries no statements.
+    for marker in (
+        '/api/repair/metrics/',
+        '/api/repair/patterns/',
+        'def api_repair_pattern_action',
+    ):
+        if marker not in proxy_source:
+            raise AssertionError(f'the operator repair API lost {marker}')
+    permissions = (
+        ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
+    ).read_text(encoding='utf-8')
+    for permission in (
+        'can_api_repair_metrics',
+        'can_api_repair_patterns',
+        'can_api_repair_pattern_action',
+    ):
+        if permission not in permissions:
+            raise AssertionError(f'the operator repair API needs {permission}')
+    panel = (
+        ROOT
+        / 'superset'
+        / 'superset-frontend'
+        / 'src'
+        / 'features'
+        / 'aiPrompt'
+        / 'RepairPanel.tsx'
+    )
+    if not panel.exists():
+        raise AssertionError('the repair knowledge needs an operator panel')
+    panel_source = panel.read_text(encoding='utf-8')
+    for marker in ('fetchRepairMetrics', 'fetchRepairPatterns', 'quarantine'):
+        if marker not in panel_source:
+            raise AssertionError(f'the repair panel lost {marker}')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

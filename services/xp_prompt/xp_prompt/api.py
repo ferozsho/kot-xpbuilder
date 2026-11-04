@@ -35,6 +35,8 @@ from xp_prompt import (
     cost_guard,
     failures,
     jobs,
+    patterns,
+    repair,
     responses,
     result_validation,
     schema_slice,
@@ -948,6 +950,174 @@ def create_app(settings: Settings | None = None) -> Flask:
             ),
             200,
         )
+
+    # --- Repair and validated knowledge (P5-F02…F10) ---------------------
+
+    @app.post("/ai/sql/repair")
+    @require_admin_token
+    def sql_repair_propose():
+        """Propose what to try next for a failure — or refuse to try anything.
+
+        The caller reports the failure and what it has already spent; this endpoint
+        owns the taxonomy, the budget, the pattern library and the guard. A proposal
+        is a *validated* statement: it has passed the same guard and semantic check as
+        a first attempt, and the caller must still authorize, cost-check, execute and
+        validate its result before presenting it (P5-F05).
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        slice_ = schema_slice.SchemaSlice.from_payload(payload)
+        proposal = repair.propose(
+            resolved_settings,
+            question=str(payload.get("question") or ""),
+            schema=slice_,
+            tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+            stage=str(payload.get("stage") or "execute"),
+            kind_hint=str(payload.get("kind") or ""),
+            error_class=str(payload.get("error_class") or ""),
+            sqlstate=str(payload.get("sqlstate") or ""),
+            errno=str(payload.get("errno") or ""),
+            message=str(payload.get("message") or ""),
+            failed_sql=str(payload.get("sql") or ""),
+            database=str(payload.get("database") or "").strip() or None,
+            dialect=str(payload.get("dialect") or "").strip() or None,
+            max_rows=payload.get("max_rows") or sql_guard.MAX_ROWS,
+            attempts=int(payload.get("attempts") or 0),
+            elapsed_ms=int(payload.get("elapsed_ms") or 0),
+            tokens=int(payload.get("tokens") or 0),
+            intent=str(payload.get("intent") or "query"),
+            conversation_id=str(payload.get("conversation_id") or "").strip() or None,
+        )
+        return jsonify(proposal.to_public_dict()), 200
+
+    @app.post("/ai/sql/repair/outcome")
+    @require_admin_token
+    def sql_repair_outcome():
+        """Record how a repair ended, and let the knowledge catch up (P5-F07/F08).
+
+        A success is evidence; a failure is both evidence and a suppression, so the
+        same fix is not offered for the same failure twice.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        failure = payload.get("failure")
+        if not isinstance(failure, dict) or not failure.get("fingerprint"):
+            return _admin_error("failure is required", 400)
+        slice_ = None
+        if payload.get("datasets") is not None and payload.get("sql"):
+            slice_ = schema_slice.SchemaSlice.from_payload(payload)
+        result = repair.record_outcome(
+            resolved_settings,
+            tenant_key=str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY),
+            failure=failure,
+            succeeded=bool(payload.get("succeeded")),
+            fix_fingerprint_value=str(payload.get("fix_fingerprint") or ""),
+            pattern_id=str(payload.get("pattern_id") or ""),
+            sql=str(payload.get("sql") or ""),
+            schema=slice_,
+            dialect=str(payload.get("dialect") or ""),
+            conversation_id=str(payload.get("conversation_id") or "").strip() or None,
+            threshold=resolved_settings.pattern_evidence_threshold,
+        )
+        return jsonify(result), 200
+
+    @app.get("/ai/sql/patterns")
+    @require_admin_token
+    def sql_pattern_list():
+        """Operator view of the stored knowledge, with no statement in it (P5-F10)."""
+        tenant_key = str(request.args.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        found = patterns.list_patterns(
+            resolved_settings,
+            tenant_key=tenant_key,
+            state=str(request.args.get("state") or ""),
+            failure_fingerprint=str(request.args.get("failure") or ""),
+            limit=int(request.args.get("limit") or patterns.DEFAULT_LIST_LIMIT),
+        )
+        return (
+            jsonify(
+                {
+                    "tenant": tenant_key,
+                    "count": len(found),
+                    "result": [pattern.to_public_dict() for pattern in found],
+                }
+            ),
+            200,
+        )
+
+    @app.get("/ai/sql/repair/metrics")
+    @require_admin_token
+    def sql_repair_metrics():
+        """Counts, states and success rates — the numbers, not the content (P5-F10)."""
+        tenant_key = str(request.args.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        metrics = patterns.metrics(resolved_settings, tenant_key=tenant_key)
+        thresholds = {
+            "evidence": resolved_settings.pattern_evidence_threshold,
+            "auto_promote": resolved_settings.pattern_auto_promote,
+            "validator_version": patterns.VALIDATOR_VERSION,
+            "policy_version": patterns.POLICY_VERSION,
+        }
+        return (
+            jsonify(
+                {
+                    "tenant": tenant_key,
+                    "metrics": metrics,
+                    "promotion": thresholds,
+                    "budget": failures.budget_from_settings(
+                        resolved_settings
+                    ).to_public_dict(),
+                }
+            ),
+            200,
+        )
+
+    @app.post("/ai/sql/patterns/<pattern_id>/<action>")
+    @require_admin_token
+    def sql_pattern_action(pattern_id: str, action: str):
+        """Promote, deprecate, quarantine or restore one pattern (P5-F08/F09).
+
+        ``promote`` is the only action that grants reuse, and without ``force`` it
+        enforces the evidence threshold; ``quarantine`` stops reuse immediately.
+        """
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            if action == "promote":
+                result = patterns.promote(
+                    resolved_settings,
+                    tenant_key=tenant_key,
+                    pattern_id=pattern_id,
+                    threshold=resolved_settings.pattern_evidence_threshold,
+                    force=bool(payload.get("force")),
+                )
+            else:
+                result = patterns.set_state(
+                    resolved_settings,
+                    tenant_key=tenant_key,
+                    pattern_id=pattern_id,
+                    action=action,
+                    reason=str(payload.get("reason") or ""),
+                )
+        except patterns.PatternError as exc:
+            status = 404 if exc.code == "not_found" else 422
+            return _admin_error(f"Pattern refused ({exc.code}): {exc}", status)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not update the pattern ({_error_class(exc)})", 503)
+        return jsonify(result), 200
+
+    @app.post("/ai/sql/patterns/revalidate")
+    @require_admin_token
+    def sql_pattern_revalidate():
+        """Send patterns proven under an older validator or policy back to validation."""
+        payload = request.get_json(silent=True) or {}
+        if _conversation_owner(payload) is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        changed = patterns.revalidate_stale(resolved_settings, tenant_key=tenant_key)
+        return jsonify({"revalidated": changed}), 200
 
     @app.post("/ai/sql/result")
     @require_admin_token

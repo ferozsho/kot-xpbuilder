@@ -115,6 +115,11 @@ class Settings:
     repair_max_attempts: int = 2
     repair_max_elapsed_ms: int = 30_000
     repair_max_tokens: int = 4_000
+    #: Pattern promotion (P5-F08). A correction becomes reusable knowledge only after
+    #: this many *independent* successful validations. Zero disables promotion
+    #: entirely, so nothing is ever reused automatically.
+    pattern_evidence_threshold: int = 2
+    pattern_auto_promote: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -225,6 +230,16 @@ class Settings:
             ),
             repair_max_tokens=_integer(
                 source, "XP_PROMPT_REPAIR_MAX_TOKENS", 4_000, minimum=0, maximum=200_000
+            ),
+            pattern_evidence_threshold=_integer(
+                source,
+                "XP_PROMPT_PATTERN_EVIDENCE_THRESHOLD",
+                2,
+                minimum=0,
+                maximum=10,
+            ),
+            pattern_auto_promote=_boolean(
+                source, "XP_PROMPT_PATTERN_AUTO_PROMOTE", True
             ),
         )
 

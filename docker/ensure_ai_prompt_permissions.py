@@ -45,6 +45,9 @@ PERMISSIONS = (
     "can_api_sql_execute",
     "can_api_conversation_sql",
     "can_api_conversation_audit",
+    "can_api_repair_metrics",
+    "can_api_repair_patterns",
+    "can_api_repair_pattern_action",
 )
 VIEW_MENU = "AIPrompt"
 

@@ -41,6 +41,12 @@ export interface SqlTurnResponse {
   plan?: string;
   /** ``hit``, ``miss``, ``bypass`` or ``disabled``. */
   cache?: string;
+  /** Present when the first statement failed and a correction was re-run. */
+  repair?: {
+    attempts: number;
+    source?: string;
+    pattern_id?: string | null;
+  } | null;
 }
 
 /**
@@ -193,4 +199,89 @@ export async function actOnJob(
     jsonPayload: {},
   });
   return json as JobRecord;
+}
+
+// --- Repair knowledge (P5-F10) ----------------------------------------
+
+/** Counts an operator needs; no statement and no question is in here. */
+export interface RepairMetricsResponse {
+  tenant: string;
+  metrics: {
+    states: Record<string, number>;
+    attempts: {
+      attempted: number;
+      succeeded: number;
+      failed: number;
+      suppressed: number;
+    };
+    success_rate: number;
+    kinds: { kind: string; total: number }[];
+    usable: number;
+    disabled: number;
+  };
+  promotion: {
+    evidence: number;
+    auto_promote: boolean;
+    validator_version: string;
+    policy_version: string;
+  };
+  budget: {
+    max_attempts: number;
+    max_elapsed_ms: number;
+    max_tokens: number;
+    suppress_failed_fixes: boolean;
+  };
+}
+
+/** One stored correction, as an operator may see it: no SQL, ever. */
+export interface RepairPatternRecord {
+  id: string;
+  state: string;
+  version: number;
+  dialect: string;
+  kind: string;
+  failure_fingerprint: string;
+  successes: number;
+  failures: number;
+  confidence: number;
+  promotion_policy: string;
+  evidence_count: number;
+  superseded_by?: string | null;
+  reason: string;
+  updated_at?: string | null;
+  sql_hidden: boolean;
+}
+
+export interface RepairPatternListResponse {
+  tenant: string;
+  count: number;
+  result: RepairPatternRecord[];
+}
+
+export type PatternAction = 'promote' | 'deprecate' | 'quarantine' | 'restore';
+
+export async function fetchRepairMetrics(): Promise<RepairMetricsResponse> {
+  const { json } = await SupersetClient.get({ endpoint: `${BASE}/repair/metrics/` });
+  return json as RepairMetricsResponse;
+}
+
+export async function fetchRepairPatterns(
+  state?: string,
+): Promise<RepairPatternListResponse> {
+  const query = state ? `?state=${encodeURIComponent(state)}` : '';
+  const { json } = await SupersetClient.get({
+    endpoint: `${BASE}/repair/patterns/${query}`,
+  });
+  return json as RepairPatternListResponse;
+}
+
+export async function actOnPattern(
+  patternId: string,
+  action: PatternAction,
+): Promise<{ id: string; state: string }> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/repair/patterns/${patternId}/${action}/`,
+    jsonPayload: {},
+  });
+  return json as { id: string; state: string };
 }

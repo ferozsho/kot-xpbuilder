@@ -277,6 +277,58 @@ class AIPromptView(BaseSupersetView):
         )
         return self.json_response(body, status)
 
+    # --- Operator view of the repair knowledge (P5-F10) ------------------
+
+    @expose("/api/repair/metrics/", methods=("GET",))
+    @has_access_api
+    def api_repair_metrics(self) -> FlaskResponse:
+        """Counts and promotion settings — the numbers, never a statement."""
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        status, body = call_xp_prompt(
+            "GET", f"/ai/sql/repair/metrics?superset_user_id={owner}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/repair/patterns/", methods=("GET",))
+    @has_access_api
+    def api_repair_patterns(self) -> FlaskResponse:
+        """The stored corrections, with their standing and why they rank as they do."""
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        query = f"/ai/sql/patterns?superset_user_id={owner}"
+        state = str(request.args.get("state") or "").strip().lower()
+        if state:
+            query = f"{query}&state={state}"
+        status, body = call_xp_prompt("GET", query)
+        return self.json_response(body, status)
+
+    @expose("/api/repair/patterns/<pattern_id>/<action>/", methods=("POST",))
+    @has_access_api
+    def api_repair_pattern_action(self, pattern_id: str, action: str) -> FlaskResponse:
+        """promote / deprecate / quarantine / restore — an operator's brake (P5-F09)."""
+        if action not in _PATTERN_ACTIONS:
+            return self.json_response(
+                {"message": _("Unsupported pattern action"), "severity": "danger"}, 404
+            )
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        payload["superset_user_id"] = owner
+        status, body = call_xp_prompt(
+            "POST", f"/ai/sql/patterns/{pattern_id}/{action}", payload=payload
+        )
+        return self.json_response(body, status)
+
     # --- Guided SQL turn: candidate → execute → validate → store ---------
 
     @expose("/api/conversations/<conversation_id>/sql/", methods=("POST",))
@@ -360,7 +412,15 @@ class AIPromptView(BaseSupersetView):
             )
         context["plan"] = _plan_record(plan)
 
-        frame, duration_ms, error_text = _execute(database, expression, schema_name)
+        frame, duration_ms, error_text, repair, repair_attempts = _run_with_repair(
+            owner=owner,
+            conversation_id=conversation_id,
+            question=question,
+            expression=expression,
+            database=database,
+            schema_name=schema_name,
+            context=context,
+        )
         if error_text:
             hint, kind = _classify_failure(owner, conversation_id, error_text)
             return self._refuse(
@@ -419,6 +479,7 @@ class AIPromptView(BaseSupersetView):
             *candidate.get("blocks", []),
             *verdict.get("blocks", []),
             *_plan_warnings(plan),
+            *_repair_blocks(repair, repair_attempts),
         ]
         stored, store_status = _store_turn(
             owner,
@@ -438,7 +499,7 @@ class AIPromptView(BaseSupersetView):
             conversation_id,
             outcome="answered",
             stage="execute",
-            code="ok",
+            code="repaired" if repair is not None else "ok",
             correlation_id=candidate.get("correlation_id"),
             duration_ms=duration_ms,
             row_count=verdict.get("row_count"),
@@ -457,6 +518,7 @@ class AIPromptView(BaseSupersetView):
                 "database": database.database_name,
                 "plan": plan.get("code"),
                 "cache": candidate.get("cache"),
+                "repair": _repair_summary(repair, repair_attempts),
             },
             201,
         )
@@ -640,6 +702,9 @@ _JOB_ACTIONS = {
 
 #: Artifact transitions. ``publish`` is driven by a producer phase, not the UI.
 _ARTIFACT_ACTIONS = ("confirm", "discard", "publish")
+#: Repair-pattern transitions an operator may request. ``promote`` needs evidence;
+#: ``quarantine`` is the immediate brake (P5-F09).
+_PATTERN_ACTIONS = ("promote", "deprecate", "quarantine", "restore")
 #: Bounds on the authorized slice: a prompt is not a schema dump.
 MAX_SLICE_DATASETS = 50
 MAX_SLICE_COLUMNS = 60
@@ -660,6 +725,9 @@ MAX_ERROR_CHARS = 400
 #: A plan probe is a read of the planner only, so its own output is bounded hard:
 #: a pathological plan is refused by the service anyway, not summarised here.
 MAX_PLAN_ROWS = 200
+#: How many corrections one turn may try. The service owns the real budget; this is
+#: only the loop's own backstop so a bad reply cannot spin here (P5-F06).
+MAX_REPAIR_ROUNDS = 2
 
 
 def _explain_estimate(
@@ -944,6 +1012,200 @@ def _classify_failure(
             "XP Prompt failure classification failed: %s", type(exc).__name__
         )
     return str(_("The query could not be executed")), "execution_failed"
+
+
+def _repair_blocks(
+    repair: dict[str, Any] | None, attempts: int
+) -> list[dict[str, Any]]:
+    """A repaired turn says so in the transcript: healed is not the same as clean."""
+    if repair is None:
+        return []
+    return [
+        {
+            "type": "repair",
+            "outcome": "fixed",
+            "attempts": attempts,
+            "notes": _(
+                "The first statement failed; a validated %(source)s correction was "
+                "re-run."
+            )
+            % {"source": str(repair.get("source") or "generated")},
+        }
+    ]
+
+
+def _repair_summary(
+    repair: dict[str, Any] | None, attempts: int
+) -> dict[str, Any] | None:
+    """What the browser needs to know about the repair, and nothing more."""
+    if repair is None:
+        return None
+    return {
+        "attempts": attempts,
+        "source": repair.get("source"),
+        "pattern_id": repair.get("pattern_id") or None,
+    }
+
+
+def _run_with_repair(
+    *,
+    owner: int,
+    conversation_id: str,
+    question: str,
+    expression: str,
+    database: Any,
+    schema_name: str | None,
+    context: dict[str, Any],
+) -> tuple[Any, int, str, dict[str, Any] | None, int]:
+    """Execute, and if that fails, try to heal it — within the service's budget.
+
+    Returns ``(frame, duration_ms, error_text, proposal, attempts)``. ``context`` is
+    updated in place with the statement that finally ran, so the audit and the stored
+    turn describe what actually executed rather than what was first proposed.
+    """
+    frame, duration_ms, error_text = _execute(database, expression, schema_name)
+    proposal: dict[str, Any] | None = None
+    attempts = 0
+    spent_ms = 0
+    while error_text and attempts < MAX_REPAIR_ROUNDS:
+        attempts += 1
+        next_proposal = _repair(
+            owner=owner,
+            conversation_id=conversation_id,
+            question=question,
+            failed_sql=expression,
+            error_text=error_text,
+            database=database,
+            schema_name=schema_name,
+            attempts=attempts - 1,
+            spent_ms=spent_ms + duration_ms,
+        )
+        if next_proposal is None:
+            break
+        proposal = next_proposal
+        expression = str(proposal.get("sql") or "")
+        context["sql"] = expression
+        context["dialect"] = str(
+            proposal.get("dialect") or context.get("dialect") or ""
+        )
+        frame, repaired_ms, repaired_error = _execute(database, expression, schema_name)
+        duration_ms += repaired_ms
+        spent_ms += repaired_ms
+        _record_repair_outcome(
+            owner=owner,
+            conversation_id=conversation_id,
+            proposal=proposal,
+            succeeded=not repaired_error,
+            sql=expression,
+            dialect=context["dialect"],
+        )
+        error_text = repaired_error
+    return frame, duration_ms, error_text, proposal, attempts
+
+
+def _repair(
+    *,
+    owner: int,
+    conversation_id: str,
+    question: str,
+    failed_sql: str,
+    error_text: str,
+    database: Any,
+    schema_name: str | None,
+    attempts: int,
+    spent_ms: int,
+) -> dict[str, Any] | None:
+    """Ask the service for a correction, then re-run the whole Phase 4 pipeline.
+
+    The proposal that comes back has already passed the guard and the semantic check.
+    It is *not* trusted on that strength: authorization, the cost gate, execution and
+    result validation all run again here, exactly as they do for a first attempt —
+    a repair may not bypass security (P5-F05). ``None`` means "stop trying".
+    """
+    status, proposal = call_xp_prompt(
+        "POST",
+        "/ai/sql/repair",
+        payload={
+            "superset_user_id": owner,
+            "conversation_id": conversation_id,
+            "question": question,
+            "sql": failed_sql,
+            "message": error_text,
+            "stage": "execute",
+            "database": database.database_name,
+            "max_rows": MAX_PREVIEW_ROWS,
+            "attempts": attempts,
+            "elapsed_ms": spent_ms,
+            "datasets": authorized_datasets(),
+        },
+    )
+    if status != 200 or not isinstance(proposal, dict):
+        logger.info("XP Prompt repair unavailable (%s)", status)
+        return None
+    if not proposal.get("allowed"):
+        logger.info("XP Prompt repair not allowed: %s", proposal.get("reason"))
+        return None
+    expression = str(proposal.get("sql") or "").strip()
+    if not expression:
+        return None
+    dialect = str(proposal.get("dialect") or "")
+
+    failure = _authorize(database, expression, schema_name)
+    if failure is not None:
+        _record_repair_outcome(
+            owner=owner,
+            conversation_id=conversation_id,
+            proposal=proposal,
+            succeeded=False,
+            sql=expression,
+            dialect=dialect,
+        )
+        return None
+    failure, _plan = _cost_gate(owner, database, expression, schema_name)
+    if failure is not None:
+        _record_repair_outcome(
+            owner=owner,
+            conversation_id=conversation_id,
+            proposal=proposal,
+            succeeded=False,
+            sql=expression,
+            dialect=dialect,
+        )
+        return None
+    return proposal
+
+
+def _record_repair_outcome(
+    *,
+    owner: int,
+    conversation_id: str,
+    proposal: dict[str, Any],
+    succeeded: bool,
+    sql: str,
+    dialect: str,
+) -> None:
+    """Tell the service how the repair ended, so the knowledge can catch up.
+
+    Bookkeeping must never break the turn: a failed call here is logged and swallowed.
+    """
+    try:
+        call_xp_prompt(
+            "POST",
+            "/ai/sql/repair/outcome",
+            payload={
+                "superset_user_id": owner,
+                "conversation_id": conversation_id,
+                "failure": proposal.get("failure") or {},
+                "succeeded": succeeded,
+                "fix_fingerprint": proposal.get("fix_fingerprint") or "",
+                "pattern_id": proposal.get("pattern_id") or "",
+                "sql": sql,
+                "dialect": dialect,
+                "datasets": authorized_datasets(),
+            },
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("XP Prompt repair outcome not recorded: %s", type(exc).__name__)
 
 
 def _store_turn(

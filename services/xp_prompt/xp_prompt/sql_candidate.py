@@ -56,6 +56,8 @@ MAX_RATIONALE_CHARS = 600
 MAX_ASSUMPTIONS = 8
 MAX_ASSUMPTION_CHARS = 300
 REQUIRED_KEYS = ("sql", "rationale", "assumptions")
+#: A repair note is bounded like every other free-form prompt section.
+MAX_REPAIR_NOTE_CHARS = 1_600
 
 SYSTEM_PROMPT = (
     "You write read-only analytical SQL for a Superset deployment.\n"
@@ -137,6 +139,7 @@ def build_request(
     correlation_id: str | None = None,
     plan: question_plan.QuestionPlan | None = None,
     examples: Any = None,
+    repair_note: str = "",
 ) -> ProviderRequest:
     """The one provider request this pipeline makes, built only from the slice."""
     text = (question or "").strip()
@@ -160,6 +163,12 @@ def build_request(
         sections.append(f"What the question asks for:\n{outline}")
     if example_block:
         sections.append(example_block)
+    # A repair is a second attempt at the *same* question, told what went wrong. The
+    # note never contains rows: it carries the failure kind and the statement shape
+    # (P5-F04).
+    note = (repair_note or "").strip()[:MAX_REPAIR_NOTE_CHARS]
+    if note:
+        sections.append(f"Repair this attempt:\n{note}")
     sections.append(f"Available data:\n{schema_text}")
     return ProviderRequest(
         operation="sql.candidate",
@@ -193,6 +202,7 @@ def generate(
     dialect: str | None = None,
     max_rows: int = sql_guard.MAX_ROWS,
     bypass_cache: bool = False,
+    repair_note: str = "",
 ) -> SqlCandidate:
     """Ask for one candidate, validate it, and return it with its blocks.
 
@@ -201,6 +211,11 @@ def generate(
     policies), same dialect, same row cap. Only the statement is cached, never a
     result, and a refusal is never stored — an explicit ``bypass_cache`` is honoured
     and reported.
+
+    A ``repair_note`` means this is a second attempt at a question whose previous
+    statement failed (P5-F04). The cached entry *is* that statement, so it is never
+    loaded; a successful correction replaces it instead, because the cached answer
+    was wrong.
     """
     resolved_dialect = _resolve_dialect(schema, database=database, dialect=dialect)
     plan = question_plan.analyse(question, schema)
@@ -216,9 +231,10 @@ def generate(
         dialect=resolved_dialect,
         max_rows=max_rows,
     )
+    repairing = bool((repair_note or "").strip())
     if not cache.enabled(settings):
         cache_status = cache.DISABLED
-    elif bypass_cache:
+    elif bypass_cache or repairing:
         cache_status = cache.BYPASS
     else:
         cached = cache.load(settings, key)
@@ -238,6 +254,7 @@ def generate(
         max_rows=max_rows,
         plan=plan,
         examples=_example_block(settings, question, tenant_key, resolved_dialect),
+        repair_note=repair_note,
     )
 
     try:
@@ -289,9 +306,10 @@ def generate(
     correlation_id = (
         routed.attempts[0].correlation_id if routed.attempts else request.correlation_id
     ) or ""
-    if cache_status == cache.MISS:
+    if cache_status == cache.MISS or repairing:
         # Only a statement that survived the guard *and* the semantic check is
-        # stored: a cache must not make a refusal stick.
+        # stored: a cache must not make a refusal stick. A repair is stored even
+        # though it bypassed the read, replacing the statement that failed.
         cache.store(
             settings,
             key,
