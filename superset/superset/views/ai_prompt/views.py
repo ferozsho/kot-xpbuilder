@@ -41,10 +41,17 @@ from flask_appbuilder.security.decorators import has_access, has_access_api
 from flask_babel import gettext as _
 
 from superset import db, security_manager
+from superset.daos.dashboard import DashboardDAO
 from superset.exceptions import SupersetSecurityException
 from superset.models.core import Database
 from superset.superset_typing import FlaskResponse
 from superset.utils.json import dumps as json_dumps, loads as json_loads
+from superset.views.ai_prompt import dashboard_publish
+from superset.views.ai_prompt.dashboard_publish import (
+    MODE_CREATE,
+    MODE_DUPLICATE,
+    MODE_UPDATE,
+)
 from superset.views.ai_provider.views import call_xp_prompt
 from superset.views.base import BaseSupersetView
 
@@ -690,6 +697,152 @@ class AIPromptView(BaseSupersetView):
             },
         )
         return self.json_response(body, status)
+
+    @expose("/api/dashboards/publish/", methods=("POST",))
+    @has_access_api
+    def api_dashboard_publish(self) -> FlaskResponse:
+        """Publish a reviewed dashboard, tracking every object it creates.
+
+        The order is deliberate. The attempt is opened *first*, so a refused access
+        assignment or a stale update fails before a single chart exists. Generated
+        slots are then created as charts, the layout is built from their real ids, and
+        only then does the dashboard command run. Any failure unwinds in reverse and
+        is recorded with one outcome per object (P8-F08..F11).
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+
+        payload = _body()
+        mode = str(payload.get("mode") or MODE_CREATE).strip().lower()
+        if mode not in _PUBLISH_MODES:
+            return self.json_response(
+                {
+                    "message": _("Publishing needs an explicit mode"),
+                    "severity": "danger",
+                    "code": "invalid_mode",
+                },
+                400,
+            )
+
+        resolved, failure = _dashboard_preview_slots(payload.get("slots"))
+        if failure is not None:
+            return self.json_response(*failure)
+
+        target: Any = None
+        if mode in _PUBLISH_MODES_WITH_TARGET:
+            target = DashboardDAO.find_by_id(payload.get("dashboard_id"))
+            if target is None:
+                return self.json_response(
+                    {
+                        "message": _("Dashboard not found"),
+                        "severity": "danger",
+                        "code": "dashboard_not_found",
+                    },
+                    404,
+                )
+
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/dashboards/publish",
+            payload=_publish_intent(owner, mode, payload, resolved, target),
+        )
+        if status not in (200, 201):
+            return self.json_response(body, status)
+
+        replay = _publish_replay(body)
+        if replay is not None:
+            return self.json_response(*replay)
+
+        publish_id = str(body.get("id") or "")
+        publisher = dashboard_publish.DashboardPublisher(owner)
+        try:
+            metadata, position = _publish_objects(
+                owner, mode, publisher, resolved, target, payload, publish_id, body
+            )
+        except dashboard_publish.PublishBlockedError as exc:
+            return self._publish_failed(
+                owner, publish_id, publisher, exc.code, str(exc)
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            hint, kind = _classify_failure(owner, "", f"{type(exc).__name__}: {exc}")
+            return self._publish_failed(
+                owner, publish_id, publisher, f"publish_failed:{kind}", hint
+            )
+
+        return self._publish_done(owner, publish_id, publisher, metadata, position)
+
+    def _publish_done(
+        self,
+        owner: int,
+        publish_id: str,
+        publisher: Any,
+        metadata: dict[str, Any],
+        position: Any,
+    ) -> FlaskResponse:
+        """Close the attempt: the dashboard exists, so record what made it."""
+        status, record = call_xp_prompt(
+            "POST",
+            f"/ai/dashboards/publish/{publish_id}/published",
+            payload={
+                "superset_user_id": owner,
+                "dashboard_id": publisher.dashboard_id,
+                "dashboard_slug": str(getattr(publisher.dashboard, "slug", "") or ""),
+                "position": position,
+                "created": publisher.created_objects(),
+            },
+        )
+        if status != 200:
+            return self.json_response(record, status)
+        return self.json_response(
+            {
+                "publish": record,
+                "dashboard_id": publisher.dashboard_id,
+                "metadata": metadata,
+                "created": publisher.created_objects(),
+                "replayed": False,
+                "blocks": _published_dashboard_blocks(record),
+            },
+            201,
+        )
+
+    def _publish_failed(
+        self,
+        owner: int,
+        publish_id: str,
+        publisher: Any,
+        code: str,
+        message: str,
+    ) -> FlaskResponse:
+        """Compensate in reverse, then record what could not be undone."""
+        cleanup = publisher.compensate()
+        call_xp_prompt(
+            "POST",
+            f"/ai/dashboards/publish/{publish_id}/failed",
+            payload={
+                "superset_user_id": owner,
+                "error_code": code,
+                "error_message": message,
+                "created": publisher.created_objects(),
+                "cleanup": cleanup,
+            },
+        )
+        left_behind = [
+            entry for entry in cleanup if entry["outcome"].startswith("left_behind")
+        ]
+        return self.json_response(
+            {
+                "message": message,
+                "severity": "danger",
+                "code": code,
+                "publish_id": publish_id,
+                "cleanup": cleanup,
+                "left_behind": left_behind,
+            },
+            422,
+        )
 
     # --- Dataset drafts and save (P6-F01/F03/F06/F07/F09/F10) ------------
 
@@ -2201,6 +2354,203 @@ def _chart_saved_blocks(chart: Any) -> list[dict[str, Any]]:
             ],
         },
     ]
+
+
+def _published_dashboard_blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """A published dashboard is a link, not a summary: the object exists."""
+    dashboard_id = record.get("dashboard_id")
+    if not dashboard_id:
+        return []
+    return [
+        {
+            "type": "warnings",
+            "items": [_("The dashboard was published to Superset.")],
+        },
+        {
+            "type": "links",
+            "items": [
+                {
+                    "label": _("Open the dashboard"),
+                    "entity_type": "dashboard",
+                    "entity_id": str(int(dashboard_id)),
+                }
+            ],
+        },
+    ]
+
+
+#: The modes a publish may declare, and the ones that act on an existing dashboard.
+_PUBLISH_MODES = frozenset({MODE_CREATE, MODE_UPDATE, MODE_DUPLICATE})
+_PUBLISH_MODES_WITH_TARGET = frozenset({MODE_UPDATE, MODE_DUPLICATE})
+
+
+def _publish_intent(
+    owner: int,
+    mode: str,
+    payload: dict[str, Any],
+    resolved: list[dict[str, Any]],
+    target: Any,
+) -> dict[str, Any]:
+    """What the caller asked to publish, plus the facts only this process has.
+
+    The service decides policy, but it cannot see Superset: the live layout and the
+    capabilities of this build are supplied here, so a drift check and an access
+    decision are made against reality rather than a guess (P8-F09/F11).
+    """
+    return {
+        "superset_user_id": owner,
+        "mode": mode,
+        "title": str(payload.get("title") or ""),
+        "goal": str(payload.get("goal") or ""),
+        "slots": [entry["slot"] for entry in resolved],
+        "owners": payload.get("owners") or [],
+        "roles": payload.get("roles") or [],
+        "visibility": str(payload.get("visibility") or "private"),
+        "guest_access": bool(payload.get("guest_access")),
+        "dashboard_id": int(target.id) if target is not None else None,
+        "expected_fingerprint": str(payload.get("expected_fingerprint") or ""),
+        "expected_version": payload.get("expected_version"),
+        "force": bool(payload.get("force")),
+        "idempotency_key": str(payload.get("idempotency_key") or ""),
+        "conversation_id": payload.get("conversation_id"),
+        "job_id": payload.get("job_id"),
+        "live_position": dashboard_publish.live_position(target),
+        "policy": dashboard_publish.policy_payload(),
+    }
+
+
+def _publish_replay(body: dict[str, Any]) -> tuple[dict[str, Any], int] | None:
+    """A repeated request answers with what the first one produced (P8-F08)."""
+    if not body.get("replayed"):
+        return None
+    if body.get("status") == "published":
+        return (
+            {
+                "publish": body,
+                "dashboard_id": body.get("dashboard_id"),
+                "replayed": True,
+                "blocks": _published_dashboard_blocks(body),
+            },
+            200,
+        )
+    return (
+        {
+            "message": _(
+                "This publish already started and has not finished; wait for it "
+                "rather than starting a second one"
+            ),
+            "severity": "warning",
+            "code": "publish_in_flight",
+            "publish": body,
+        },
+        409,
+    )
+
+
+def _dashboard_columns(
+    resolved: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Column kinds per dataset, so a native filter is only emitted where proven."""
+    kinds: dict[str, dict[str, str]] = {}
+    for entry in resolved:
+        dataset = entry["dataset"]
+        kinds[str(int(dataset.id))] = {
+            str(column.column_name): "temporal" if column.is_dttm else "categorical"
+            for column in (dataset.columns or [])
+            if column.column_name
+        }
+    return kinds
+
+
+def _publish_objects(
+    owner: int,
+    mode: str,
+    publisher: Any,
+    resolved: list[dict[str, Any]],
+    target: Any,
+    payload: dict[str, Any],
+    publish_id: str,
+    decision: dict[str, Any],
+) -> tuple[dict[str, Any], Any]:
+    """Create what the plan still needs, then write the dashboard itself.
+
+    A generated slot becomes a real chart first, because position metadata can only
+    reference a chart that exists. A duplicate creates nothing: it copies its original,
+    charts included, which is what "duplicate" means to a user (P8-F08).
+    """
+    title = str(payload.get("title") or "")[:MAX_TITLE_CHARS]
+    owners = [int(value) for value in decision.get("owners") or [owner]]
+    roles = [int(value) for value in decision.get("roles") or []]
+
+    if mode == MODE_DUPLICATE:
+        copy = publisher.duplicate_dashboard(
+            target,
+            {
+                "dashboard_title": title,
+                "json_metadata": target.json_metadata or "{}",
+                "owners": owners,
+            },
+        )
+        return {}, dashboard_publish.live_position(copy)
+
+    for entry in resolved:
+        if entry["slot"].get("chart_id"):
+            continue
+        draft = dict(entry["draft"])
+        draft["title"] = entry["slot"]["title"]
+        chart = publisher.ensure_chart(entry["dataset"], draft)
+        entry["slot"]["chart_id"] = int(chart.id)
+        entry["slot"]["source"] = "generated"
+
+    status, layout = call_xp_prompt(
+        "POST",
+        "/ai/dashboards/layout",
+        payload={
+            "superset_user_id": owner,
+            "title": title,
+            "slots": [entry["slot"] for entry in resolved],
+            "columns": _dashboard_columns(resolved),
+            "max_filters": payload.get("max_filters"),
+        },
+    )
+    if status != 200 or not layout.get("valid"):
+        problems = (
+            layout.get("problems")
+            or layout.get("validation")
+            or [layout.get("message") or _("the layout could not be built")]
+        )
+        raise dashboard_publish.PublishBlockedError(
+            "layout_invalid",
+            _("The layout cannot be published: %(problem)s")
+            % {"problem": str(problems[0])[:200]},
+        )
+
+    position = layout.get("position") or {}
+    metadata = {
+        "native_filters": layout.get("native_filters") or [],
+        "cross_filters_enabled": bool(layout.get("native_filters")),
+    }
+    body = dashboard_publish.dashboard_payload(
+        title=title,
+        position_json=json_dumps(position),
+        metadata=metadata,
+        owners=owners,
+        roles=roles,
+        slug=str(payload.get("slug") or ""),
+        description=str(payload.get("description") or ""),
+    )
+    if mode == MODE_CREATE:
+        publisher.create_dashboard(body)
+    else:
+        publisher.update_dashboard(target, body)
+    logger.info(
+        "dashboard_publish wrote mode=%s publish=%s slots=%d filters=%d",
+        mode,
+        publish_id,
+        len(resolved),
+        len(metadata["native_filters"]),
+    )
+    return metadata, position
 
 
 def _scrap_chart_draft(owner: int, draft_id: str, reason: str) -> None:

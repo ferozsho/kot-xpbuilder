@@ -21,6 +21,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from functools import wraps
 from typing import Any
 
@@ -41,6 +42,7 @@ from xp_prompt import (
     dashboard_layout,
     dashboard_plan,
     dashboard_preview,
+    dashboard_publish,
     dataset_draft,
     dataset_quality,
     dataset_spec,
@@ -93,6 +95,20 @@ def _admin_error(message: str, status: int) -> tuple[Response, int]:
 
 def _error_class(exc: BaseException) -> str:
     return type(exc).__name__
+
+
+def _is_uuid(value: Any) -> bool:
+    """Route ids are canonical UUIDs; anything else is a 404, not a query."""
+    try:
+        return str(uuid.UUID(str(value))) == str(value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _optional_uuid(value: Any) -> str | None:
+    """Link a record to a conversation or job only when the id is well-formed."""
+    text = str(value or "").strip()
+    return text if _is_uuid(text) else None
 
 
 #: P4-F04 refusals -> HTTP status. A blocked statement is a policy outcome (422),
@@ -1933,6 +1949,184 @@ def create_app(settings: Settings | None = None) -> Flask:
             preview.metadata.dataset_count,
         )
         return jsonify(preview.to_public_dict()), 200
+
+    @app.post("/ai/dashboards/publish")
+    @require_admin_token
+    def dashboard_publish_start():
+        """Open a publish attempt, refusing access the caller may not assign.
+
+        Superset has already created any chart a generated slot needed, so the one
+        thing this endpoint must not do is fail silently: it decides the access the
+        publish will carry, checks that an update is not aimed at an edited dashboard,
+        and records the attempt with every id it already produced (P8-F08..F11).
+        """
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            wanted = dashboard_publish.Request.parse(payload)
+            policy = dashboard_publish.Policy.from_payload(payload.get("policy"))
+            live_version = 0
+            if wanted.mode == dashboard_publish.UPDATE and (
+                wanted.target_dashboard_id is not None
+            ):
+                live_version = dashboard_publish.version_of(
+                    resolved_settings,
+                    tenant_key=tenant_key,
+                    superset_user_id=owner,
+                    dashboard_id=wanted.target_dashboard_id,
+                )
+                # Drift protection is on by default: without an explicit
+                # expectation, "unchanged since it was published" is the rule.
+                if not wanted.expected_fingerprint:
+                    previous = dashboard_publish.latest(
+                        resolved_settings,
+                        tenant_key=tenant_key,
+                        superset_user_id=owner,
+                        dashboard_id=wanted.target_dashboard_id,
+                    )
+                    if previous and previous["position_fingerprint"]:
+                        wanted = replace(
+                            wanted,
+                            expected_fingerprint=previous["position_fingerprint"],
+                        )
+            decision = dashboard_publish.decide(
+                wanted,
+                policy,
+                caller_id=owner,
+                position=payload.get("position"),
+                live_position=payload.get("live_position"),
+                live_version=live_version,
+            )
+            record, replayed = dashboard_publish.start(
+                resolved_settings,
+                wanted,
+                decision,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                correlation_id=str(payload.get("correlation_id") or ""),
+                conversation_id=_optional_uuid(payload.get("conversation_id")),
+                job_id=_optional_uuid(payload.get("job_id")),
+            )
+        except dashboard_publish.DashboardPublishError as exc:
+            logger.info(
+                "dashboard_publish refused code=%s mode=%s",
+                exc.code,
+                str(payload.get("mode") or "create"),
+            )
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not open publish ({_error_class(exc)})", 503
+            )
+        body = dict(record)
+        body.update({"replayed": replayed, **decision.to_public_dict()})
+        logger.info(
+            "dashboard_publish outcome=%s publish=%s mode=%s replayed=%s",
+            record["status"],
+            record["id"],
+            record["mode"],
+            replayed,
+        )
+        return jsonify(body), 200 if replayed else 201
+
+    @app.post("/ai/dashboards/publish/<publish_id>/published")
+    @require_admin_token
+    def dashboard_publish_complete(publish_id: str):
+        """Record the dashboard and objects a successful attempt created."""
+        if not _is_uuid(publish_id):
+            return _admin_error("Publish not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            record = dashboard_publish.complete(
+                resolved_settings,
+                publish_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                dashboard_id=payload.get("dashboard_id"),
+                dashboard_slug=str(payload.get("dashboard_slug") or ""),
+                position=payload.get("position"),
+                created=payload.get("created") or (),
+                cleanup=payload.get("cleanup") or (),
+            )
+        except dashboard_publish.DashboardPublishError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except dashboard_publish.DashboardPublishNotFound:
+            return _admin_error("Publish not found", 404)
+        except dashboard_publish.DashboardPublishStateError as exc:
+            return _admin_error(str(exc), 409)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not record publish ({_error_class(exc)})", 503
+            )
+        return jsonify(record), 200
+
+    @app.post("/ai/dashboards/publish/<publish_id>/failed")
+    @require_admin_token
+    def dashboard_publish_fail(publish_id: str):
+        """Close a failed attempt, keeping one cleanup outcome per object."""
+        if not _is_uuid(publish_id):
+            return _admin_error("Publish not found", 404)
+        payload = request.get_json(silent=True) or {}
+        owner = _conversation_owner(payload)
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            record = dashboard_publish.fail(
+                resolved_settings,
+                publish_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+                error_code=str(payload.get("error_code") or "publish_failed"),
+                error_message=str(payload.get("error_message") or ""),
+                created=payload.get("created") or (),
+                cleanup=payload.get("cleanup") or (),
+            )
+        except dashboard_publish.DashboardPublishNotFound:
+            return _admin_error("Publish not found", 404)
+        except dashboard_publish.DashboardPublishStateError as exc:
+            return _admin_error(str(exc), 409)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not record publish failure ({_error_class(exc)})", 503
+            )
+        return jsonify(record), 200
+
+    @app.get("/ai/dashboards/publish/<publish_id>")
+    @require_admin_token
+    def dashboard_publish_detail(publish_id: str):
+        """What did this attempt create, and what became of it (P8-F10)."""
+        if not _is_uuid(publish_id):
+            return _admin_error("Publish not found", 404)
+        owner = _conversation_owner(request.args.to_dict())
+        if owner is None:
+            return _admin_error("superset_user_id is required", 400)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            record = dashboard_publish.get(
+                resolved_settings,
+                publish_id,
+                tenant_key=tenant_key,
+                superset_user_id=owner,
+            )
+        except dashboard_publish.DashboardPublishNotFound:
+            return _admin_error("Publish not found", 404)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not load publish ({_error_class(exc)})", 503
+            )
+        return jsonify(record), 200
 
     @app.get("/ai/providers/types")
     @require_admin_token
