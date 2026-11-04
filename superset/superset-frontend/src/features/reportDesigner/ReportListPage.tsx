@@ -245,7 +245,7 @@ export default function ReportListPage() {
       <StyledWrapper>
         <Table<Report>
           rowKey="id"
-          dataSource={reports}
+          data={reports}
           columns={columns}
           loading={loading}
           scroll={{ x: 'max-content' }}

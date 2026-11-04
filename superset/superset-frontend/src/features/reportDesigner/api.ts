@@ -32,6 +32,15 @@ import {
 
 const BASE = '/reportdesigner/api';
 
+/**
+ * `SupersetClient` types every response body as the generic `JsonObject`, so the
+ * shape has to be declared at the call site. Keeping the cast in one helper makes
+ * the untyped boundary obvious instead of sprinkling `as` through the module.
+ */
+function asPayload<T>(json: unknown): T {
+  return json as T;
+}
+
 export async function fetchDatasets(): Promise<DatasetOption[]> {
   const { json } = await SupersetClient.get({ endpoint: `${BASE}/datasets/` });
   return json.result ?? [];
@@ -44,7 +53,7 @@ export async function fetchReports(): Promise<Report[]> {
 
 export async function fetchReport(id: number): Promise<Report> {
   const { json } = await SupersetClient.get({ endpoint: `${BASE}/${id}/` });
-  return json;
+  return asPayload<Report>(json);
 }
 
 export async function createReport(
@@ -56,7 +65,7 @@ export async function createReport(
     endpoint: `${BASE}/`,
     jsonPayload: { name, description, definition },
   });
-  return json;
+  return asPayload<Report>(json);
 }
 
 export async function updateReport(
@@ -69,7 +78,7 @@ export async function updateReport(
     endpoint: `${BASE}/${id}/`,
     jsonPayload: { name, description, definition },
   });
-  return json;
+  return asPayload<Report>(json);
 }
 
 export async function deleteReport(id: number): Promise<void> {
@@ -83,7 +92,7 @@ export async function previewReport(
     endpoint: `${BASE}/preview/`,
     jsonPayload: { definition },
   });
-  return json;
+  return asPayload<PreviewResult>(json);
 }
 
 /**
@@ -100,7 +109,7 @@ export async function syncTables(
     endpoint: `${BASE}/sync-tables/`,
     jsonPayload: databaseId ? { database_id: databaseId } : {},
   });
-  return json;
+  return asPayload<SyncTablesResult>(json);
 }
 
 /** List dashboards for the publish picker. */
@@ -124,7 +133,7 @@ export async function publishReport(
     endpoint: `${BASE}/${id}/publish/`,
     jsonPayload: payload,
   });
-  return json;
+  return asPayload<PublishResult>(json);
 }
 
 /** Detach a published report's chart/dashboard and clean up. */
@@ -175,5 +184,5 @@ export async function uploadExcel(
     endpoint: `${BASE}/upload/`,
     postPayload: formData,
   });
-  return json;
+  return asPayload<UploadResult>(json);
 }

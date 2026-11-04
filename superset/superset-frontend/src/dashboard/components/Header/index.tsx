@@ -786,9 +786,8 @@ const Header = (): JSX.Element => {
                   aria-label={t('Sync to Moodle')}
                   href={moodleSyncUrl(
                     dashboardInfo.id,
-                    dashboardInfo.dashboard_title || '',
-                    dashboardInfo.url ||
-                      `/xpbuilder/dashboard/${dashboardInfo.id}/`,
+                    dashboardTitle,
+                    `/xpbuilder/dashboard/${dashboardInfo.id}/`,
                   )}
                 >
                   <Icons.SyncOutlined iconSize="m" />

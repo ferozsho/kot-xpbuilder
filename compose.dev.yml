@@ -63,11 +63,16 @@ services:
   # out of `up`, so it only runs when asked for. node_modules lives in a named
   # volume, which is what makes the second and later builds fast.
   #
-  # The system packages are the same ones the image build installs for webpack:
-  # `simple-zstd` shells out to the zstd binary, and node-gyp needs a toolchain.
+  # The image is built from docker/frontend-dev.Dockerfile rather than pulled,
+  # because webpack needs `zstd`, `build-essential` and `python3` — the same three
+  # packages the image's own node stage installs. Without them the build dies with
+  # "Can not access zstd! Is it installed?". Compose builds it on first use.
   frontend:
     profiles: ["frontend"]
-    image: node:20-trixie-slim
+    image: kot-xpbuilder-frontend-dev:local
+    build:
+      context: .
+      dockerfile: docker/frontend-dev.Dockerfile
     container_name: ${XPBUILDER_INSTANCE}_frontend
     working_dir: /app/superset-frontend
     environment:
@@ -87,10 +92,6 @@ services:
       - sh
       - -lc
       - >-
-        if ! command -v zstd >/dev/null 2>&1; then
-          apt-get update -qq &&
-          apt-get install -y -qq --no-install-recommends zstd make g++ python3;
-        fi;
         [ -d node_modules/webpack ] || npm ci --no-audit --no-fund;
         npm run "$${FRONTEND_SCRIPT}"
 

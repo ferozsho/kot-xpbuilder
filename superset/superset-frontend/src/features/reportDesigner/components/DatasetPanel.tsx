@@ -21,7 +21,7 @@ import { t } from '@apache-superset/core/translation';
 import { styled } from '@apache-superset/core/theme';
 import {
   Button,
-  Select,
+  RawAntdSelect as Select,
   Tag,
   Tooltip,
   Collapse,
@@ -200,8 +200,10 @@ export default function DatasetPanel({
           allowClear
           showSearch
           optionFilterProp="value"
-          value={databaseFilter ?? null}
-          onChange={value => setDatabaseFilter(value ?? undefined)}
+          value={databaseFilter}
+          onChange={value =>
+            setDatabaseFilter(value == null ? undefined : String(value))
+          }
         />
         {moodleEnabled && (
           <Tooltip title={syncTooltip}>
@@ -230,8 +232,7 @@ export default function DatasetPanel({
         placeholder={t('Select a dataset…')}
         options={options}
         showSearch
-        value={null}
-        onChange={(id: number) => onSelectDataset(id)}
+        onChange={value => onSelectDataset(Number(value))}
       />
       <StyledHint>
         {t('Drag a column onto a band in the report canvas to add it.')}

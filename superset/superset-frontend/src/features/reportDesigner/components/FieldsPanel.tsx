@@ -21,7 +21,7 @@ import { styled } from '@apache-superset/core/theme';
 import {
   Button,
   Input,
-  Select,
+  RawAntdSelect as Select,
   Space,
   Tag,
   Tooltip,
@@ -237,13 +237,14 @@ export default function FieldsPanel({
               value={metric.aggregate}
               options={AGGREGATES.map(agg => ({ label: agg, value: agg }))}
               style={{ width: 120 }}
-              onChange={aggregate =>
+              onChange={value => {
+                const aggregate = value as MetricRef['aggregate'];
                 onUpdateMetric(index, {
                   ...metric,
                   aggregate,
                   label: `${aggregate}(${metric.column})`,
-                })
-              }
+                });
+              }}
             />
             <Input
               size="small"

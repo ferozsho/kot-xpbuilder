@@ -25,7 +25,7 @@ import {
   Collapse,
   Input,
   Modal,
-  Select,
+  RawAntdSelect as Select,
   Space,
   Loading,
   Tag,
@@ -621,9 +621,7 @@ export default function ReportDesignerPage() {
                   label: String(value),
                   value,
                 }))}
-                onChange={(value: number) =>
-                  updateDefinition({ limit: value })
-                }
+                onChange={value => updateDefinition({ limit: Number(value) })}
               />
               {reportId && (
                 <>
@@ -798,7 +796,7 @@ export default function ReportDesignerPage() {
                         style={{ width: 260 }}
                         showSearch
                         options={orderByOptions}
-                        onChange={handleAddOrder}
+                        onChange={value => handleAddOrder(String(value))}
                       />
                     </Space>
                     <Space wrap style={{ marginTop: 8 }}>
@@ -897,14 +895,16 @@ export default function ReportDesignerPage() {
                           <Select
                             className="publish-viz-select"
                             placeholder={t('Select a chart type…')}
-                            value={publishViz ?? null}
+                            value={publishViz}
                             options={vizTypes.map(item => ({
                               label: item.requires_dttm
                                 ? `${item.label} ⏱`
                                 : item.label,
                               value: item.key,
                             }))}
-                            onChange={setPublishViz}
+                            onChange={value =>
+                              setPublishViz((value ?? '') as string)
+                            }
                           />
                           <Button
                             icon={<Icons.EyeOutlined />}
@@ -931,7 +931,7 @@ export default function ReportDesignerPage() {
                         </Typography.Text>
                         <Select
                           placeholder={t('Select a dashboard or create one…')}
-                          value={publishDashboardId ?? null}
+                          value={publishDashboardId}
                           options={[
                             ...dashboards.map(dash => ({
                               label: dash.dashboard_title,
@@ -1078,13 +1078,15 @@ export default function ReportDesignerPage() {
       </StyledLayout>
 
       <Modal
-        open={uploadOpen}
+        show={uploadOpen}
         title={t('Upload Excel / CSV as a dataset')}
-        onCancel={() => setUploadOpen(false)}
-        onOk={handleUpload}
-        okText={t('Upload')}
-        confirmLoading={uploading}
-        okButtonProps={{ disabled: uploadDatabase === undefined || !uploadFile }}
+        onHide={() => setUploadOpen(false)}
+        onHandledPrimaryAction={handleUpload}
+        primaryButtonName={t('Upload')}
+        primaryButtonLoading={uploading}
+        disablePrimaryButton={
+          uploadDatabase === undefined || !uploadFile
+        }
       >
         <Space direction="vertical" style={{ width: '100%' }}>
           <div>
@@ -1095,9 +1097,13 @@ export default function ReportDesignerPage() {
                 label: db.database_name,
                 value: db.id,
               }))}
-              value={uploadDatabase ?? null}
+              value={uploadDatabase}
               style={{ width: '100%', marginTop: 4 }}
-              onChange={setUploadDatabase}
+              onChange={value =>
+                setUploadDatabase(
+                  value == null ? undefined : Number(value),
+                )
+              }
             />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {t('Note: the read replica is read-only — pick a writable '

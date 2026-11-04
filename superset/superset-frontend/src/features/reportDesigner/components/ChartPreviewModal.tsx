@@ -25,9 +25,10 @@ import {
   InputNumber,
   Loading,
   Modal,
-  Select,
+  RawAntdSelect as Select,
   Space,
   Table,
+  TableSize,
   Typography,
 } from '@superset-ui/core/components';
 import { Icons } from '@superset-ui/core/components/Icons';
@@ -227,11 +228,12 @@ export default function ChartPreviewModal({
 
   return (
     <Modal
-      open={open}
-      onCancel={onClose}
+      show={open}
+      onHide={onClose}
+      title=""
       width={940}
       hideFooter
-      destroyOnClose
+      destroyOnHidden
     >
       <StyledModalBody>
         <StyledModalHead>
@@ -278,7 +280,9 @@ export default function ChartPreviewModal({
                     options={labelOptions}
                     showSearch
                     style={{ width: '100%' }}
-                    onChange={setLabelField}
+                    onChange={value =>
+                      setLabelField((value ?? undefined) as string | undefined)
+                    }
                   />
                 </StyledOption>
                 <StyledOption>
@@ -290,7 +294,9 @@ export default function ChartPreviewModal({
                     options={valueOptions}
                     showSearch
                     style={{ width: '100%' }}
-                    onChange={setValueField}
+                    onChange={value =>
+                      setValueField((value ?? undefined) as string | undefined)
+                    }
                   />
                 </StyledOption>
               </>
@@ -758,9 +764,9 @@ function TableViz({
 }) {
   return (
     <Table
-      size="small"
+      size={TableSize.Small}
       pagination={false}
-      dataSource={rows.map((row, i) => ({ key: i, ...row }))}
+      data={rows.map((row, i) => ({ key: i, ...row }))}
       columns={columns.map(col => ({
         title: col,
         dataIndex: col,

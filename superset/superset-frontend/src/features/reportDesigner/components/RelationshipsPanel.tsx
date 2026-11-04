@@ -21,7 +21,7 @@ import { t } from '@apache-superset/core/translation';
 import { styled } from '@apache-superset/core/theme';
 import {
   Button,
-  Select,
+  RawAntdSelect as Select,
   Space,
   Tag,
   Typography,
@@ -146,39 +146,47 @@ export default function RelationshipsPanel({
         <Select
           placeholder={t('Left table')}
           options={datasetOptions}
-          value={leftDataset ?? null}
+          value={leftDataset}
           style={{ width: 160 }}
-          onChange={setLeftDataset}
+          onChange={value =>
+            setLeftDataset((value ?? undefined) as number | undefined)
+          }
         />
         <Select
           placeholder={t('Left column')}
           options={leftColumns}
-          value={leftColumn ?? null}
+          value={leftColumn}
           style={{ width: 140 }}
           showSearch
-          onChange={setLeftColumn}
+          onChange={value =>
+            setLeftColumn((value ?? undefined) as string | undefined)
+          }
         />
         <Select
           placeholder={t('Join')}
           options={JOIN_TYPES.map(jt => ({ label: jt, value: jt }))}
           value={joinType}
           style={{ width: 100 }}
-          onChange={setJoinType}
+          onChange={value => setJoinType((value ?? '') as string)}
         />
         <Select
           placeholder={t('Right table')}
           options={datasetOptions}
-          value={rightDataset ?? null}
+          value={rightDataset}
           style={{ width: 160 }}
-          onChange={setRightDataset}
+          onChange={value =>
+            setRightDataset((value ?? undefined) as number | undefined)
+          }
         />
         <Select
           placeholder={t('Right column')}
           options={rightColumns}
-          value={rightColumn ?? null}
+          value={rightColumn}
           style={{ width: 140 }}
           showSearch
-          onChange={setRightColumn}
+          onChange={value =>
+            setRightColumn((value ?? undefined) as string | undefined)
+          }
         />
         <Button
           type="primary"

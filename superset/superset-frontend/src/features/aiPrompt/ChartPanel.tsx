@@ -19,7 +19,13 @@
 import { useCallback, useState } from 'react';
 import { t } from '@apache-superset/core/translation';
 import { styled } from '@apache-superset/core/theme';
-import { Button, Space, Table, Tag } from '@superset-ui/core/components';
+import {
+  Button,
+  Space,
+  Table,
+  TableSize,
+  Tag,
+} from '@superset-ui/core/components';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import type { ChartCandidate, ChartPreviewResponse } from './api';
 import {
@@ -258,9 +264,9 @@ export default function ChartPanel({
           </StyledMeta>
           <Table
             columns={previewColumns}
-            dataSource={previewRows}
+            data={previewRows}
             rowKey="key"
-            size="small"
+            size={TableSize.Small}
             pagination={false}
           />
         </>

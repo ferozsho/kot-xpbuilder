@@ -29,6 +29,7 @@ import {
   Space,
   Switch,
   Table,
+  TableSize,
   Tag,
   Tooltip,
 } from '@superset-ui/core/components';
@@ -725,10 +726,10 @@ export default function AIProviderPage() {
           <StyledTableCard>
             <Table
               loading={loading}
-              dataSource={providers}
+              data={providers}
               columns={columns}
               rowKey="id"
-              size="middle"
+              size={TableSize.Middle}
               pagination={false}
               locale={{ emptyText: t('No AI providers configured yet.') }}
             />

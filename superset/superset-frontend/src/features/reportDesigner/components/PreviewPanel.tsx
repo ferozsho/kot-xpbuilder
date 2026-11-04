@@ -24,6 +24,7 @@ import {
   Button,
   Space,
   Table,
+  TableSize,
   Tag,
   Typography,
 } from '@superset-ui/core/components';
@@ -133,10 +134,10 @@ export default function PreviewPanel({
       {result && showSql && <StyledSql>{result.sql}</StyledSql>}
 
       <Table
-        dataSource={rows}
+        data={rows}
         columns={columns}
         loading={loading}
-        size="small"
+        size={TableSize.Small}
         scroll={{ x: 'max-content', y: 420 }}
         pagination={{ pageSize: 50, showSizeChanger: true }}
       />

@@ -22,7 +22,7 @@ import { styled } from '@apache-superset/core/theme';
 import {
   Button,
   Input,
-  Select,
+  RawAntdSelect as Select,
   Space,
   Tag,
   Typography,
@@ -151,23 +151,27 @@ export default function FiltersPanel({ datasets, filters, onChange }: Props) {
         <Select
           placeholder={t('Table')}
           options={datasetOptions}
-          value={dataset ?? null}
+          value={dataset}
           style={{ width: 150 }}
-          onChange={setDataset}
+          onChange={value =>
+            setDataset((value ?? undefined) as number | undefined)
+          }
         />
         <Select
           placeholder={t('Column')}
           options={columns}
-          value={column ?? null}
+          value={column}
           style={{ width: 140 }}
           showSearch
-          onChange={setColumn}
+          onChange={value =>
+            setColumn((value ?? undefined) as string | undefined)
+          }
         />
         <Select
           options={FILTER_OPS.map(opItem => ({ label: opItem, value: opItem }))}
           value={op}
           style={{ width: 110 }}
-          onChange={setOp}
+          onChange={value => setOp((value ?? '') as string)}
         />
         {needsValue && (
           <Input
