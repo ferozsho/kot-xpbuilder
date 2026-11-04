@@ -590,6 +590,10 @@ def create_app(settings: Settings | None = None) -> Flask:
                 superset_user_id=owner,
                 content=content,
                 expected_context_version=expected_version,
+                # The prompt needs the tables, or the model answers "I cannot
+                # query your database" just as the SQL path would without a
+                # slice. Superset built it for this principal; this only forwards.
+                schema_datasets=payload.get("datasets"),
             )
         except conversations.ConversationNotFound:
             return _admin_error("Conversation not found", 404)

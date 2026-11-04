@@ -29,9 +29,11 @@ once, and the compatibility contract keeps asserting it against the service.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import os
+import re
 import time
 from typing import Any
 from urllib.parse import quote
@@ -137,6 +139,50 @@ def _safeguards(validated: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class AIUsageView(BaseSupersetView):
+    """XP Prompt usage and cost page (P9 surface).
+
+    The page shell only: every number it shows is fetched from
+    ``/aiprompt/api/usage/*``, which stays guarded by the ``AIPrompt``
+    permissions and is granted to Admin only (cross-user spend).
+    """
+
+    route_base = "/aiusage"
+    class_permission_name = "AIUsage"
+
+    @expose("/")
+    @has_access
+    def workspace(self) -> FlaskResponse:
+        return super().render_app_template()
+
+    @expose("/list/")
+    @has_access
+    def list(self) -> FlaskResponse:  # noqa: A003 - FAB route name
+        return super().render_app_template()
+
+
+class AISettingsView(BaseSupersetView):
+    """XP Prompt administrative settings page (P10 surface).
+
+    Same pattern as :class:`AIUsageView`: the shell is inert, and the settings
+    it edits are read and written through ``/aiprompt/api/settings/*``, which
+    requires the Admin-only ``AIPrompt`` permissions.
+    """
+
+    route_base = "/aisettings"
+    class_permission_name = "AISettings"
+
+    @expose("/")
+    @has_access
+    def workspace(self) -> FlaskResponse:
+        return super().render_app_template()
+
+    @expose("/list/")
+    @has_access
+    def list(self) -> FlaskResponse:  # noqa: A003 - FAB route name
+        return super().render_app_template()
+
+
 class AIPromptView(BaseSupersetView):
     """Conversational XP Prompt workspace."""
 
@@ -205,6 +251,19 @@ class AIPromptView(BaseSupersetView):
             )
         payload = _body()
         payload["superset_user_id"] = owner
+        # A chat turn is answered from the tables the caller may open, so the
+        # slice travels with the question. Superset is the authorization
+        # authority, so it is resolved here and never taken from the browser;
+        # without it the model has no idea a database is connected and answers
+        # "I cannot run queries". A resolution failure degrades to a schema-less
+        # turn instead of failing the conversation.
+        if not payload.get("datasets"):
+            try:
+                payload["datasets"] = authorized_datasets(
+                    question=str(payload.get("content") or "") or None
+                )
+            except Exception:  # pylint: disable=broad-except
+                logger.warning("chat turn sent without an authorized schema slice")
         status, body = call_xp_prompt(
             "POST", f"/ai/conversations/{conversation_id}/messages", payload=payload
         )
@@ -1416,7 +1475,7 @@ class AIPromptView(BaseSupersetView):
                 "question": question,
                 "database": database.database_name,
                 "max_rows": MAX_PREVIEW_ROWS,
-                "datasets": authorized_datasets(),
+                "datasets": authorized_datasets(question=question),
                 # "Regenerate" must reach the service: a cache hit is otherwise
                 # indistinguishable from a fresh answer (P4-F11).
                 "bypass_cache": bool(payload.get("regenerate")),
@@ -2815,6 +2874,90 @@ def _dashboard_columns(
     return kinds
 
 
+def _position_dict(raw: Any) -> dict[str, Any]:
+    """A Superset position blob as a dict, whether it arrived parsed or as JSON."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json_loads(raw)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _max_suffix(position: dict[str, Any], prefix: str) -> int:
+    """Highest ``<prefix>-<n>`` key in a position, so new ids cannot collide."""
+    highest = 0
+    pattern = re.compile(rf"^{prefix}-(\d+)$")
+    for key in position:
+        match = pattern.match(str(key))
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest
+
+
+def _merge_position(live: Any, addition: Any) -> dict[str, Any]:
+    """Append a planned layout to an existing dashboard instead of replacing it.
+
+    ``update`` used to write the plan's own layout over the target, which deleted
+    every tile the dashboard already had — the opposite of "add these charts to
+    that dashboard". The live grid is kept and the planned rows are renumbered, so
+    the two layouts cannot collide.
+    """
+    existing = _position_dict(live)
+    planned = _position_dict(addition)
+    if "GRID_ID" not in existing or "GRID_ID" not in planned:
+        return planned or existing
+
+    merged = copy.deepcopy(existing)
+    grid = merged.setdefault("GRID_ID", {})
+    grid_children = list(grid.get("children") or [])
+    next_row = _max_suffix(merged, "ROW") + 1
+    next_chart = _max_suffix(merged, "CHART") + 1
+
+    for row_key in list(planned["GRID_ID"].get("children") or []):
+        row = planned.get(row_key)
+        if not isinstance(row, dict):
+            continue
+        new_row_key = f"ROW-{next_row}"
+        next_row += 1
+        new_row = copy.deepcopy(row)
+        new_row["id"] = new_row_key
+        new_row["parents"] = ["ROOT_ID", "GRID_ID"]
+        new_row["children"] = []
+        merged[new_row_key] = new_row
+        for chart_key in list(row.get("children") or []):
+            chart = planned.get(chart_key)
+            if not isinstance(chart, dict):
+                continue
+            new_chart_key = f"CHART-{next_chart}"
+            next_chart += 1
+            new_chart = copy.deepcopy(chart)
+            new_chart["id"] = new_chart_key
+            new_chart["parents"] = ["ROOT_ID", "GRID_ID", new_row_key]
+            merged[new_chart_key] = new_chart
+            new_row["children"].append(new_chart_key)
+        grid_children.append(new_row_key)
+
+    grid["children"] = grid_children
+    return merged
+
+
+def _merged_metadata(target: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+    """Keep the target's dashboard metadata, adding the planned native filters."""
+    merged = dict(_position_dict(getattr(target, "json_metadata", None)))
+    planned_filters = list(metadata.get("native_filters") or [])
+    if planned_filters:
+        merged["native_filters"] = [
+            *(merged.get("native_filters") or []),
+            *planned_filters,
+        ]
+        merged["cross_filters_enabled"] = True
+    return merged
+
+
 def _publish_objects(
     owner: int,
     mode: str,
@@ -2895,6 +3038,12 @@ def _publish_objects(
     if mode == MODE_CREATE:
         publisher.create_dashboard(body)
     else:
+        # Update in place: the target's existing tiles and metadata survive, and
+        # the planned rows are appended to its grid.
+        body["position_json"] = json_dumps(
+            _merge_position(dashboard_publish.live_position(target), position)
+        )
+        body["json_metadata"] = json_dumps(_merged_metadata(target, metadata))
         publisher.update_dashboard(target, body)
     logger.info(
         "dashboard_publish wrote mode=%s publish=%s slots=%d filters=%d",
@@ -3547,7 +3696,7 @@ def _database_for(payload: dict[str, Any], datasets: list[dict[str, Any]]) -> An
     )
 
 
-def authorized_datasets() -> list[dict[str, Any]]:
+def authorized_datasets(question: str | None = None) -> list[dict[str, Any]]:
     """Datasets the current principal may query, straight from the security manager.
 
     ``get_user_datasources`` already combines explicit dataset permissions with
@@ -3607,7 +3756,131 @@ def authorized_datasets() -> list[dict[str, Any]]:
             }
         )
     datasets.sort(key=lambda item: (str(item["database"]), str(item["name"])))
+    if question:
+        # A catalogue of a few hundred tables does not fit in a prompt, and taking
+        # the first N alphabetically is how "how many users" ended up answered
+        # from an assignment table: ``mdl_user`` sorted past the cap. Ranking by
+        # the words in the question puts the tables the question is about first,
+        # which matters most for the chat turn (no SQL planner to fall back on).
+        datasets = _rank_by_question(datasets, question)
     return datasets[:MAX_SLICE_DATASETS]
+
+
+#: Grammar words only. A domain word ("students", "users") is the discriminator
+#: and must never be filtered out.
+_QUESTION_STOPWORDS = frozenset(
+    {
+        "all",
+        "and",
+        "any",
+        "are",
+        "between",
+        "by",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "for",
+        "from",
+        "give",
+        "has",
+        "have",
+        "how",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "list",
+        "many",
+        "me",
+        "most",
+        "much",
+        "of",
+        "on",
+        "only",
+        "or",
+        "our",
+        "per",
+        "please",
+        "show",
+        "some",
+        "than",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "to",
+        "top",
+        "us",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+        "would",
+        "you",
+        "your",
+    }
+)
+_QUESTION_WORD = re.compile(r"[a-z0-9_]+")
+
+
+def _question_tokens(question: str) -> set[str]:
+    """Words worth matching against a table or column name, singular and plural."""
+    tokens: set[str] = set()
+    for raw in _QUESTION_WORD.findall(question.lower()):
+        if len(raw) < 3 or raw in _QUESTION_STOPWORDS:
+            continue
+        tokens.add(raw)
+        if raw.endswith("s") and len(raw) > 4:
+            tokens.add(raw[:-1])
+    return tokens
+
+
+def _rank_by_question(
+    datasets: list[dict[str, Any]], question: str
+) -> list[dict[str, Any]]:
+    """Order the slice so the tables the question is about come first.
+
+    Table-name matches outrank column matches, because "users" should surface
+    ``mdl_user`` before a table that merely has a ``userid`` column. Ties keep
+    the alphabetical order the caller already applied, so the slice stays
+    deterministic (and a fingerprint of it stays stable for the same question).
+    """
+    tokens = _question_tokens(question)
+    if not tokens:
+        return datasets
+
+    def score(entry: dict[str, Any]) -> int:
+        name = str(entry.get("name") or "").lower()
+        columns = " ".join(
+            str(column.get("name") or "").lower()
+            for column in entry.get("columns") or []
+        )
+        total = 0
+        for token in tokens:
+            if token in name:
+                total += 3
+            elif token in columns:
+                total += 1
+        return total
+
+    scored = [(score(entry), index, entry) for index, entry in enumerate(datasets)]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [entry for _, _, entry in scored]
 
 
 def _current_user_id() -> int | None:

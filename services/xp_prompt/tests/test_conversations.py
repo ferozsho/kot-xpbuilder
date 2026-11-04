@@ -491,6 +491,46 @@ class RunTurnTest(unittest.TestCase):
         system_prompt = router.generate.call_args[0][0].messages[0].content
         self.assertIn("chart", system_prompt)
 
+    def test_the_chat_prompt_carries_the_authorized_tables(self) -> None:
+        """Without a slice the model answered "I cannot query your database"."""
+        stored: list[dict[str, object]] = []
+        router = mock.Mock()
+        router.generate.return_value = self.routed()
+        dataset = {
+            "dataset_id": 7,
+            "name": "mdl_user",
+            "schema": "moodle",
+            "database": "Moodle 4.3",
+            "dialect": "mysql",
+            "columns": [{"name": "id", "type": "int", "temporal": False}],
+        }
+
+        with mock.patch.object(conversations, "get_conversation", return_value=object()), \
+             mock.patch.object(
+                 conversations,
+                 "append_message",
+                 side_effect=lambda *args, **kwargs: stored.append(kwargs) or message(),
+             ), \
+             mock.patch.object(
+                 conversations,
+                 "list_messages",
+                 return_value=[message(content="how many users are there")],
+             ), \
+             mock.patch.object(chat.registry, "resolve_router", return_value=router):
+            chat.run_turn(
+                settings(),
+                conversation_id="c-1",
+                tenant_key="default",
+                superset_user_id=1,
+                content="how many users are there",
+                schema_datasets=[dataset],
+            )
+
+        system_prompt = router.generate.call_args[0][0].messages[0].content
+        self.assertIn("connected to the user's database", system_prompt)
+        self.assertIn("Available data", system_prompt)
+        self.assertIn("mdl_user", system_prompt)
+
 
 class ContextVersionTest(unittest.TestCase):
     def test_stale_version_is_rejected_before_anything_is_written(self) -> None:

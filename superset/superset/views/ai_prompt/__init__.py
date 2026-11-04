@@ -16,6 +16,6 @@
 # under the License.
 """XP Prompt workspace view (conversational assistant)."""
 
-from .views import AIPromptView
+from .views import AIPromptView, AISettingsView, AIUsageView
 
-__all__ = ["AIPromptView"]
+__all__ = ["AIPromptView", "AISettingsView", "AIUsageView"]

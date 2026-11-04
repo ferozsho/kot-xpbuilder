@@ -103,9 +103,12 @@ PICK_QUESTION = "Did you mean {first} or {second}? A one-word answer is enough."
 #: the routing decision and the instruction it implies cannot drift apart.
 PROMPT_GUIDANCE: dict[str, str] = {
     QUERY: (
-        "This turn is a data question. State the metric, filters, and time "
-        "range you would use, answer briefly, and never claim to have executed "
-        "a query or invent a result."
+        "This turn is a data question. XPBuilder executes the SQL you write "
+        "against the tables under Available data and shows the user the real "
+        "result, so write that SQL instead of saying you cannot query the "
+        "database or that the user should run it themselves. State the metric, "
+        "the filters and the time range, answer briefly, and never invent a "
+        "result you were not given."
     ),
     EXPLANATION: (
         "This turn asks for an explanation. Explain the concept or the earlier "

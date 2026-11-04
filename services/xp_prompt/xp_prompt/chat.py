@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from xp_prompt import conversations, intents, responses, settings_registry
+from xp_prompt import conversations, intents, responses, schema_slice, settings_registry
 from xp_prompt import usage as usage_ledger
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
@@ -52,12 +52,23 @@ CHAT_TEMPERATURE = 0.2
 #: user message alone exceeds this.
 MAX_PROMPT_CHARS = 8_000
 
+#: The schema block a chat turn may carry. Smaller than the SQL prompt's block
+#: because a conversation is about a handful of tables, not the whole catalogue.
+CHAT_SCHEMA_CHARS = 4_000
+
 SYSTEM_PROMPT = (
-    "You are XP Ask, the analytics assistant inside XPBuilder (a Superset "
-    "deployment). Answer in plain language, keep answers short, and state any "
-    "assumption you make. Never invent query results you have not been given. "
-    "If the request is ambiguous, ask one focused clarifying question instead "
-    "of guessing."
+    "You are XP Ask, the analytics assistant built into XPBuilder (a Superset "
+    "deployment). You are connected to the user's database: XPBuilder runs the "
+    "SQL you write against the tables listed under \"Available data\" and shows "
+    "the user the real result. So never say that you cannot run a query, cannot "
+    "reach the database, or that the user must run the SQL themselves - asking "
+    "for data means writing the SQL for it, not declining. Use only the tables "
+    "and columns listed under \"Available data\"; when the user names something "
+    "that is not listed, say which tables are available instead of inventing a "
+    "name. Never invent a result you were not given, and label any number you "
+    "derive as derived. Answer in plain language, keep answers short, and state "
+    "any assumption you make. If the request is genuinely ambiguous, ask one "
+    "focused clarifying question."
 )
 
 CHAT_FAILED_CODE = "chat_provider_unavailable"
@@ -101,6 +112,7 @@ def run_turn(
     superset_user_id: int,
     content: str,
     expected_context_version: int | None = None,
+    schema_datasets: Any | None = None,
 ) -> ChatTurn:
     """Persist the question, answer it with the routed provider, persist the answer.
 
@@ -108,6 +120,11 @@ def run_turn(
     mismatch means the context was reset (or replaced) since the client loaded
     the conversation, so the turn is rejected rather than answered from a
     history the caller has not seen.
+
+    ``schema_datasets`` is the slice Superset resolved for this principal. The
+    chat prompt needs it for the same reason the SQL prompt does: a model that
+    is not told which tables exist cannot answer a data question, and a model
+    told nothing at all answers "I cannot query your database".
     """
     live = settings_registry.live(settings, tenant_key=tenant_key)
     if not live["feature.chat"].value:
@@ -165,7 +182,11 @@ def run_turn(
         )
 
     request = _build_request(
-        history, user_message.id, intent=decision.intent, live=live
+        history,
+        user_message.id,
+        intent=decision.intent,
+        live=live,
+        schema_text=_chat_schema_text(schema_datasets),
     )
 
     try:
@@ -394,6 +415,7 @@ def _build_request(
     *,
     intent: str | None = None,
     live: dict[str, settings_registry.Resolution] | None = None,
+    schema_text: str | None = None,
 ) -> ProviderRequest:
     """Turn stored history into one provider request.
 
@@ -429,7 +451,9 @@ def _build_request(
         current = [r for r in usable if r.id == last_user_message_id]
         selected = current or selected
 
-    messages: list[Message] = [Message("system", _system_prompt(intent))]
+    messages: list[Message] = [
+        Message("system", _system_prompt(intent, schema_text=schema_text))
+    ]
     messages.extend(
         Message(record.role, record.content.strip())
         for record in reversed(selected)
@@ -467,10 +491,38 @@ def _thinking_budget(live: dict[str, settings_registry.Resolution] | None) -> in
     return max(0, int(live["generation.thinking_budget_tokens"].value))
 
 
-def _system_prompt(intent: str | None) -> str:
-    """Base prompt plus the guidance the routed intent implies."""
+def _system_prompt(intent: str | None, *, schema_text: str | None = None) -> str:
+    """Base prompt, the guidance the routed intent implies, and the tables in scope."""
+    parts = [SYSTEM_PROMPT]
     guidance = intents.PROMPT_GUIDANCE.get(intent or "")
-    return f"{SYSTEM_PROMPT}\n\n{guidance}" if guidance else SYSTEM_PROMPT
+    if guidance:
+        parts.append(guidance)
+    if schema_text:
+        parts.append(f"Available data (authorized for this user):\n{schema_text}")
+    return "\n\n".join(parts)
+
+
+def _chat_schema_text(datasets: Any) -> str | None:
+    """Render the caller's authorized slice for a chat turn, bounded.
+
+    Superset resolved the slice; this validates the payload and keeps one turn
+    from becoming a schema dump. A slice that cannot be parsed is dropped rather
+    than fatal: an answer without table names is still better than no answer.
+    """
+    if not datasets:
+        return None
+    try:
+        slice_ = schema_slice.SchemaSlice.from_payload({"datasets": datasets})
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("chat_schema_slice_parse_failed")
+        return None
+    text = slice_.prompt_text()
+    if not text:
+        return None
+    if len(text) > CHAT_SCHEMA_CHARS:
+        head = text[:CHAT_SCHEMA_CHARS].rsplit("\n", 1)[0]
+        return f"{head}\n(additional tables omitted)"
+    return text
 
 
 def _usage_dict(usage: Any) -> dict[str, Any]:

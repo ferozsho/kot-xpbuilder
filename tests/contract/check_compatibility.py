@@ -1567,6 +1567,23 @@ def check_ai_usage_ledger(compatibility: dict) -> None:
     if 'features/aiUsage/AIUsagePage' not in routes_source:
         raise AssertionError('the usage route must load the usage page')
 
+    # A React route with no Flask base view is a 404 in the browser: both admin
+    # pages were routable in the SPA and unreachable over HTTP.
+    for page_route in ('/aiusage', '/aisettings'):
+        if f'route_base = "{page_route}"' not in proxy_view:
+            raise AssertionError(
+                f'{page_route}/ needs a Flask base view, not only a React route'
+            )
+
+    # The chat turn is only as good as the tables it is given: a prompt without
+    # the authorized slice is what made the assistant answer "I cannot execute
+    # live database queries".
+    chat_source = (services / 'chat.py').read_text(encoding='utf-8')
+    if 'schema_datasets' not in chat_source or 'Available data' not in chat_source:
+        raise AssertionError('the chat prompt must carry the authorized tables')
+    if 'AuthorizedSchema' in chat_source:
+        raise AssertionError('the chat prompt must not carry a raw schema object')
+
     # Usage maintenance must not depend on somebody opening the dashboard, and a
     # beat container that runs baked-image code silently schedules nothing.
     celery_source = (services / 'celery_app.py').read_text(encoding='utf-8')

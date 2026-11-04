@@ -84,6 +84,11 @@ interface DatasetOption {
   label: string;
 }
 
+interface DashboardOption {
+  value: number;
+  label: string;
+}
+
 interface Slot {
   id: string;
   title: string;
@@ -148,6 +153,11 @@ export default function DashboardPanel() {
   const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
   const [published, setPublished] = useState<Record<string, unknown> | null>(null);
   const [busy, setBusy] = useState('');
+  // Where the plan should land. ``null`` means "a new dashboard"; a number means
+  // "add these charts to that one". The choice is the user's, because only they
+  // know whether the answer belongs beside what they already publish.
+  const [dashboards, setDashboards] = useState<DashboardOption[]>([]);
+  const [targetDashboardId, setTargetDashboardId] = useState<number | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -175,6 +185,32 @@ export default function DashboardPanel() {
     load();
     // The authorized slice does not change while the panel is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const loadDashboards = async () => {
+      try {
+        const { json } = await SupersetClient.get({
+          endpoint: '/api/v1/dashboard/?q=(page_size:100)',
+        });
+        const rows = (json?.result ?? []) as {
+          id?: number;
+          dashboard_title?: string;
+        }[];
+        setDashboards(
+          rows
+            .filter(row => typeof row.id === 'number')
+            .map(row => ({
+              value: row.id as number,
+              label: row.dashboard_title || `Dashboard ${row.id}`,
+            })),
+        );
+      } catch {
+        // Publishing into a new dashboard still works; an empty list just
+        // means "no existing target to offer".
+      }
+    };
+    loadDashboards();
   }, []);
 
   const slots = useMemo<Slot[]>(() => plan?.slots ?? [], [plan]);
@@ -249,17 +285,25 @@ export default function DashboardPanel() {
     if (!plan) {
       return;
     }
+    const updating = targetDashboardId !== null;
     setBusy('publish');
     try {
       const body = await post<Record<string, unknown>>(
         `${BASE}/dashboards/publish/`,
         {
-          mode: 'create',
+          // ``update`` adds the planned tiles to the target's existing layout
+          // (nothing already on that dashboard is removed); ``create`` builds a
+          // new dashboard. Both go through the same ledger, so a failed update
+          // compensates the same way a failed create does.
+          mode: updating ? 'update' : 'create',
+          ...(updating ? { dashboard_id: targetDashboardId } : {}),
           title: plan.title || goal,
           goal,
           slots,
           visibility: 'private',
-          idempotency_key: `panel-${plan.title || goal}`.slice(0, 120),
+          idempotency_key: `panel-${updating ? targetDashboardId : 'new'}-${
+            plan.title || goal
+          }`.slice(0, 120),
         },
       );
       setPublished(body);
@@ -269,7 +313,7 @@ export default function DashboardPanel() {
     } finally {
       setBusy('');
     }
-  }, [addDangerToast, addSuccessToast, goal, plan, slots]);
+  }, [addDangerToast, addSuccessToast, goal, plan, slots, targetDashboardId]);
 
   return (
     <Card data-test="ai-dashboard-panel">
@@ -316,8 +360,22 @@ export default function DashboardPanel() {
               >
                 {t('Preview with real data')}
               </Button>
+              <Select
+                allowClear
+                placeholder={t('Publish into: a new dashboard')}
+                style={{ minWidth: 240 }}
+                value={targetDashboardId ?? undefined}
+                onChange={(value: number | undefined) =>
+                  setTargetDashboardId(value ?? null)
+                }
+                options={dashboards}
+              />
               <Popconfirm
-                title={t('Publish this dashboard?')}
+                title={
+                  targetDashboardId === null
+                    ? t('Publish this dashboard?')
+                    : t('Add these charts to the chosen dashboard?')
+                }
                 description={t(
                   'Generated slots become real charts. The plan is not previewed first if you skip it.',
                 )}
@@ -331,7 +389,9 @@ export default function DashboardPanel() {
                   disabled={needsGeneration > 0}
                   loading={busy === 'publish'}
                 >
-                  {t('Publish')}
+                  {targetDashboardId === null
+                    ? t('Publish')
+                    : t('Add to dashboard')}
                 </Button>
               </Popconfirm>
             </Row>

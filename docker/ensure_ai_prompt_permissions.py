@@ -93,6 +93,15 @@ ADMIN_ONLY_PERMISSIONS: tuple[str, ...] = (
 )
 VIEW_MENU = "AIPrompt"
 
+#: Page shells that live beside the workspace. Their data is still fetched
+#: through the Admin-only ``AIPrompt`` API permissions, so exposing the shell is
+#: a routing fact, not a disclosure: a non-admin can open the page but every
+#: request behind it answers 403. Granted to Admin only, like that data.
+ADMIN_PAGES: dict[str, tuple[str, ...]] = {
+    "AIUsage": ("menu_access", "can_workspace", "can_list"),
+    "AISettings": ("menu_access", "can_workspace", "can_list"),
+}
+
 #: Every signed-in role may chat; ownership is enforced per conversation.
 ROLES = ("Admin", "Alpha", "Gamma")
 ADMIN_ROLE = "Admin"
@@ -157,6 +166,27 @@ def main() -> None:
                 continue
             sm.add_permission_role(role, pvm)
             print(f"permission {permission}: {ADMIN_ROLE} granted")
+
+        for view_name, page_permissions in ADMIN_PAGES.items():
+            for permission in page_permissions:
+                pvm = sm.find_permission_view_menu(permission, view_name)
+                if pvm is None:
+                    sm.add_permission_view_menu(permission, view_name)
+                    pvm = sm.find_permission_view_menu(permission, view_name)
+                    print(f"created permission {permission} on {view_name}")
+                if pvm is None:
+                    raise SystemExit(
+                        f"could not create {permission} on {view_name} — check the view"
+                    )
+                role = sm.find_role(ADMIN_ROLE)
+                if role is None:
+                    print(f"role {ADMIN_ROLE}: not found, skipped")
+                    continue
+                if role_has_permission(int(role.id), int(pvm.id)):
+                    print(f"permission {permission} on {view_name}: already granted")
+                    continue
+                sm.add_permission_role(role, pvm)
+                print(f"permission {permission} on {view_name}: {ADMIN_ROLE} granted")
 
 
 if __name__ == "__main__":

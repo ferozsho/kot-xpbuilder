@@ -188,7 +188,11 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.sqllab.permalink.api import SqlLabPermalinkRestApi
         from superset.tags.api import TagRestApi
         from superset.themes.api import ThemeRestApi
-        from superset.views.ai_prompt.views import AIPromptView
+        from superset.views.ai_prompt.views import (
+            AIPromptView,
+            AISettingsView,
+            AIUsageView,
+        )
         from superset.views.ai_provider.views import AIProviderView
         from superset.views.alerts import AlertView, ReportView
         from superset.views.all_entities import TaggedObjectsModelView
@@ -371,6 +375,30 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             category_label=_("Manage"),
         )
 
+        # XP Prompt usage and administrative settings. Split out of the chat
+        # workspace so an analyst never has to scroll past spend accounting to
+        # ask a question. Both pages are Admin-only (cross-user spend and
+        # deployment-wide policy), and the link names equal the views'
+        # class_permission_name so FAB hides them from roles without
+        # ``menu_access`` on ``AIUsage`` / ``AISettings``.
+        appbuilder.add_link(
+            "AIUsage",
+            label=_("AI Usage"),
+            href=f"{app_root}/aiusage/",
+            icon="fa-bar-chart",
+            category="Manage",
+            category_label=_("Manage"),
+        )
+
+        appbuilder.add_link(
+            "AISettings",
+            label=_("AI Settings"),
+            href=f"{app_root}/aisettings/",
+            icon="fa-sliders",
+            category="Manage",
+            category_label=_("Manage"),
+        )
+
         appbuilder.add_view(
             RolesListView,
             "List Roles",
@@ -481,6 +509,8 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_view_no_menu(ReportDesignerView)
         appbuilder.add_view_no_menu(AIProviderView)
         appbuilder.add_view_no_menu(AIPromptView)
+        appbuilder.add_view_no_menu(AIUsageView)
+        appbuilder.add_view_no_menu(AISettingsView)
         appbuilder.add_view_no_menu(SavedQueryView)
         appbuilder.add_view_no_menu(SqllabView)
         appbuilder.add_view_no_menu(Superset)

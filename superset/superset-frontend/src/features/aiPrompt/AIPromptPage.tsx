@@ -17,6 +17,7 @@
  * under the License.
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSelector } from 'react-redux';
 import { t } from '@apache-superset/core/translation';
 import { styled } from '@apache-superset/core/theme';
 import {
@@ -211,6 +212,14 @@ const intentLabel = (intent?: string | null) =>
 
 export default function AIPromptPage() {
   const { addDangerToast, addSuccessToast } = useToasts();
+  // Repair knowledge is an operator surface (SQL failure patterns and their
+  // promotion state). Showing it to an analyst added a panel of internal
+  // bookkeeping under every conversation, so it is Admin-only.
+  const isAdmin = useSelector<any, boolean>(state =>
+    (state?.user?.roles ?? []).some(
+      (role: { name?: string }) => role?.name === 'Admin',
+    ),
+  );
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
@@ -593,19 +602,24 @@ export default function AIPromptPage() {
 
           <JobPanel conversationId={activeId} />
 
+          {/* The answer becomes something durable in one order: statement →
+              dataset → chart → dashboard. Each panel appears once the previous
+              step has produced what it needs, so the page reads as a pipeline
+              instead of a wall of empty forms. */}
           <DatasetPanel
             source={lastTurn}
             conversationId={activeId ?? undefined}
             onSaved={setChartDataset}
           />
 
-          <DashboardPanel />
           <ChartPanel
             dataset={chartDataset}
             conversationId={activeId ?? undefined}
           />
 
-          <RepairPanel />
+          <DashboardPanel />
+
+          {isAdmin && <RepairPanel />}
 
           <StyledComposer>
             <StyledTextarea
