@@ -60,6 +60,7 @@ from xp_prompt import (
     schema_slice,
     settings_registry,
     sql_candidate,
+    sql_gate,
     sql_execution,
     sql_guard,
     usage,
@@ -221,13 +222,26 @@ def create_app(settings: Settings | None = None) -> Flask:
     app = Flask(__name__)
     resolved_settings = settings or Settings.from_env()
 
-    def _cost_budget() -> cost_guard.Budget:
-        """The deployment's cost budget (P4-F08), from validated settings."""
+    def _cost_budget(tenant_key: str = registry.DEFAULT_TENANT_KEY) -> cost_guard.Budget:
+        """The deployment's cost budget (P4-F08), tightened by the stored settings.
+
+        ``sql.max_plan_cost`` and ``sql.timeout_ms`` are ceilings, so they may only
+        *lower* what the environment allows: an operator cannot raise a cost line
+        past the deployment's own limit by configuration (P10-F06).
+        """
+        limits = settings_registry.sql_limits(resolved_settings, tenant_key=tenant_key)
+        max_cost = float(resolved_settings.max_estimated_cost)
+        if limits.max_plan_cost:
+            max_cost = min(max_cost, float(limits.max_plan_cost))
         return cost_guard.Budget(
-            max_rows=resolved_settings.max_estimated_rows,
-            max_cost=resolved_settings.max_estimated_cost,
+            max_rows=min(
+                int(resolved_settings.max_estimated_rows), int(limits.max_rows)
+            ),
+            max_cost=max_cost,
             max_plan_nodes=resolved_settings.max_plan_nodes,
-            max_runtime_ms=resolved_settings.max_runtime_ms,
+            max_runtime_ms=min(
+                int(resolved_settings.max_runtime_ms), int(limits.timeout_ms)
+            ),
             require_plan=resolved_settings.require_plan,
         )
 
@@ -1030,6 +1044,37 @@ def create_app(settings: Settings | None = None) -> Flask:
         response["guard_code"] = None
         return jsonify(response), 200
 
+    @app.post("/ai/sql/slot")
+    @require_admin_token
+    @feature_required("sql")
+    def sql_slot_acquire():
+        """Take one deployment-wide execution slot, or refuse to start (P10-F06).
+
+        The counter is in Redis because the executor runs several worker processes:
+        a per-process semaphore would multiply the limit by the number of workers.
+        """
+        slot = sql_gate.acquire(resolved_settings, tenant_key=_request_tenant())
+        if slot is None:
+            return (
+                jsonify(
+                    {
+                        "message": "Too many AI queries are running; try again shortly",
+                        "code": "sql_concurrency_exceeded",
+                        "severity": "warning",
+                    }
+                ),
+                429,
+            )
+        return jsonify(slot.to_public_dict()), 200
+
+    @app.delete("/ai/sql/slot/<token>")
+    @require_admin_token
+    @feature_required("sql")
+    def sql_slot_release(token: str):
+        """Give a slot back. Idempotent, so a retried release is harmless."""
+        released = sql_gate.release(resolved_settings, token)
+        return jsonify({"released": released, "active": sql_gate.active(resolved_settings)}), 200
+
     @app.post("/ai/sql/validate")
     @require_admin_token
     def sql_validate():
@@ -1084,7 +1129,10 @@ def create_app(settings: Settings | None = None) -> Flask:
         if _conversation_owner(payload) is None:
             return _admin_error("superset_user_id is required", 400)
         estimate = cost_guard.Estimate.from_payload(payload.get("estimate"))
-        verdict = cost_guard.evaluate(estimate, _cost_budget())
+        verdict = cost_guard.evaluate(
+            estimate,
+            _cost_budget(str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)),
+        )
         logger.info(
             "sql_plan outcome=%s code=%s source=%s rows=%s nodes=%s",
             "allowed" if verdict.allowed else "refused",
@@ -2538,6 +2586,18 @@ def create_app(settings: Settings | None = None) -> Flask:
             return _admin_error(f"Could not read alerts ({_error_class(exc)})", 503)
         return jsonify(body), 200
 
+    @app.post("/ai/usage/alerts/deliver")
+    @require_admin_token
+    @feature_required("usage")
+    def usage_alerts_deliver():
+        """Post the breach report to the configured webhook, and report the outcome."""
+        tenant_key = _request_tenant()
+        try:
+            outcome = alerts.deliver(resolved_settings, tenant_key=tenant_key)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not send the alert ({_error_class(exc)})", 503)
+        return jsonify(outcome), 200
+
     @app.get("/ai/usage/budgets")
     @require_admin_token
     @feature_required("usage")
@@ -2806,6 +2866,57 @@ def create_app(settings: Settings | None = None) -> Flask:
         return jsonify(
             {"count": len(resolved), "result": [row.to_public_dict() for row in resolved]}
         ), 200
+
+    @app.get("/ai/settings/health")
+    @require_admin_token
+    def settings_health():
+        """Test the configuration itself, with nothing sensitive in the answer.
+
+        The plan asks for health and test actions that use normalized clients and
+        redact their output (P10-F09). This one reports what an operator can act
+        on — which settings are stored, which are held at a ceiling, which need a
+        restart, and whether the alert destination is reachable — and never echoes
+        a value that could be a credential, because no such setting can exist.
+        """
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            rows = settings_registry.stored(
+                resolved_settings, tenant_key=tenant_key
+            )
+            limits = settings_registry.sql_limits(
+                resolved_settings, tenant_key=tenant_key
+            )
+            alerts_state = alerts.report(resolved_settings, tenant_key=tenant_key)
+            slots = sql_gate.active(resolved_settings)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not check settings ({_error_class(exc)})", 503)
+        held = settings_registry.held_at_ceiling(
+            resolved_settings, tenant_key=tenant_key
+        )
+        return (
+            jsonify(
+                {
+                    "tenant": tenant_key,
+                    "stored": len(rows),
+                    "declared": len(settings_registry.REGISTRY),
+                    "restart_required": [
+                        setting.key
+                        for setting in settings_registry.REGISTRY
+                        if setting.restart_required
+                    ],
+                    "held_at_ceiling": held,
+                    "limits": limits.to_public_dict(),
+                    "alerts": {
+                        "enabled": alerts_state["enabled"],
+                        "webhook": alerts_state["webhook"],
+                        "breaches": alerts_state["count"],
+                    },
+                    "sql_slots_active": slots,
+                    "healthy": True,
+                }
+            ),
+            200,
+        )
 
     @app.get("/ai/settings/history")
     @require_admin_token

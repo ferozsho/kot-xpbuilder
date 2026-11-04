@@ -223,6 +223,7 @@ def check(
     rls_targets: Any = None,
     enforce_limit: bool = True,
     allow_metadata_schemas: bool = False,
+    extra_denied_functions: Any = None,
 ) -> GuardResult:
     """Validate one candidate statement and return a safe, limit-enforced SQL.
 
@@ -278,7 +279,7 @@ def check(
         raise SqlPolicyError("not_read_only", "only SELECT queries are allowed")
 
     _reject_mutating_nodes(statement)
-    _reject_denied_functions(statement)
+    _reject_denied_functions(statement, extra_denied_functions)
     _strip_connection_catalog(statement, connection_names)
     definitions = _virtual_definitions(virtual_tables)
     inlined = _normalise_virtual_references(statement, definitions)
@@ -352,11 +353,22 @@ def _reject_mutating_nodes(statement: exp.Expression) -> None:
             raise SqlPolicyError("not_read_only", "SELECT INTO is not allowed")
 
 
-def _reject_denied_functions(statement: exp.Expression) -> None:
+def _reject_denied_functions(
+    statement: exp.Expression, extra: Any = None
+) -> None:
+    """Refuse the built-in denials plus whatever the deployment added.
+
+    ``sql.extra_denied_functions`` can only tighten: there is no setting that
+    removes a built-in denial, so an operator cannot open a hole by configuration
+    (P10-F06).
+    """
+    denied = DENIED_FUNCTIONS
+    if extra:
+        denied = denied | {str(name).strip().lower() for name in extra if str(name).strip()}
     for node in statement.walk():
         if isinstance(node, exp.Func):
             name = _function_name(node)
-            if name and name in DENIED_FUNCTIONS:
+            if name and name in denied:
                 raise SqlPolicyError(
                     "unsafe_function", "the query uses a forbidden function"
                 )

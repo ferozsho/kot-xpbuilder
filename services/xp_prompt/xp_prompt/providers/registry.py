@@ -9,6 +9,8 @@ straight to an adapter, and never appears in an HTTP response, log record, or
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -29,6 +31,8 @@ from xp_prompt.providers.openai_compatible import (
     AzureOpenAIProvider,
     OpenAICompatibleProvider,
 )
+logger = logging.getLogger(__name__)
+
 from xp_prompt.providers.router import ProviderRouter
 from xp_prompt.providers.transport import validate_provider_endpoint
 from xp_prompt.providers.types import (
@@ -754,6 +758,20 @@ def resolve_router(
     live = settings_registry.live(settings, tenant_key=tenant_key)
     cooldown_seconds = int(live["provider.breaker_cooldown_seconds"].value)
     max_attempts = int(live["provider.max_attempts_per_provider"].value)
+    timeout_seconds = int(live["provider.request_timeout_seconds"].value)
+    _apply_timeout(providers, timeout_seconds)
+    named_primary, named_fallback = settings_registry.routing(
+        settings, tenant_key=tenant_key
+    )
+    if named_primary or named_fallback:
+        providers = _order_by_name(providers, named_primary, named_fallback)
+        if not providers:
+            raise ProviderConfigError(
+                "The configured primary and fallback providers are not available."
+            )
+        fallback = next(
+            (item for item in providers[1:] if item.name == named_fallback), None
+        ) if named_fallback else fallback
     if not live["provider.fallback_enabled"].value:
         fallback = None
     on_summary = None
@@ -769,6 +787,43 @@ def resolve_router(
         on_summary=on_summary,
         guard=on_guard,
     )
+
+
+def _apply_timeout(providers: list[NamedProvider], timeout_seconds: int) -> None:
+    """Set the configured socket timeout on every adapter that has one.
+
+    Adapters are dataclasses holding their own ``timeout_seconds``; ``replace``
+    keeps them frozen and immutable, so a stored value changes the next request
+    without mutating a shared instance (P10-F04).
+    """
+    bounded = max(1, int(timeout_seconds))
+    for index, provider in enumerate(providers):
+        adapter = provider.adapter
+        if isinstance(adapter, NamedProvider) or not hasattr(
+            adapter, "timeout_seconds"
+        ):
+            continue
+        try:
+            providers[index] = replace(
+                provider, adapter=dataclasses.replace(adapter, timeout_seconds=bounded)
+            )
+        except (TypeError, ValueError):  # pragma: no cover - not a dataclass
+            logger.warning("provider_timeout_unset provider=%s", provider.name)
+
+
+def _order_by_name(
+    providers: list[NamedProvider], primary: str, fallback: str
+) -> list[NamedProvider]:
+    """Put the named providers first and second, keeping the rest in order."""
+    chosen: list[NamedProvider] = []
+    for name in (primary, fallback):
+        if not name:
+            continue
+        match = next((item for item in providers if item.name == name), None)
+        if match is not None and match not in chosen:
+            chosen.append(match)
+    remaining = [item for item in providers if item not in chosen]
+    return chosen + remaining
 
 
 def _usage_recorder(

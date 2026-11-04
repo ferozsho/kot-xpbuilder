@@ -32,10 +32,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import threading
 import time
-from contextlib import contextmanager
-from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
 
@@ -61,37 +58,71 @@ from superset.views.base import BaseSupersetView
 
 logger = logging.getLogger(__name__)
 
-#: ``sql.max_concurrent`` when the service cannot report it (an older service, or
-#: a failed settings read). One, not four: an unknown limit must not be generous.
-DEFAULT_MAX_CONCURRENT = 1
+def _acquire_slot(owner: int) -> tuple[str | None, int, dict[str, Any]]:
+    """Take a deployment-wide execution slot from the service.
 
-#: Statements this worker process is running, and the lock that counts them.
-#: The limit is published by the service, but the counter is process-local: a
-#: shared one would need Redis, so what this bounds is the work one worker can
-#: start — which is where the connections and the CPU actually go.
-_ACTIVE_SQL = 0
-_ACTIVE_SQL_LOCK = threading.Lock()
-
-
-@contextmanager
-def _concurrency_slot(max_concurrent: int) -> Iterator[bool]:
-    """Take one execution slot, or report that none is free.
-
-    Refusing before the query starts is the point: queueing it would only move
-    the pressure, and the caller can retry once the answer is worth waiting for.
+    The counter lives in Redis behind the service, so the limit is the deployment's
+    rather than this worker process's — a semaphore here would multiply
+    ``sql.max_concurrent`` by the number of Superset workers (P10-F06).
     """
-    global _ACTIVE_SQL
-    limit = max(1, int(max_concurrent))
-    with _ACTIVE_SQL_LOCK:
-        if _ACTIVE_SQL >= limit:
-            yield False
-            return
-        _ACTIVE_SQL += 1
+    status, body = call_xp_prompt(
+        "POST", "/ai/sql/slot", payload={"superset_user_id": owner}
+    )
+    if status != 200 or not isinstance(body, dict):
+        return None, status, body if isinstance(body, dict) else {}
+    token = str(body.get("token") or "")
+    return (token or None), status, body
+
+
+def _release_slot(token: str) -> None:
+    """Give the slot back, whatever happened to the query."""
     try:
-        yield True
-    finally:
-        with _ACTIVE_SQL_LOCK:
-            _ACTIVE_SQL -= 1
+        call_xp_prompt("DELETE", f"/ai/sql/slot/{quote(token, safe='')}", payload={})
+    except Exception:  # pylint: disable=broad-except - best effort
+        logger.warning("XP Prompt slot release failed")  # noqa: G201
+
+
+def _execute_statement(
+    database: Any, sql: str, schema_name: str | None, timeout_ms: Any
+) -> Any:
+    """Run the statement under the statement timeout where the engine supports it.
+
+    PostgreSQL takes a session-level ``statement_timeout``, which is exactly the
+    ceiling ``sql.timeout_ms`` describes; the connection is opened per call, so the
+    setting cannot leak into Superset's cached engine. Other engines keep the
+    normal path — a timeout that cannot be applied is reported, not pretended.
+    """
+    if not timeout_ms:
+        return database.get_df(sql, schema=schema_name)
+    engine = database.get_sqla_engine(schema=schema_name)
+    dialect = str(getattr(getattr(engine, "dialect", None), "name", "") or "")
+    if dialect != "postgresql":
+        logger.info("XP Prompt statement timeout not applied for dialect %s", dialect)
+        return database.get_df(sql, schema=schema_name)
+    import pandas as pd  # noqa: PLC0415 - only needed on this path
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with engine.connect() as connection:
+        connection.exec_driver_sql(f"SET statement_timeout = {int(timeout_ms)}")
+        result = connection.execute(text(sql))
+        frame = pd.DataFrame(result.fetchall(), columns=list(result.keys()))
+    return frame
+
+
+def _trim_to_bytes(rows: list[Any], max_bytes: Any) -> tuple[list[Any], bool]:
+    """Keep a preview inside ``sql.max_bytes``, and say whether it was trimmed."""
+    if not max_bytes:
+        return rows, False
+    limit = int(max_bytes)
+    kept: list[Any] = []
+    used = 0
+    for row in rows:
+        size = len(json_dumps(row).encode("utf-8"))
+        if kept and used + size > limit:
+            return kept, True
+        kept.append(row)
+        used += size
+    return kept, False
 
 
 def _safeguards(validated: dict[str, Any]) -> dict[str, Any]:
@@ -100,8 +131,9 @@ def _safeguards(validated: dict[str, Any]) -> dict[str, Any]:
     limits = published if isinstance(published, dict) else {}
     return {
         "max_rows": limits.get("max_rows"),
-        "max_concurrent": limits.get("max_concurrent") or DEFAULT_MAX_CONCURRENT,
+        "max_concurrent": limits.get("max_concurrent"),
         "timeout_ms": limits.get("timeout_ms"),
+        "max_bytes": limits.get("max_bytes"),
     }
 
 
@@ -520,7 +552,7 @@ class AIPromptView(BaseSupersetView):
                     for row in preview.itertuples(index=False, name=None)
                 ],
                 "row_count": int(len(frame)),
-                "truncated": len(frame) > len(preview),
+                "truncated": len(frame) > len(preview) or oversized,
                 "intent": "query",
                 "max_rows": MAX_PREVIEW_ROWS,
             },
@@ -705,6 +737,22 @@ class AIPromptView(BaseSupersetView):
             )
             return self.json_response(body, status)
         status, body = call_xp_prompt("GET", f"/ai/usage/budgets?{_usage_query()}")
+        return self.json_response(body, status)
+
+    @expose("/api/settings/health/", methods=("GET",))
+    @has_access_api
+    def api_settings_health(self) -> FlaskResponse:
+        """What the service says about its own configuration, redacted by design."""
+        status, body = call_xp_prompt("GET", f"/ai/settings/health?{_usage_query()}")
+        return self.json_response(body, status)
+
+    @expose("/api/usage/alerts/deliver/", methods=("POST",))
+    @has_access_api
+    def api_usage_alerts_deliver(self) -> FlaskResponse:
+        """Send the breach report to the configured webhook, once, on demand."""
+        status, body = call_xp_prompt(
+            "POST", "/ai/usage/alerts/deliver", payload=_body()
+        )
         return self.json_response(body, status)
 
     @expose("/api/usage/alerts/", methods=("GET",))
@@ -1590,34 +1638,26 @@ class AIPromptView(BaseSupersetView):
                 403,
             )
 
+        token, slot_status, slot_body = _acquire_slot(owner)
+        if token is None:
+            return self.json_response(slot_body, slot_status)
+
         started = time.monotonic()
-        with _concurrency_slot(safeguards["max_concurrent"]) as admitted:
-            if not admitted:
-                logger.info(
-                    "XP Prompt execution deferred: %s statements already running",
-                    _ACTIVE_SQL,
-                )
-                return self.json_response(
-                    {
-                        "message": _(
-                            "Too many AI queries are running; try again shortly"
-                        ),
-                        "severity": "warning",
-                        "code": "sql_concurrency_exceeded",
-                    },
-                    429,
-                )
-            try:
-                frame = database.get_df(validated["sql"], schema=schema_name)
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("XP Prompt execution failed: %s", type(exc).__name__)
-                return self.json_response(
-                    {
-                        "message": _("The query could not be executed"),
-                        "severity": "danger",
-                    },
-                    400,
-                )
+        try:
+            frame = _execute_statement(
+                database, validated["sql"], schema_name, safeguards.get("timeout_ms")
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("XP Prompt execution failed: %s", type(exc).__name__)
+            return self.json_response(
+                {
+                    "message": _("The query could not be executed"),
+                    "severity": "danger",
+                },
+                400,
+            )
+        finally:
+            _release_slot(token)
         duration_ms = round((time.monotonic() - started) * 1000)
 
         preview = frame.head(max_rows)
@@ -1625,6 +1665,7 @@ class AIPromptView(BaseSupersetView):
         rows = [
             list(row) for row in preview.itertuples(index=False, name=None)
         ]
+        rows, oversized = _trim_to_bytes(rows, safeguards.get("max_bytes"))
         # The service owns masking and the preview block (P4-F10): this view must
         # not decide what a caller may see of a result.
         result_status, verdict = call_xp_prompt(

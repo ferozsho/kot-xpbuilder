@@ -1711,7 +1711,14 @@ def check_ai_configuration(compatibility: dict) -> None:
         ),
         'usage.py': ('usage.cost_is_estimated',),
         'budgets.py': ('usage.default_budget_warn_percent',),
-        'alerts.py': ('usage.alert_email', '"delivered": False'),
+        'alerts.py': (
+            'usage.alert_email',
+            'usage.alert_webhook_url',
+            'def deliver(',
+            '_assert_fetchable',
+        ),
+        'sql_gate.py': ('def acquire(', 'def release(', 'sql.max_concurrent'),
+        'tasks.py': ('alerts.deliver(',),
     }
     for name, markers in consumers.items():
         source = (services / name).read_text(encoding='utf-8')
@@ -1726,7 +1733,13 @@ def check_ai_configuration(compatibility: dict) -> None:
     for marker in ('class SqlLimits', 'def sql_limits(', 'def _clamped(', 'above_ceiling'):
         if marker not in registry_source:
             raise AssertionError(f'the registry must clamp safeguards: {marker}')
-    for marker in ('_concurrency_slot', '_safeguards(', 'sql_concurrency_exceeded'):
+    for marker in (
+        '_acquire_slot(',
+        '_release_slot(',
+        '_execute_statement(',
+        '_trim_to_bytes(',
+        '_safeguards(',
+    ):
         if marker not in proxy_view:
             raise AssertionError(f'the executor must apply the safeguards: {marker}')
 
@@ -1746,6 +1759,31 @@ def check_ai_configuration(compatibility: dict) -> None:
         raise AssertionError('the alert state needs a proxy route')
     if 'can_api_usage_alerts' not in permission_script:
         raise AssertionError('can_api_usage_alerts must be granted')
+    for permission in ('can_api_usage_alerts_deliver', 'can_api_settings_health'):
+        if permission not in permission_script:
+            raise AssertionError(f'{permission} must be granted')
+    for marker in ('def api_settings_health(', 'def api_usage_alerts_deliver('):
+        if marker not in proxy_view:
+            raise AssertionError(f'the proxy must expose {marker}')
+    for marker in (
+        'def settings_health(',
+        'def sql_slot_acquire(',
+        'def sql_slot_release(',
+        'def usage_alerts_deliver(',
+        'MAX_TOTAL_ATTEMPTS',
+        'invalid_routing',
+        'retry_storm',
+        'extra_denied_functions',
+        'max_plan_cost',
+        'max_bytes',
+        'repair.require_review',
+        'repair.min_confidence_percent',
+        'provider.request_timeout_seconds',
+        'generation.structured_retries',
+        'sql_concurrency_exceeded',
+    ):
+        if marker not in api_source and marker not in registry_source:
+            raise AssertionError(f'the phase must implement {marker}')
 
 
 def main():

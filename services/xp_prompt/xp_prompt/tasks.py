@@ -137,26 +137,29 @@ def _report_breaches(settings: Settings, tenant_key: str) -> None:
     """Name the budgets that crossed their warning line, and who is addressed.
 
     The alert is emitted here rather than in a route because a budget breach is
-    discovered when the window moves, not when an admin opens a page. No mail is
-    sent — there is no transport in this runtime — so the log line records the
-    recipient the stored setting names and nothing claims delivery (P10-F07).
+    discovered when the window moves, not when an admin opens a page. Delivery goes
+    to the configured webhook and the log line records whether it was accepted, so
+    the operator sees the same truth the admin view does (P10-F07).
     """
     try:
-        state = alerts.report(settings, tenant_key=tenant_key)
+        outcome = alerts.deliver(settings, tenant_key=tenant_key)
     except Exception:  # pragma: no cover - a sweep must not fail on an alert
         logger.warning("usage_alerts_failed tenant=%s", tenant_key, exc_info=True)
         return
+    state = outcome["state"]
     if not state["breaches"]:
         return
     worst = state["breaches"][0]
     logger.warning(
         "usage_alert tenant=%s breaches=%d worst=%s percent=%d recipient=%s "
-        "delivered=false",
+        "delivered=%s reason=%s",
         tenant_key,
         state["count"],
         worst["state"],
         worst["percent_used"],
         state["recipient"] or "-",
+        str(outcome["delivered"]).lower(),
+        outcome["reason"] or "-",
     )
 
 

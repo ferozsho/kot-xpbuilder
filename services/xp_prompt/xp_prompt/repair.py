@@ -253,8 +253,14 @@ def record_outcome(
     )
     if stored_threshold is not None:
         threshold = int(stored_threshold)
-    if not live["repair.pattern_auto_promote"].value:
+    # Promotion is held, not faked: either switch-off records the evidence and
+    # leaves the pattern validated, and review does the same while telling the
+    # caller a human still has to promote it (P10-F05).
+    held = not live["repair.pattern_auto_promote"].value
+    review = bool(live["repair.require_review"].value)
+    if held or review:
         threshold = PROMOTION_OFF
+    min_confidence = int(live["repair.min_confidence_percent"].value) / 100.0
     fingerprint_value = str((failure or {}).get("fingerprint") or "")
     kind = str((failure or {}).get("kind") or "")
     stage = str((failure or {}).get("stage") or "execute")
@@ -277,6 +283,11 @@ def record_outcome(
         "fix_fingerprint": fix,
         "pattern": None,
         "promoted": False,
+        "review_required": bool(
+            settings_registry.live(settings, tenant_key=tenant_key)[
+                "repair.require_review"
+            ].value
+        ),
     }
     target = pattern_id.strip()
     if succeeded and not target and schema is not None and sql:
@@ -305,6 +316,7 @@ def record_outcome(
             succeeded=succeeded,
             evidence=conversation_id or "turn",
             threshold=threshold,
+            min_confidence=min_confidence,
         )
         result["pattern"] = updated
         result["promoted"] = bool(updated and updated.get("promoted"))

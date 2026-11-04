@@ -23,7 +23,7 @@ from unittest import mock
 
 from xp_prompt import alerts, budgets, chat, repair, schema_slice, sql_candidate
 from xp_prompt import settings_registry as sr
-from xp_prompt import patterns, sql_execution, sql_guard, usage
+from xp_prompt import patterns, sql_execution, sql_gate, sql_guard, usage
 from xp_prompt.config import Settings
 from xp_prompt.providers import health as provider_health
 from xp_prompt.providers import registry as provider_registry
@@ -284,13 +284,16 @@ class SqlLimitsTests(unittest.TestCase):
         ):
             self.assertTrue(sr.BY_KEY[key].ceiling, key)
 
-    def test_the_public_shape_names_all_four(self) -> None:
+    def test_the_public_shape_names_every_safeguard(self) -> None:
         body = self.limits().to_public_dict()
         self.assertEqual(
             sorted(body),
             [
                 "allow_metadata_schemas",
+                "extra_denied_functions",
+                "max_bytes",
                 "max_concurrent",
+                "max_plan_cost",
                 "max_rows",
                 "timeout_ms",
             ],
@@ -617,6 +620,331 @@ class UsageSettingsTests(unittest.TestCase):
         self.assertEqual(report["recipient"], "ops@example.org")
         self.assertEqual([item["id"] for item in report["breaches"]], ["b1"])
         self.assertFalse(report["delivered"])
+
+
+class CloseoutTests(unittest.TestCase):
+    """The items the phase used to leave open, each with its own proof."""
+
+    def test_worst_case_attempts_are_capped_across_providers(self) -> None:
+        # attempts x providers is what a retry storm costs; the product is refused.
+        self.assertEqual(sr.MAX_TOTAL_ATTEMPTS, 6)
+        with mock.patch.object(
+            sr,
+            "live",
+            return_value=live_map(
+                provider__max_attempts_per_provider=4, provider__fallback_enabled=True
+            ),
+        ):
+            with self.assertRaises(sr.SettingError) as caught:
+                sr._validate_batch(
+                    settings(),
+                    "default",
+                    "global",
+                    [(sr.BY_KEY["provider.max_attempts_per_provider"], 4)],
+                )
+        self.assertEqual(caught.exception.code, "retry_storm")
+
+    def test_a_fallback_is_refused_when_fallback_is_switched_off(self) -> None:
+        with mock.patch.object(
+            sr,
+            "live",
+            return_value=live_map(
+                provider__fallback_enabled=False, provider__fallback="second"
+            ),
+        ), mock.patch.object(sr, "_provider_available", return_value=True):
+            with self.assertRaises(sr.SettingError) as caught:
+                sr._validate_batch(
+                    settings(),
+                    "default",
+                    "global",
+                    [(sr.BY_KEY["provider.fallback"], "second")],
+                )
+        self.assertEqual(caught.exception.code, "invalid_routing")
+
+    def test_routing_must_name_an_enabled_provider(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()), mock.patch.object(
+            sr, "_provider_available", return_value=False
+        ):
+            with self.assertRaises(sr.SettingError):
+                sr._validate_batch(
+                    settings(),
+                    "default",
+                    "global",
+                    [(sr.BY_KEY["provider.primary"], "gone")],
+                )
+
+    def test_primary_and_fallback_must_differ(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()), mock.patch.object(
+            sr, "_provider_available", return_value=True
+        ):
+            with self.assertRaises(sr.SettingError) as caught:
+                sr._validate_batch(
+                    settings(),
+                    "default",
+                    "global",
+                    [
+                        (sr.BY_KEY["provider.primary"], "one"),
+                        (sr.BY_KEY["provider.fallback"], "one"),
+                    ],
+                )
+        self.assertEqual(caught.exception.code, "invalid_routing")
+
+    def test_extra_denied_functions_only_tighten(self) -> None:
+        with self.assertRaises(sql_guard.SqlPolicyError) as caught:
+            sql_guard.check(
+                "SELECT pg_sleep(1) FROM mdl_user",
+                dialect="postgres",
+                extra_denied_functions=("pg_sleep",),
+            )
+        self.assertEqual(caught.exception.code, "unsafe_function")
+
+    def test_the_builtin_denials_cannot_be_removed(self) -> None:
+        # There is no setting that subtracts from the denial list.
+        with self.assertRaises(sql_guard.SqlPolicyError):
+            sql_guard.check("SELECT pg_sleep(1) FROM mdl_user", dialect="postgres")
+
+    def test_extra_denials_are_read_as_a_sorted_list(self) -> None:
+        with mock.patch.object(
+            sr,
+            "live",
+            return_value=live_map(sql__extra_denied_functions=" zeta, alpha ,, "),
+        ):
+            self.assertEqual(
+                sr.sql_limits(settings()).extra_denied_functions, ("alpha", "zeta")
+            )
+
+    def test_a_value_held_at_its_ceiling_is_reported(self) -> None:
+        rows = [sr.StoredSetting("sql.max_rows", "global", 999_999, 1)]
+        with mock.patch.object(sr, "live", return_value=live_map()):
+            with mock.patch.object(sr, "stored", return_value=rows):
+                held = sr.held_at_ceiling(settings())
+        self.assertEqual(held[0]["key"], "sql.max_rows")
+        self.assertEqual(held[0]["in_force"], sr.BY_KEY["sql.max_rows"].maximum)
+
+    def test_the_confidence_floor_is_the_configured_one(self) -> None:
+        # 5 successes and 4 failures is 0.55: promoted at 0.5, held at 0.6.
+        self.assertEqual(
+            patterns._settled_state("validated", 5, 4, ["a", "b"], 1, 0.5), "promoted"
+        )
+        self.assertEqual(
+            patterns._settled_state("validated", 5, 4, ["a", "b"], 1, 0.6), "validated"
+        )
+
+    def test_review_holds_promotion_and_says_so(self) -> None:
+        self.assertGreater(repair.PROMOTION_OFF, patterns.MAX_EVIDENCE)
+
+
+class AlertDeliveryTests(unittest.TestCase):
+    """Delivery is attempted, reported, and never claimed when it did not happen."""
+
+    breach = {
+        "budgets": [
+            {
+                "id": "b1",
+                "scope": "tenant",
+                "scope_ref": "",
+                "period": "month",
+                "state": "exhausted",
+                "percent_used": 100,
+                "warn_percent": 80,
+                "cost_micros_limit": 1_000,
+            }
+        ]
+    }
+
+    def test_nothing_to_send_is_not_a_failure(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()):
+            with mock.patch.object(
+                alerts.budgets, "status", return_value={"budgets": []}
+            ):
+                outcome = alerts.deliver(settings())
+        self.assertFalse(outcome["delivered"])
+        self.assertEqual(outcome["reason"], "nothing_to_send")
+
+    def test_no_webhook_is_reported_rather_than_guessed(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()), mock.patch.object(
+            alerts.budgets, "status", return_value=self.breach
+        ):
+            outcome = alerts.deliver(settings())
+        self.assertFalse(outcome["delivered"])
+        self.assertEqual(outcome["reason"], "not_configured")
+        self.assertEqual(outcome["state"]["count"], 1)
+
+    def test_a_plain_http_endpoint_is_refused(self) -> None:
+        with mock.patch.object(
+            sr,
+            "live",
+            return_value=live_map(usage__alert_webhook_url="http://example.org/hook"),
+        ), mock.patch.object(alerts.budgets, "status", return_value=self.breach):
+            outcome = alerts.deliver(settings())
+        self.assertFalse(outcome["delivered"])
+        self.assertNotEqual(outcome["reason"], "")
+
+    def test_a_local_address_is_refused(self) -> None:
+        with mock.patch.object(
+            sr,
+            "live",
+            return_value=live_map(usage__alert_webhook_url="https://127.0.0.1/hook"),
+        ), mock.patch.object(alerts.budgets, "status", return_value=self.breach):
+            outcome = alerts.deliver(settings())
+        self.assertFalse(outcome["delivered"])
+        self.assertNotEqual(outcome["reason"], "")
+
+
+class _FakeCursor:
+    def __init__(self, script: list) -> None:
+        self._script = list(script)
+        self._current = None
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self._current = self._script.pop(0) if self._script else None
+
+    def fetchone(self):
+        return self._current[0] if isinstance(self._current, tuple) else self._current
+
+    def fetchall(self):
+        return self._current if isinstance(self._current, list) else []
+
+
+class _FakeConnection:
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+
+    def __enter__(self) -> "_FakeConnection":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+
+class MultiWorkerTests(unittest.TestCase):
+    """A second worker must see a change without a restart (P10-F11)."""
+
+    def test_a_newer_stamp_discards_the_cached_view(self) -> None:
+        sr._CACHE.values = {
+            ("global", "repair.max_attempts"): sr.StoredSetting(
+                "repair.max_attempts", "global", 2, 1
+            )
+        }
+        sr._CACHE.stamp = 1
+        tenant = {"id": "11111111-1111-1111-1111-111111111111"}
+        rows = [
+            (tenant,),  # _tenant_id
+            ({"stamp": 2},),  # MAX(version) moved
+            [
+                {
+                    "key": "repair.max_attempts",
+                    "scope": "global",
+                    "value": 3,
+                    "version": 2,
+                    "updated_by": "ops",
+                    "updated_reason": "raise",
+                    "updated_at": None,
+                }
+            ],
+        ]
+        with mock.patch.object(
+            sr,
+            "connect",
+            return_value=_FakeConnection(_FakeCursor(rows)),
+        ):
+            values = sr._stored_rows(settings(), "default", refresh=False)
+        self.assertEqual(values[0].value, 3)
+        self.assertEqual(sr._CACHE.stamp, 2)
+
+    def test_the_same_stamp_reuses_the_cache(self) -> None:
+        sr._CACHE.values = {
+            ("global", "repair.max_attempts"): sr.StoredSetting(
+                "repair.max_attempts", "global", 2, 1
+            )
+        }
+        sr._CACHE.stamp = 7
+        rows = [({"id": "11111111-1111-1111-1111-111111111111"},), ({"stamp": 7},)]
+        with mock.patch.object(
+            sr, "connect", return_value=_FakeConnection(_FakeCursor(rows))
+        ):
+            values = sr._stored_rows(settings(), "default", refresh=False)
+        self.assertEqual(values[0].value, 2)
+
+
+class _FakeRedis:
+    def __init__(self, fail: bool = False) -> None:
+        self.store: dict[str, int] = {}
+        self.fail = fail
+
+    def incr(self, key: str) -> int:
+        if self.fail:
+            raise RuntimeError("redis down")
+        self.store[key] = self.store.get(key, 0) + 1
+        return self.store[key]
+
+    def decr(self, key: str) -> int:
+        self.store[key] = self.store.get(key, 0) - 1
+        return self.store[key]
+
+    def get(self, key: str) -> int:
+        return self.store.get(key, 0)
+
+    def set(self, key: str, value: int) -> bool:
+        self.store[key] = int(value)
+        return True
+
+    def expire(self, key: str, ttl: int) -> bool:
+        return True
+
+    def hset(self, key: str, mapping: dict) -> int:
+        return 1
+
+    def delete(self, key: str) -> int:
+        return 1 if key not in self.store else 1
+
+
+class ExecutionSlotTests(unittest.TestCase):
+    """The concurrency limit is the deployment's, not one worker's (P10-F06)."""
+
+    def limits(self, **overrides: object) -> sr.SqlLimits:
+        with mock.patch.object(sr, "live", return_value=live_map(**overrides)):
+            return sr.sql_limits(settings())
+
+    def test_a_slot_is_shared_through_redis(self) -> None:
+        fake = _FakeRedis()
+        with mock.patch.object(sr, "live", return_value=live_map(sql__max_concurrent=1)):
+            with mock.patch.object(sql_gate, "_client", return_value=fake):
+                first = sql_gate.acquire(settings())
+                second = sql_gate.acquire(settings())
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
+    def test_releasing_returns_the_slot(self) -> None:
+        fake = _FakeRedis()
+        with mock.patch.object(sr, "live", return_value=live_map(sql__max_concurrent=1)):
+            with mock.patch.object(sql_gate, "_client", return_value=fake):
+                first = sql_gate.acquire(settings())
+                sql_gate.release(settings(), first.token)
+                again = sql_gate.acquire(settings())
+        self.assertIsNotNone(again)
+        self.assertEqual(sql_gate.active.__name__, "active")
+
+    def test_a_broken_counter_does_not_block_sql(self) -> None:
+        with mock.patch.object(sr, "live", return_value=live_map()), mock.patch.object(
+            sql_gate, "_client", return_value=_FakeRedis(fail=True)
+        ):
+            slot = sql_gate.acquire(settings())
+        self.assertIsNotNone(slot)
+        self.assertEqual(slot.token, "unmetered")
+
+    def test_the_slot_ttl_outlives_the_statement_timeout(self) -> None:
+        self.assertGreaterEqual(sql_gate._ttl_seconds(20_000), 40)
+        self.assertEqual(sql_gate._ttl_seconds(10_000_000), sql_gate.MAX_TTL_SECONDS)
 
 
 if __name__ == "__main__":

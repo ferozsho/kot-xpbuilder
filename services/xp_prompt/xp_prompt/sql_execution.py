@@ -86,6 +86,9 @@ def validate(
         virtual_tables=schema.virtual_tables(database=database),
         rls_targets=schema.rls_targets(database=database),
         allow_metadata_schemas=allow_metadata,
+        extra_denied_functions=(
+            limits.extra_denied_functions if limits is not None else None
+        ),
     )
     # Semantics are re-checked here for the same reason the guard is: a statement
     # can arrive from a replay or a hand-written client, and "safe" is not the same

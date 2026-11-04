@@ -303,9 +303,26 @@ def generate(
     except registry.ProviderConfigError as exc:
         raise SqlCandidateError("no_provider", str(exc)) from exc
 
-    try:
-        routed = router.generate(request)
-    except ProviderError as exc:
+    attempts = 1 + max(0, int(live["generation.structured_retries"].value))
+    routed = None
+    failure: ProviderError | None = None
+    for attempt in range(attempts):
+        try:
+            routed = router.generate(request)
+            break
+        except ProviderError as exc:
+            failure = exc
+            # Only a malformed *shape* is worth another try: a provider that is
+            # down, or a request it refused, is a different answer (P10-F03).
+            if exc.code != "structured_output_invalid" or attempt == attempts - 1:
+                break
+            logger.info(
+                "sql_candidate outcome=structured_retry attempt=%d correlation_id=%s",
+                attempt + 1,
+                request.correlation_id,
+            )
+    if routed is None:
+        exc = failure or ProviderError("provider_error", "the provider did not answer")
         logger.info(
             "sql_candidate correlation_id=%s outcome=failed error_code=%s",
             request.correlation_id,
@@ -333,6 +350,7 @@ def generate(
         database,
         max_rows,
         allow_metadata_schemas=limits.allow_metadata_schemas,
+        extra_denied_functions=limits.extra_denied_functions,
     )
     _check_semantics(guarded.model_sql or guarded.sql, resolved_dialect, schema)
 
@@ -540,6 +558,7 @@ def _guard(
     max_rows: int,
     *,
     allow_metadata_schemas: bool = False,
+    extra_denied_functions: Any = None,
 ) -> sql_guard.GuardResult:
     allowlist = schema.allowed_tables(database=database)
     try:
@@ -552,6 +571,7 @@ def _guard(
             virtual_tables=schema.virtual_tables(database=database),
             rls_targets=schema.rls_targets(database=database),
             allow_metadata_schemas=allow_metadata_schemas,
+            extra_denied_functions=extra_denied_functions,
         )
     except sql_guard.SqlPolicyError as exc:
         logger.info("sql_candidate outcome=blocked guard_code=%s", exc.code)

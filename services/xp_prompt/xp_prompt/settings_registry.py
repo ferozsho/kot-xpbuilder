@@ -343,6 +343,96 @@ REGISTRY: tuple[Setting, ...] = (
         summary="Where budget and ledger alerts are sent. Empty disables them.",
         scopes=(GLOBAL,),
     ),
+    Setting(
+        key="usage.alert_webhook_url",
+        kind=TEXT,
+        default="",
+        owner="usage",
+        summary=(
+            "https endpoint that receives a breach report. Empty disables webhook "
+            "delivery."
+        ),
+        scopes=(GLOBAL,),
+    ),
+    Setting(
+        key="sql.max_bytes",
+        kind=INT,
+        default=5_000_000,
+        minimum=1_000,
+        maximum=50_000_000,
+        owner="sql",
+        summary="Bytes one result preview may carry back to the browser.",
+        ceiling=True,
+    ),
+    Setting(
+        key="sql.max_plan_cost",
+        kind=INT,
+        default=1_000_000,
+        minimum=0,
+        maximum=1_000_000_000,
+        owner="sql",
+        summary="Planner cost ceiling for one statement; 0 disables the check.",
+        ceiling=True,
+    ),
+    Setting(
+        key="sql.extra_denied_functions",
+        kind=TEXT,
+        default="",
+        owner="sql",
+        summary=(
+            "Comma-separated function names to refuse on top of the built-in "
+            "denial list. Tightens only."
+        ),
+    ),
+    # --- routing and transport (P10-F02/F04) ---------------------------
+    Setting(
+        key="provider.primary",
+        kind=TEXT,
+        default="",
+        owner="providers",
+        summary="Provider to try first, by name. Empty uses the stored priority.",
+    ),
+    Setting(
+        key="provider.fallback",
+        kind=TEXT,
+        default="",
+        owner="providers",
+        summary="Provider to try after the primary. Empty uses the next by priority.",
+    ),
+    Setting(
+        key="provider.request_timeout_seconds",
+        kind=INT,
+        default=30,
+        minimum=5,
+        maximum=120,
+        owner="providers",
+        summary="Socket timeout for one provider request.",
+    ),
+    Setting(
+        key="generation.structured_retries",
+        kind=INT,
+        default=1,
+        minimum=0,
+        maximum=3,
+        owner="generation",
+        summary="Extra attempts when a provider returns malformed structured output.",
+    ),
+    Setting(
+        key="repair.min_confidence_percent",
+        kind=INT,
+        default=60,
+        minimum=0,
+        maximum=100,
+        owner="repair",
+        summary="Confidence a pattern needs before promotion counts for review.",
+    ),
+    Setting(
+        key="repair.require_review",
+        kind=BOOL,
+        default=False,
+        owner="repair",
+        summary="Hold a generated correction for operator review before reuse.",
+    ),
     # --- feature flags (P10-F08) ---------------------------------------
     _feature("chat", "Conversational turns."),
     _feature("sql", "SQL candidate generation and execution."),
@@ -544,6 +634,9 @@ class SqlLimits:
     timeout_ms: int
     max_concurrent: int
     allow_metadata_schemas: bool
+    max_bytes: int = 5_000_000
+    max_plan_cost: int = 0
+    extra_denied_functions: tuple[str, ...] = ()
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -551,6 +644,9 @@ class SqlLimits:
             "timeout_ms": self.timeout_ms,
             "max_concurrent": self.max_concurrent,
             "allow_metadata_schemas": self.allow_metadata_schemas,
+            "max_bytes": self.max_bytes,
+            "max_plan_cost": self.max_plan_cost,
+            "extra_denied_functions": list(self.extra_denied_functions),
         }
 
 
@@ -573,17 +669,50 @@ def _clamped(values: Mapping[str, Resolution], key: str) -> int:
             "ai_setting_unreadable key=%s default=%s", key, setting.default
         )
         return int(setting.default)
+    allowed = int(clamp(key, number))
+    if allowed != number:
+        logger.warning(
+            "ai_setting_above_ceiling key=%s stored=%s held=%s", key, number, allowed
+        )
+    return allowed
+
+
+def clamp(key: str, value: Any) -> Any:
+    """One value held inside its declared bounds, for any key."""
+    setting = _assert_storable(key)
+    if setting.kind != INT:
+        return value
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return setting.default
     if setting.minimum is not None and number < int(setting.minimum):
         number = int(setting.minimum)
     if setting.maximum is not None and number > int(setting.maximum):
-        logger.warning(
-            "ai_setting_above_ceiling key=%s stored=%s held=%s",
-            key,
-            number,
-            setting.maximum,
-        )
         number = int(setting.maximum)
     return number
+
+
+def held_at_ceiling(
+    settings: Settings, *, tenant_key: str = "default"
+) -> list[dict[str, Any]]:
+    """Stored values the platform is refusing to honour as written.
+
+    Reported rather than silently corrected: an operator who wrote 999999 and sees
+    100000 in force has learned something, while one who sees nothing has a bug to
+    find later (P10-F09).
+    """
+    held: list[dict[str, Any]] = []
+    for row in stored(settings, tenant_key=tenant_key):
+        setting = BY_KEY.get(row.key)
+        if setting is None or not setting.ceiling:
+            continue
+        allowed = clamp(row.key, row.value)
+        if allowed != row.value:
+            held.append(
+                {"key": row.key, "stored": row.value, "in_force": allowed}
+            )
+    return held
 
 
 def sql_limits(settings: Settings, *, tenant_key: str = "default") -> SqlLimits:
@@ -594,6 +723,7 @@ def sql_limits(settings: Settings, *, tenant_key: str = "default") -> SqlLimits:
     """
     values = live(settings, tenant_key=tenant_key)
     metadata = values.get("sql.allow_metadata_schemas")
+    extra = values.get("sql.extra_denied_functions")
     return SqlLimits(
         max_rows=_clamped(values, "sql.max_rows"),
         timeout_ms=_clamped(values, "sql.timeout_ms"),
@@ -601,12 +731,124 @@ def sql_limits(settings: Settings, *, tenant_key: str = "default") -> SqlLimits:
         allow_metadata_schemas=bool(
             metadata.value if metadata is not None else False
         ),
+        max_bytes=_clamped(values, "sql.max_bytes"),
+        max_plan_cost=_clamped(values, "sql.max_plan_cost"),
+        extra_denied_functions=tuple(
+            sorted(
+                {
+                    part.strip().lower()
+                    for part in str(extra.value if extra else "").split(",")
+                    if part.strip()
+                }
+            )
+        ),
     )
 
 
 def stored(settings: Settings, *, tenant_key: str = "default") -> list[StoredSetting]:
     """The rows that exist, for the admin view (defaults are not rows)."""
     return _stored_rows(settings, tenant_key, refresh=True)
+
+
+def routing(
+    settings: Settings, *, tenant_key: str = "default"
+) -> tuple[str, str]:
+    """The named primary and fallback providers, as stored (may be empty)."""
+    values = live(settings, tenant_key=tenant_key)
+    primary = values.get("provider.primary")
+    fallback = values.get("provider.fallback")
+    return (
+        str(primary.value or "").strip() if primary else "",
+        str(fallback.value or "").strip() if fallback else "",
+    )
+
+
+#: The keys whose *combination* is validated, so an unrelated write is not made to
+#: pay for a configuration read.
+_COMBINATION_KEYS = frozenset(
+    {
+        "provider.primary",
+        "provider.fallback",
+        "provider.fallback_enabled",
+        "provider.max_attempts_per_provider",
+    }
+)
+
+#: Worst-case attempts one logical request may spend across providers. The point
+#: of the cap is the multiply: attempts x providers is what a retry storm costs.
+MAX_TOTAL_ATTEMPTS = 6
+
+
+def _validate_batch(
+    settings: Settings,
+    tenant_key: str,
+    scope: str,
+    prepared: list[tuple[Setting, Any]],
+) -> None:
+    """Refuse a batch that is individually valid but jointly unsafe.
+
+    Two rules, both about combinations a form can produce and neither about a
+    single field: routing that names a provider that is not there, and retry
+    settings whose product is a storm (P10-F02, P10-F04).
+    """
+    touched = {setting.key for setting, _ in prepared}
+    if not touched & _COMBINATION_KEYS:
+        # The rules below are about combinations; a batch that changes none of the
+        # keys they constrain does not need to read the effective configuration.
+        return
+    merged = {
+        key: resolution.value
+        for key, resolution in live(settings, tenant_key=tenant_key).items()
+    }
+    for setting, value in prepared:
+        merged[setting.key] = value
+
+    primary = str(merged.get("provider.primary") or "").strip()
+    fallback = str(merged.get("provider.fallback") or "").strip()
+    if primary and fallback and primary == fallback:
+        raise SettingError(
+            "invalid_routing",
+            "the fallback provider must differ from the primary provider",
+        )
+    for role, name in (("primary", primary), ("fallback", fallback)):
+        if name and not _provider_available(settings, tenant_key, name):
+            raise SettingError(
+                "invalid_routing",
+                f"the {role} provider {name} is not an enabled provider",
+            )
+    if fallback and not merged.get("provider.fallback_enabled", True):
+        raise SettingError(
+            "invalid_routing",
+            "a fallback provider is named but fallback is switched off",
+        )
+
+    attempts = int(merged.get("provider.max_attempts_per_provider") or 1)
+    providers = 2 if merged.get("provider.fallback_enabled") else 1
+    total = max(1, attempts) * providers
+    if total > MAX_TOTAL_ATTEMPTS:
+        raise SettingError(
+            "retry_storm",
+            f"{attempts} attempts x {providers} providers is {total}, above the "
+            f"platform limit of {MAX_TOTAL_ATTEMPTS}",
+        )
+
+
+def _provider_available(settings: Settings, tenant_key: str, name: str) -> bool:
+    """Is this an enabled provider row for the tenant? Unknown counts as no."""
+    try:
+        with connect(settings) as connection, connection.cursor() as cursor:
+            tenant_id = _tenant_id(cursor, tenant_key)
+            cursor.execute(
+                "SELECT 1 AS present FROM ai_provider "
+                "WHERE tenant_id = %s AND enabled = TRUE AND name = %s",
+                (tenant_id, name),
+            )
+            return cursor.fetchone() is not None
+    except Exception:  # noqa: BLE001 - an unreadable catalog must not block a write
+        logger.warning(
+            "ai_setting_routing_unverified provider=%s tenant=%s", name, tenant_key
+        )
+        return False
 
 
 def apply(
@@ -639,6 +881,7 @@ def apply(
                 f"{setting.key} may not be set at {clean_scope} scope",
             )
         prepared.append((setting, setting.coerce(value)))
+    _validate_batch(settings, tenant_key, clean_scope, prepared)
 
     resolved: list[Resolution] = []
     with connect(settings) as connection, connection.cursor() as cursor:

@@ -249,6 +249,7 @@ def record_validation(
     succeeded: bool,
     evidence: str = "",
     threshold: int = DEFAULT_EVIDENCE_THRESHOLD,
+    min_confidence: float = MIN_CONFIDENCE,
 ) -> dict[str, Any] | None:
     """Record one validation outcome and advance the pattern's state.
 
@@ -295,7 +296,12 @@ def record_validation(
                 sources = sources[:MAX_EVIDENCE]
                 score = confidence(successes, failures)
                 state = _settled_state(
-                    current_state, successes, failures, sources, threshold
+                    current_state,
+                    successes,
+                    failures,
+                    sources,
+                    threshold,
+                    min_confidence,
                 )
                 cursor.execute(
                     """
@@ -808,9 +814,19 @@ def revalidate_stale(settings: Settings, *, tenant_key: str) -> int:
 
 
 def _settled_state(
-    current: str, successes: int, failures: int, sources: list[str], threshold: int
+    current: str,
+    successes: int,
+    failures: int,
+    sources: list[str],
+    threshold: int,
+    min_confidence: float = MIN_CONFIDENCE,
 ) -> str:
-    """Where a pattern stands after one more validation."""
+    """Where a pattern stands after one more validation.
+
+    ``min_confidence`` is ``repair.min_confidence_percent``: promotion is a
+    decision about evidence, and the floor it needs is configuration rather than a
+    constant (P10-F05).
+    """
     if current in {"deprecated", "quarantined"}:
         # Knowledge an operator switched off does not come back on its own.
         return current
@@ -818,10 +834,10 @@ def _settled_state(
         return "validating" if current in {"candidate", "validating"} else current
     if current == "promoted":
         # An already-promoted pattern keeps its standing unless it stops being right.
-        return "promoted" if confidence(successes, failures) >= MIN_CONFIDENCE else "validated"
+        return "promoted" if confidence(successes, failures) >= min_confidence else "validated"
     needed = max(1, threshold)
     if successes >= needed and len(sources) >= needed:
-        if confidence(successes, failures) >= MIN_CONFIDENCE:
+        if confidence(successes, failures) >= min_confidence:
             return "promoted"
     return "validated"
 
