@@ -90,6 +90,7 @@ _SQL_CANDIDATE_STATUS = {
     "dialect_ambiguous": 400,
     "no_schema": 409,
     "sql_blocked": 422,
+    "semantic_invalid": 422,
     "invalid_response": 502,
     "provider_error": 503,
     "no_provider": 503,
@@ -107,9 +108,14 @@ def _sql_candidate_message(exc: BaseException) -> str:
         getattr(exc, "guard_code", None)
         or getattr(exc, "provider_code", None)
     )
-    return f"SQL candidate rejected ({code}: {detail})" if detail else (
-        f"SQL candidate rejected ({code})"
-    )
+    if detail:
+        return f"SQL candidate rejected ({code}: {detail})"
+    # A semantic refusal puts its explanation in the message (which column, which
+    # dataset), and that is the part a user can act on.
+    reason = str(exc).strip()
+    if reason and reason != code:
+        return f"SQL candidate rejected ({code}): {reason}"
+    return f"SQL candidate rejected ({code})"
 
 
 def create_app(settings: Settings | None = None) -> Flask:
@@ -852,7 +858,11 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
         except sql_guard.SqlPolicyError as exc:
             status = 400 if exc.code in {"dialect_ambiguous", "unsupported_dialect"} else 422
-            return _admin_error(f"SQL candidate rejected (sql_blocked: {exc.code})", status)
+            detail = str(exc).strip()
+            suffix = f": {detail}" if detail else ""
+            return _admin_error(
+                f"SQL candidate rejected (sql_blocked: {exc.code}){suffix}", status
+            )
         return jsonify(result), 200
 
     @app.post("/ai/sql/plan")

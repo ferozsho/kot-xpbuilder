@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from xp_prompt import responses, sql_execution, sql_guard
+from xp_prompt import responses, sql_execution, sql_guard, sql_semantics
 from xp_prompt.config import Settings
 from xp_prompt.providers import registry
 from xp_prompt.providers.structured import StructuredOutputError, parse_json_object
@@ -205,6 +205,7 @@ def generate(
 
     sql_text, rationale, assumptions = _parse_candidate(routed.response.content)
     guarded = _guard(sql_text, resolved_dialect, schema, database, max_rows)
+    _check_semantics(guarded.model_sql or guarded.sql, resolved_dialect, schema)
 
     blocks = responses.normalize_blocks(
         [
@@ -247,6 +248,22 @@ def generate(
         correlation_id=correlation_id,
         blocks=tuple(blocks),
     )
+
+
+def _check_semantics(sql_text: str, dialect: str, schema: SchemaSlice) -> None:
+    """Refuse a statement the schema cannot support (P4-F07).
+
+    The guard proves the statement is safe; this proves it is meaningful. A model
+    that invents a column or sums a string produces a query that would fail at
+    execution with a database error — the user gets an actionable message instead.
+    """
+    try:
+        result = sql_semantics.validate(sql_text, schema=schema, dialect=dialect)
+    except sql_semantics.SemanticsError as exc:
+        raise SqlCandidateError(exc.code, str(exc)) from exc
+    if not result.ok:
+        logger.info("sql_candidate outcome=blocked semantic_code=%s", result.code)
+        raise SqlCandidateError("semantic_invalid", result.message())
 
 
 def _resolve_dialect(

@@ -778,6 +778,36 @@ def check_ai_sql_guard(compatibility: dict) -> None:
     if 'can_api_conversation_audit' not in permissions_source:
         raise AssertionError('the audit route must be granted to the workspace roles')
 
+    # P4-F07: the guard proves a statement is safe; semantics prove it is meaningful.
+    # Both run on the statement the *model* wrote (never on an inlined dataset
+    # definition, which is the administrator's SQL).
+    semantics_path = (
+        ROOT / 'services' / 'xp_prompt' / 'xp_prompt' / 'sql_semantics.py'
+    )
+    if not semantics_path.exists():
+        raise AssertionError('sql_semantics.py must exist')
+    semantics_source = semantics_path.read_text(encoding='utf-8')
+    for marker in (
+        'UNKNOWN_COLUMN',
+        'NON_NUMERIC_AGGREGATE',
+        'UNGROUPED_COLUMN',
+        'def validate',
+    ):
+        if marker not in semantics_source:
+            raise AssertionError(f'semantic validation lost {marker}')
+    if 'model_sql' not in guard_source:
+        raise AssertionError(
+            'the guard must expose the pre-inlining statement for semantic checks'
+        )
+    if '_check_semantics(' not in candidate:
+        raise AssertionError('a candidate must be checked for meaning, not only safety')
+    if 'sql_semantics.validate(' not in execution_source:
+        raise AssertionError(
+            'execution must re-validate semantics before running a statement'
+        )
+    if '"semantic_invalid": 422' not in service:
+        raise AssertionError('a semantic refusal must answer 422, not a server error')
+
 
 def check_ai_schema_slice(compatibility: dict) -> None:
     """Only Superset may decide which table names an AI prompt can mention.

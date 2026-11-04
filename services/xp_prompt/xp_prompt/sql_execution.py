@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from xp_prompt import sql_guard
+from xp_prompt import sql_guard, sql_semantics
 from xp_prompt.schema_slice import SchemaSlice
 
 
@@ -73,6 +73,14 @@ def validate(
         virtual_tables=schema.virtual_tables(database=database),
         rls_targets=schema.rls_targets(database=database),
     )
+    # Semantics are re-checked here for the same reason the guard is: a statement
+    # can arrive from a replay or a hand-written client, and "safe" is not the same
+    # as "meaningful against this schema" (P4-F07).
+    semantics = sql_semantics.validate(
+        guarded.model_sql or guarded.sql, schema=schema, dialect=resolved
+    )
+    if not semantics.ok:
+        raise sql_guard.SqlPolicyError(semantics.code, semantics.message())
     return {
         "sql": guarded.sql,
         "dialect": guarded.dialect,

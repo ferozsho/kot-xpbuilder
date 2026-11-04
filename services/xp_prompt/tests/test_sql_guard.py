@@ -462,6 +462,7 @@ class ResultShapeTest(unittest.TestCase):
                 "dialect",
                 "inlined",
                 "limit",
+                "model_sql",
                 "read_only",
                 "rls_applied",
                 "sql",

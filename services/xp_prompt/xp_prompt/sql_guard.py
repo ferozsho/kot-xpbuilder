@@ -192,6 +192,11 @@ class GuardResult:
     inlined: tuple[str, ...] = ()
     #: Datasets a mandatory row-level predicate was applied to, for audit.
     rls_applied: tuple[str, ...] = ()
+    #: The statement as the model wrote it, after name normalisation but before
+    #: dataset definitions were inlined. Semantic validation (P4-F07) uses this: the
+    #: inlined definition is the administrator's SQL, not the model's, and judging it
+    #: against the dataset allowlist would refuse every virtual dataset.
+    model_sql: str = ""
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -203,6 +208,7 @@ class GuardResult:
             "read_only": self.read_only,
             "inlined": list(self.inlined),
             "rls_applied": list(self.rls_applied),
+            "model_sql": self.model_sql,
         }
 
 
@@ -276,6 +282,7 @@ def check(
     _reject_system_schemas(tables)
     if allowed_tables is not None:
         _reject_unlisted_tables(tables, allowed_tables)
+    model_sql = statement.sql(dialect=normalised_dialect)
     scoped = _apply_dataset_scope(
         statement, definitions, _rls_definitions(rls_targets, normalised_dialect),
         normalised_dialect,
@@ -292,7 +299,25 @@ def check(
         read_only=True,
         inlined=inlined,
         rls_applied=scoped,
+        model_sql=model_sql,
     )
+
+
+def parse_query(text: str, dialect: str = "postgres") -> exp.Expression:
+    """Parse exactly one statement, for callers that need the AST (P4-F07).
+
+    Public so semantic validation can reuse the guard's parsing rules instead of
+    inventing a second, subtly different one.
+    """
+    normalised = (dialect or "").strip().lower()
+    if normalised not in SUPPORTED_DIALECTS:
+        raise SqlPolicyError(
+            "unsupported_dialect", f"unsupported SQL dialect: {dialect}"
+        )
+    statements = _parse((text or "").strip(), normalised)
+    if len(statements) != 1:
+        raise SqlPolicyError("multiple_statements", "exactly one statement is allowed")
+    return statements[0]
 
 
 def _parse(text: str, dialect: str) -> list[exp.Expression]:
