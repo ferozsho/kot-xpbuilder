@@ -37,10 +37,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from xp_prompt import outbox
 from xp_prompt.config import Settings
 from xp_prompt.db import connect
 
 logger = logging.getLogger(__name__)
+
+#: The outbox event this module produces and consumes (P9-F06).
+USAGE_AGGREGATE = "ai_provider_attempt"
+USAGE_EVENT = "usage.attempt"
 
 #: What started the call. A closed set, so a dashboard groups rather than splinters.
 MODULES: tuple[str, ...] = (
@@ -79,6 +84,11 @@ class UsageError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def usage_error(code: str, message: str) -> UsageError:
+    """Raise-by-value, so a consumer can fail with a stable code."""
+    return UsageError(code, message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,82 +288,50 @@ def recorder(
 
 
 def record(settings: Settings, context: Context, summary: Any) -> bool:
-    """Insert one attempt, or do nothing if this attempt is already recorded.
+    """Durably queue one attempt, then try to apply it immediately.
 
-    Returns ``True`` when a row was written. Idempotency is the database's job:
-    the partial unique index rejects a replay instead of the reader having to
-    deduplicate later.
+    The event is committed before anything is applied, so a write that fails is
+    retried by the outbox instead of disappearing (P9-F06). The inline delivery
+    afterwards is what keeps the admin numbers current without waiting for a
+    worker; if it fails, the event stays pending and the drain finishes the job.
+
+    Returns ``True`` when a ledger row was written by this call.
     """
     attempt = _attempt_from_summary(summary, context)
     with connect(settings) as connection, connection.cursor() as cursor:
         tenant_id = _tenant_id(cursor, context.tenant_key)
-        price = resolve_price(
-            settings, attempt.provider, attempt.model, tenant_key=context.tenant_key
+    price = resolve_price(
+        settings, attempt.provider, attempt.model, tenant_key=context.tenant_key
+    )
+    cost = estimate_cost_micros(
+        price,
+        input_tokens=attempt.input_tokens,
+        cached_input_tokens=attempt.cached_input_tokens,
+        output_tokens=attempt.output_tokens,
+        reasoning_tokens=attempt.reasoning_tokens,
+    )
+    payload = _event_payload(
+        tenant_id=tenant_id, context=context, attempt=attempt, price=price, cost=cost
+    )
+    try:
+        event_id = outbox.emit(
+            settings,
+            tenant_id=tenant_id,
+            aggregate_type=USAGE_AGGREGATE,
+            event_type=USAGE_EVENT,
+            payload=payload,
         )
-        cost = estimate_cost_micros(
-            price,
-            input_tokens=attempt.input_tokens,
-            cached_input_tokens=attempt.cached_input_tokens,
-            output_tokens=attempt.output_tokens,
-            reasoning_tokens=attempt.reasoning_tokens,
-        )
-        cursor.execute(
-            """
-            INSERT INTO ai_provider_attempt (
-                tenant_id, job_id, step_id, conversation_id, superset_user_id,
-                correlation_id, module, feature, provider, model, operation,
-                attempt_ordinal, fallback, provider_request_id, status,
-                error_class, error_detail, input_tokens, cached_input_tokens,
-                output_tokens, reasoning_tokens, total_tokens, usage_source,
-                duration_ms, price_version, currency, estimated_cost_micros,
-                price_source, started_at, completed_at
-            )
-            VALUES (
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-            )
-            ON CONFLICT (tenant_id, correlation_id, provider, attempt_ordinal)
-                WHERE correlation_id <> ''
-            DO NOTHING
-            RETURNING id
-            """,
-            (
-                tenant_id,
-                _uuid_or_none(context.job_id),
-                _uuid_or_none(context.step_id),
-                _uuid_or_none(context.conversation_id),
-                context.superset_user_id,
-                attempt.correlation_id,
-                context.module,
-                context.feature,
-                attempt.provider,
-                attempt.model,
-                attempt.operation,
-                attempt.attempt_ordinal,
-                bool(attempt.fallback),
-                attempt.provider_request_id,
-                attempt.status,
-                attempt.error_class,
-                attempt.error_detail,
-                attempt.input_tokens,
-                attempt.cached_input_tokens,
-                attempt.output_tokens,
-                attempt.reasoning_tokens,
-                attempt.total_tokens,
-                attempt.usage_source,
-                attempt.duration_ms,
-                price.version if price else None,
-                price.currency if price else "",
-                cost,
-                price.source if price else "",
-            ),
-        )
-        written = cursor.fetchone() is not None
+    except Exception:  # pragma: no cover - outbox unavailable
+        logger.warning("provider_usage_emit_failed", exc_info=True)
+        return False
+
+    outcome = outbox.deliver(
+        settings,
+        handlers={USAGE_EVENT: apply_event},
+        event_id=event_id,
+        limit=1,
+    )
+    written = outcome["delivered"] > 0
     logger.info(
         "provider_usage module=%s provider=%s model=%s status=%s tokens=%s "
         "cost_micros=%s recorded=%s",
@@ -366,6 +344,134 @@ def record(settings: Settings, context: Context, summary: Any) -> bool:
         written,
     )
     return written
+
+
+def apply_event(cursor: Any, payload: Any) -> bool:
+    """The idempotent consumer: turn one queued attempt into one ledger row.
+
+    ``ON CONFLICT DO NOTHING`` makes a redelivered event a no-op, which is the
+    contract the outbox promises. Returns ``False`` when the row already existed.
+    """
+    if not isinstance(payload, Mapping):
+        raise usage_error("invalid_event", "usage event payload must be an object")
+    try:
+        values = (
+            payload["tenant_id"],
+            payload.get("job_id"),
+            payload.get("step_id"),
+            payload.get("conversation_id"),
+            payload.get("superset_user_id"),
+            payload.get("correlation_id") or "",
+            payload.get("module") or "other",
+            payload.get("feature") or "",
+            payload["provider"],
+            payload["model"],
+            payload.get("operation") or "unknown",
+            int(payload.get("attempt_ordinal") or 1),
+            bool(payload.get("fallback")),
+            payload.get("provider_request_id"),
+            payload.get("status") or "succeeded",
+            payload.get("error_class"),
+            payload.get("error_detail") or "",
+            payload.get("input_tokens"),
+            payload.get("cached_input_tokens"),
+            payload.get("output_tokens"),
+            payload.get("reasoning_tokens"),
+            payload.get("total_tokens"),
+            payload.get("usage_source") or MISSING,
+            payload.get("duration_ms"),
+            payload.get("price_version"),
+            payload.get("currency") or "",
+            payload.get("estimated_cost_micros"),
+            payload.get("price_source") or "",
+        )
+    except KeyError as exc:
+        raise usage_error("invalid_event", f"usage event is missing {exc}") from exc
+    cursor.execute(
+        """
+        INSERT INTO ai_provider_attempt (
+            tenant_id, job_id, step_id, conversation_id, superset_user_id,
+            correlation_id, module, feature, provider, model, operation,
+            attempt_ordinal, fallback, provider_request_id, status,
+            error_class, error_detail, input_tokens, cached_input_tokens,
+            output_tokens, reasoning_tokens, total_tokens, usage_source,
+            duration_ms, price_version, currency, estimated_cost_micros,
+            price_source, started_at, completed_at
+        )
+        VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (tenant_id, correlation_id, provider, attempt_ordinal)
+            WHERE correlation_id <> ''
+        DO NOTHING
+        RETURNING id
+        """,
+        values,
+    )
+    return cursor.fetchone() is not None
+
+
+def drain(
+    settings: Settings,
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Apply whatever the inline path could not, e.g. after an outage.
+
+    Bounded on purpose: this is called from a periodic task and from an operator
+    action, and neither should be able to turn into an unbounded backfill.
+    """
+    outcome = outbox.deliver(
+        settings, handlers={USAGE_EVENT: apply_event}, limit=limit
+    )
+    logger.info(
+        "provider_usage_drain claimed=%d delivered=%d duplicates=%d failed=%d",
+        outcome["claimed"],
+        outcome["delivered"],
+        outcome["duplicates"],
+        outcome["failed"],
+    )
+    return outcome
+
+
+def tenant_identifier(settings: Settings, tenant_key: str) -> str:
+    """The tenant row id behind a tenant key, for callers that need to scope a read."""
+    with connect(settings) as connection, connection.cursor() as cursor:
+        return _tenant_id(cursor, tenant_key)
+
+
+def cost_of(settings: Settings, attempts: Iterable[Any]) -> tuple[int, int]:
+    """Total estimated cost in micros and total tokens for a set of attempts.
+
+    Used by the budget guard, which must charge what was actually spent rather
+    than the nominal claim. An attempt whose model has no published price charges
+    nothing here and is reported by reconciliation instead; inventing a number
+    would make the budget lie in the other direction.
+    """
+    micros = 0
+    tokens = 0
+    prices: dict[tuple[str, str], ModelPrice | None] = {}
+    for attempt in attempts or ():
+        usage = getattr(attempt, "usage", None)
+        tokens += int(getattr(usage, "total_tokens", 0) or 0)
+        key = (getattr(attempt, "provider", ""), getattr(attempt, "model", ""))
+        if key not in prices:
+            prices[key] = resolve_price(settings, key[0], key[1])
+        cost = estimate_cost_micros(
+            prices[key],
+            input_tokens=getattr(usage, "input_tokens", None),
+            cached_input_tokens=getattr(usage, "cached_input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+            reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+        )
+        micros += int(cost or 0)
+    return micros, tokens
 
 
 def resolve_price(
@@ -719,12 +825,68 @@ def reconcile(
         "inconsistent_totals": int(ledger.get("inconsistent_totals") or 0),
         "enabled_providers": int(enabled.get("providers") or 0),
         "price_gaps": [f"{row['provider']}/{row['model']}" for row in gaps],
+        "tenant_key": tenant_key,
     }
+    # Undelivered events are the difference between "the ledger is empty" and
+    # "the ledger has not caught up", so they belong in the same report (F06).
+    pending_events = outbox.pending(settings, tenant_id=tenant_id)
+    findings["outbox_pending"] = pending_events.get(outbox.PENDING, 0)
+    findings["outbox_dead_letter"] = pending_events.get(outbox.DEAD_LETTER, 0)
     findings["healthy"] = not any(
         findings[key]
-        for key in ("negative_tokens", "unfinished", "inconsistent_totals")
+        for key in (
+            "negative_tokens",
+            "unfinished",
+            "inconsistent_totals",
+            "outbox_dead_letter",
+        )
     )
     return findings
+
+
+def _event_payload(
+    *,
+    tenant_id: str,
+    context: Context,
+    attempt: Attempt,
+    price: ModelPrice | None,
+    cost: int | None,
+) -> dict[str, Any]:
+    """The whole ledger row, resolved now, so the consumer had no decisions left.
+
+    Pricing happens before the event is queued: a retried delivery must cost what
+    the attempt cost, not what the price list says by the time it is delivered.
+    """
+    return {
+        "tenant_id": tenant_id,
+        "job_id": _uuid_or_none(context.job_id),
+        "step_id": _uuid_or_none(context.step_id),
+        "conversation_id": _uuid_or_none(context.conversation_id),
+        "superset_user_id": context.superset_user_id,
+        "correlation_id": attempt.correlation_id,
+        "module": context.module,
+        "feature": context.feature,
+        "provider": attempt.provider,
+        "model": attempt.model,
+        "operation": attempt.operation,
+        "attempt_ordinal": attempt.attempt_ordinal,
+        "fallback": bool(attempt.fallback),
+        "provider_request_id": attempt.provider_request_id,
+        "status": attempt.status,
+        "error_class": attempt.error_class,
+        "error_detail": attempt.error_detail,
+        "input_tokens": attempt.input_tokens,
+        "cached_input_tokens": attempt.cached_input_tokens,
+        "output_tokens": attempt.output_tokens,
+        "reasoning_tokens": attempt.reasoning_tokens,
+        "total_tokens": attempt.total_tokens,
+        "usage_source": attempt.usage_source,
+        "duration_ms": attempt.duration_ms,
+        "price_version": price.version if price else None,
+        "currency": price.currency if price else "",
+        "estimated_cost_micros": cost,
+        "price_source": price.source if price else "",
+    }
 
 
 def _attempt_from_summary(summary: Any, context: Context) -> Attempt:

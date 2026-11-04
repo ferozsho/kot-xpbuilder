@@ -34,6 +34,7 @@ import logging
 import os
 import time
 from typing import Any
+from urllib.parse import quote
 
 from flask import g, request
 from flask_appbuilder import expose
@@ -567,6 +568,103 @@ class AIPromptView(BaseSupersetView):
         return self.json_response(body, status)
 
     # --- Dashboard plan and layout (P8-F01..F05) -------------------------
+
+    # --- Usage ledger, budgets and billing (P9-F08) ----------------------
+    #
+    # The browser never holds the service token, so every usage read and write
+    # goes through here. These routes are deliberately thin: the service owns the
+    # numbers, and a proxy that recomputed them would eventually disagree with the
+    # ledger it is reporting on.
+
+    @expose("/api/usage/summary/", methods=("GET",))
+    @has_access_api
+    def api_usage_summary(self) -> FlaskResponse:
+        status, body = call_xp_prompt(
+            "GET", f"/ai/usage/summary?{_usage_query()}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/usage/attempts/", methods=("GET",))
+    @has_access_api
+    def api_usage_attempts(self) -> FlaskResponse:
+        status, body = call_xp_prompt(
+            "GET", f"/ai/usage/attempts?{_usage_query()}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/usage/reconciliation/", methods=("GET",))
+    @has_access_api
+    def api_usage_reconciliation(self) -> FlaskResponse:
+        status, body = call_xp_prompt(
+            "GET", f"/ai/usage/reconciliation?{_usage_query()}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/usage/prices/", methods=("GET", "POST"))
+    @has_access_api
+    def api_usage_prices(self) -> FlaskResponse:
+        if request.method == "POST":
+            status, body = call_xp_prompt(
+                "POST", "/ai/usage/prices", payload=_body()
+            )
+            return self.json_response(body, status)
+        status, body = call_xp_prompt("GET", f"/ai/usage/prices?{_usage_query()}")
+        return self.json_response(body, status)
+
+    @expose("/api/usage/budgets/", methods=("GET", "POST"))
+    @has_access_api
+    def api_usage_budgets(self) -> FlaskResponse:
+        if request.method == "POST":
+            status, body = call_xp_prompt(
+                "POST", "/ai/usage/budgets", payload=_body()
+            )
+            return self.json_response(body, status)
+        status, body = call_xp_prompt("GET", f"/ai/usage/budgets?{_usage_query()}")
+        return self.json_response(body, status)
+
+    @expose("/api/usage/budgets/<budget_id>/", methods=("DELETE",))
+    @has_access_api
+    def api_usage_budget_delete(self, budget_id: str) -> FlaskResponse:
+        status, body = call_xp_prompt(
+            "DELETE", f"/ai/usage/budgets/{budget_id}?{_usage_query()}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/usage/outbox/", methods=("GET",))
+    @has_access_api
+    def api_usage_outbox(self) -> FlaskResponse:
+        status, body = call_xp_prompt("GET", f"/ai/usage/outbox?{_usage_query()}")
+        return self.json_response(body, status)
+
+    @expose("/api/usage/outbox/drain/", methods=("POST",))
+    @has_access_api
+    def api_usage_outbox_drain(self) -> FlaskResponse:
+        status, body = call_xp_prompt(
+            "POST", "/ai/usage/outbox/drain", payload=_body()
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/usage/billing/imports/", methods=("GET", "POST"))
+    @has_access_api
+    def api_usage_billing_imports(self) -> FlaskResponse:
+        if request.method == "POST":
+            status, body = call_xp_prompt(
+                "POST", "/ai/usage/billing/imports", payload=_body()
+            )
+            return self.json_response(body, status)
+        status, body = call_xp_prompt(
+            "GET", f"/ai/usage/billing/imports?{_usage_query()}"
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/usage/billing/imports/<import_id>/variance/", methods=("GET",))
+    @has_access_api
+    def api_usage_billing_variance(self, import_id: str) -> FlaskResponse:
+        status, body = call_xp_prompt(
+            "GET",
+            f"/ai/usage/billing/imports/{import_id}/variance?{_usage_query()}",
+        )
+        return self.json_response(body, status)
 
     @expose("/api/dashboards/plan/", methods=("POST",))
     @has_access_api
@@ -2382,6 +2480,24 @@ def _published_dashboard_blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
 #: The modes a publish may declare, and the ones that act on an existing dashboard.
 _PUBLISH_MODES = frozenset({MODE_CREATE, MODE_UPDATE, MODE_DUPLICATE})
 _PUBLISH_MODES_WITH_TARGET = frozenset({MODE_UPDATE, MODE_DUPLICATE})
+
+#: Query parameters a usage read understands. Anything else is dropped: a proxy
+#: that forwarded the whole query string would let a caller reach service
+#: parameters this view never intended to expose.
+_USAGE_PARAMS = ("group_by", "since", "module", "limit", "provider", "model")
+
+
+def _usage_query() -> str:
+    """The usage filters the browser may pass, as a query string."""
+    pairs: list[str] = []
+    for key in _USAGE_PARAMS:
+        for value in request.args.getlist(key):
+            if value:
+                pairs.append(f"{key}={quote(str(value), safe='')}")
+    tenant = request.args.get("tenant")
+    if tenant:
+        pairs.append(f"tenant={quote(str(tenant), safe='')}")
+    return "&".join(pairs)
 
 
 def _publish_intent(

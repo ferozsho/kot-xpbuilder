@@ -63,10 +63,27 @@ PERMISSIONS = (
     "can_api_dashboard_preview",
     "can_api_dashboard_publish",
 )
+
+#: Usage data is cross-user spend, so these are granted to Admin only. Handing a
+#: Gamma user a view of every colleague's token consumption would be a privacy
+#: defect dressed up as a dashboard.
+ADMIN_ONLY_PERMISSIONS: tuple[str, ...] = (
+    "can_api_usage_summary",
+    "can_api_usage_attempts",
+    "can_api_usage_reconciliation",
+    "can_api_usage_prices",
+    "can_api_usage_budgets",
+    "can_api_usage_budget_delete",
+    "can_api_usage_outbox",
+    "can_api_usage_outbox_drain",
+    "can_api_usage_billing_imports",
+    "can_api_usage_billing_variance",
+)
 VIEW_MENU = "AIPrompt"
 
 #: Every signed-in role may chat; ownership is enforced per conversation.
 ROLES = ("Admin", "Alpha", "Gamma")
+ADMIN_ROLE = "Admin"
 
 
 def role_has_permission(role_id: int, permission_view_id: int) -> bool:
@@ -108,6 +125,26 @@ def main() -> None:
                     continue
                 sm.add_permission_role(role, pvm)
                 print(f"role {name}: granted")
+
+        for permission in ADMIN_ONLY_PERMISSIONS:
+            pvm = sm.find_permission_view_menu(permission, VIEW_MENU)
+            if pvm is None:
+                sm.add_permission_view_menu(permission, VIEW_MENU)
+                pvm = sm.find_permission_view_menu(permission, VIEW_MENU)
+                print(f"created permission {permission} on {VIEW_MENU}")
+            if pvm is None:
+                raise SystemExit(
+                    f"could not create {permission} on {VIEW_MENU} — check migrations"
+                )
+            role = sm.find_role(ADMIN_ROLE)
+            if role is None:
+                print(f"role {ADMIN_ROLE}: not found, skipped")
+                continue
+            if role_has_permission(int(role.id), int(pvm.id)):
+                print(f"permission {permission}: {ADMIN_ROLE} already granted")
+                continue
+            sm.add_permission_role(role, pvm)
+            print(f"permission {permission}: {ADMIN_ROLE} granted")
 
 
 if __name__ == "__main__":

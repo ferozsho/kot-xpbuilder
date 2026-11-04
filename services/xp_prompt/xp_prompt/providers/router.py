@@ -70,6 +70,7 @@ class ProviderRouter:
         jitter: Callable[[], float] = random.random,
         on_attempt: AttemptCallback | None = None,
         on_summary: SummaryCallback | None = None,
+        guard: object | None = None,
     ) -> None:
         if fallback is not None and fallback.name == primary.name:
             raise ValueError("fallback provider must differ from primary provider")
@@ -80,11 +81,47 @@ class ProviderRouter:
         self._jitter = jitter
         self._on_attempt = on_attempt
         self._on_summary = on_summary
+        self._guard = guard
 
     def generate(self, request: ProviderRequest) -> RoutedResponse:
         correlation_id = request.correlation_id or uuid.uuid4().hex
         request = replace(request, correlation_id=correlation_id)
         attempts: list[AttemptSummary] = []
+        # The budget claims headroom before the first token is spent. Settling in
+        # ``finally`` matters as much as claiming: a call that fails must give its
+        # claim back, or an outage would slowly fill every budget (P9-F09).
+        if self._guard is not None:
+            self._open_guard(request)
+        try:
+            return self._route(request, attempts, correlation_id)
+        finally:
+            if self._guard is not None:
+                self._guard.close(attempts)
+
+    def _open_guard(self, request: ProviderRequest) -> None:
+        """Turn a budget refusal into the same error shape callers already handle.
+
+        A guard that raised its own exception type would surface as a 500 in every
+        caller; a non-retryable ``ProviderError`` is a refusal they already know
+        how to report to a user.
+        """
+        try:
+            self._guard.open()
+        except Exception as exc:  # pylint: disable=broad-except
+            code = getattr(exc, "code", "budget_blocked")
+            raise ProviderError(
+                provider=self.primary.name,
+                code=code,
+                message=str(exc) or "the AI budget has no headroom left",
+                retryable=False,
+            ) from exc
+
+    def _route(
+        self,
+        request: ProviderRequest,
+        attempts: list[AttemptSummary],
+        correlation_id: str,
+    ) -> RoutedResponse:
         try:
             response = self._attempt(self.primary, request, attempts)
         except ProviderError as error:

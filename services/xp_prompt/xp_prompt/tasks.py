@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from xp_prompt import jobs
+from xp_prompt import jobs, usage
 from xp_prompt.celery_app import app
 from xp_prompt.config import Settings
 
@@ -62,4 +62,27 @@ def recover_jobs() -> dict[str, int]:
     for job_id in dict.fromkeys([*requeued, *pending]):
         run_job.delay(job_id)
     return {"expired": len(expired), "enqueued": len(pending), "requeued": len(requeued)}
+
+
+@app.task(name="xp_prompt.drain_usage_outbox")
+def drain_usage_outbox(limit: int = 25) -> dict[str, Any]:
+    """Deliver usage events the request path could not apply (P9-F06).
+
+    Recording is attempted inline so the admin totals are current, but anything
+    that failed then is still in the outbox. This task is the retry that makes
+    "no lost records" true rather than hoped for.
+
+    Safe to run on a schedule or by hand:
+    ``celery -A xp_prompt.celery_app:app call xp_prompt.drain_usage_outbox``.
+    """
+    settings = Settings.from_env()
+    outcome = usage.drain(settings, limit=limit)
+    logger.info(
+        "usage_outbox_drained claimed=%d delivered=%d duplicates=%d failed=%d",
+        outcome["claimed"],
+        outcome["delivered"],
+        outcome["duplicates"],
+        outcome["failed"],
+    )
+    return outcome
 

@@ -741,13 +741,16 @@ def resolve_router(
         (item for item in providers[1:] if item.name != providers[0].name), None
     )
     on_summary = None
+    on_guard = None
     if context is not None:
         on_summary = _usage_recorder(settings, context, tenant_key)
+        on_guard = _budget_guard(settings, context, tenant_key)
     return ProviderRouter(
         primary=providers[0],
         fallback=fallback,
         on_attempt=_health_reporter(settings, provider_ids),
         on_summary=on_summary,
+        guard=on_guard,
     )
 
 
@@ -767,6 +770,23 @@ def _usage_recorder(
     if context.tenant_key != tenant_key:
         context = replace(context, tenant_key=tenant_key)
     return usage.recorder(settings, context)
+
+
+def _budget_guard(
+    settings: Settings,
+    context: Any,
+    tenant_key: str,
+) -> Any:
+    """Reserve budget headroom before a call, and settle it afterwards (P9-F09).
+
+    Installed here for the same reason as the usage recorder: the router is the
+    one place every AI call passes through, so a module cannot forget to check.
+    """
+    from xp_prompt import budgets
+
+    if context.tenant_key != tenant_key:
+        context = replace(context, tenant_key=tenant_key)
+    return budgets.guard(settings, context)
 
 
 def _health_reporter(

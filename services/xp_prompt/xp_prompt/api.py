@@ -32,6 +32,8 @@ from xp_prompt import (
     __version__,
     artifacts,
     audit,
+    billing,
+    budgets,
     chart_catalog,
     chart_draft,
     chart_profile,
@@ -49,6 +51,7 @@ from xp_prompt import (
     dataset_spec,
     failures,
     jobs,
+    outbox,
     patterns,
     repair,
     responses,
@@ -126,6 +129,14 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _chat_error_status(code: str) -> int:
+    """A chat failure's status: a refusal is not the same as an outage."""
+    return {
+        "no_provider": 503,
+        "budget_exhausted": 429,
+    }.get(code, 502)
 
 
 def _parse_timestamp(value: Any) -> Any:
@@ -456,8 +467,15 @@ def create_app(settings: Settings | None = None) -> Flask:
         except conversations.ConversationInputError as exc:
             return _admin_error(str(exc), 400)
         except chat.ChatError as exc:
-            status = 503 if exc.code == "no_provider" else 502
-            return _admin_error(f"AI provider failed ({exc.code})", status)
+            # A budget refusal is a deliberate stop, not an upstream fault, so it
+            # answers 429 with the reason instead of a generic 502 (P9-F09).
+            status = _chat_error_status(exc.code)
+            message = (
+                str(exc)
+                if exc.code == "budget_exhausted"
+                else f"AI provider failed ({exc.code})"
+            )
+            return _admin_error(message, status)
         except Exception as exc:  # pragma: no cover - database failure path
             return _admin_error(f"Could not complete the turn ({_error_class(exc)})", 503)
         return (
@@ -2342,11 +2360,214 @@ def create_app(settings: Settings | None = None) -> Flask:
             )
         return jsonify(stored.to_public_dict()), 201
 
+    @app.get("/ai/usage/outbox")
+    @require_admin_token
+    def usage_outbox_status():
+        """How much usage work is waiting, and what gave up (P9-F06)."""
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            tenant_id = usage.tenant_identifier(resolved_settings, tenant_key)
+            counts = outbox.pending(resolved_settings, tenant_id=tenant_id)
+            failures = outbox.dead_letters(
+                resolved_settings, tenant_id=tenant_id, limit=20
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not read outbox ({_error_class(exc)})", 503)
+        return (
+            jsonify(
+                {
+                    "tenant": tenant_key,
+                    "counts": counts,
+                    "dead_letters": [event.to_public_dict() for event in failures],
+                    "count": len(failures),
+                }
+            ),
+            200,
+        )
+
+    @app.post("/ai/usage/outbox/drain")
+    @require_admin_token
+    def usage_outbox_drain():
+        """Apply waiting usage events now, instead of waiting for the worker."""
+        payload = request.get_json(silent=True) or {}
+        try:
+            limit = int(payload.get("limit") or outbox.DEFAULT_BATCH)
+        except (TypeError, ValueError):
+            return _admin_error("limit must be an integer", 400)
+        try:
+            outcome = usage.drain(resolved_settings, limit=limit)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not drain outbox ({_error_class(exc)})", 503)
+        return jsonify(outcome), 200
+
+    @app.post("/ai/usage/outbox/<event_id>/requeue")
+    @require_admin_token
+    def usage_outbox_requeue(event_id: str):
+        """Requeue a dead-lettered event once the cause has been fixed."""
+        if not _is_uuid(event_id):
+            return _admin_error("Event not found", 404)
+        try:
+            event = outbox.requeue(resolved_settings, event_id)
+        except outbox.OutboxError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "warning"}
+            ), 409
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not requeue ({_error_class(exc)})", 503)
+        return jsonify(event.to_public_dict()), 200
+
+    # --- Budgets and alerts (P9-F09) -------------------------------------
+
+    @app.get("/ai/usage/budgets")
+    @require_admin_token
+    def usage_budget_list():
+        """Every budget with its live window, so the admin sees headroom."""
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            body = budgets.status(resolved_settings, tenant_key=tenant_key)
+        except budgets.BudgetError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not read budgets ({_error_class(exc)})", 503)
+        return jsonify(body), 200
+
+    @app.post("/ai/usage/budgets")
+    @require_admin_token
+    def usage_budget_define():
+        """Create or replace one budget; the scope decides what it constrains."""
+        payload = request.get_json(silent=True) or {}
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        try:
+            budget = budgets.define(
+                resolved_settings,
+                tenant_key=tenant_key,
+                scope=str(payload.get("scope") or ""),
+                period=str(payload.get("period") or ""),
+                scope_ref=str(payload.get("scope_ref") or ""),
+                cost_micros_limit=_optional_int(payload.get("cost_micros_limit")),
+                tokens_limit=_optional_int(payload.get("tokens_limit")),
+                warn_percent=int(
+                    payload.get("warn_percent") or budgets.DEFAULT_WARN_PERCENT
+                ),
+                hard_stop=bool(payload.get("hard_stop", True)),
+                enabled=bool(payload.get("enabled", True)),
+                currency=str(payload.get("currency") or ""),
+            )
+        except budgets.BudgetError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except (TypeError, ValueError):
+            return _admin_error("budget fields must be integers", 400)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not save budget ({_error_class(exc)})", 503)
+        return jsonify(budget.to_public_dict()), 201
+
+    @app.delete("/ai/usage/budgets/<budget_id>")
+    @require_admin_token
+    def usage_budget_delete(budget_id: str):
+        if not _is_uuid(budget_id):
+            return _admin_error("Budget not found", 404)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            removed = budgets.delete_budget(
+                resolved_settings, budget_id, tenant_key=tenant_key
+            )
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(f"Could not delete budget ({_error_class(exc)})", 503)
+        if not removed:
+            return _admin_error("Budget not found", 404)
+        return jsonify({"deleted": budget_id}), 200
+
+    # --- Provider billing imports (P9-F10) -------------------------------
+
+    @app.get("/ai/usage/billing/imports")
+    @require_admin_token
+    def usage_billing_imports():
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            rows = billing.list_imports(resolved_settings, tenant_key=tenant_key)
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not read billing imports ({_error_class(exc)})", 503
+            )
+        return (
+            jsonify(
+                {"count": len(rows), "result": [row.to_public_dict() for row in rows]}
+            ),
+            200,
+        )
+
+    @app.post("/ai/usage/billing/imports")
+    @require_admin_token
+    def usage_billing_import():
+        """Store one provider billing export and match it to recorded attempts.
+
+        The estimate on each attempt is left untouched: an invoice is evidence, not
+        a correction, and overwriting the history would make the variance
+        impossible to see (P9-F10).
+        """
+        payload = request.get_json(silent=True) or {}
+        tenant_key = str(payload.get("tenant") or registry.DEFAULT_TENANT_KEY)
+        period_start = _parse_timestamp(payload.get("period_start"))
+        period_end = _parse_timestamp(payload.get("period_end"))
+        if period_start is None or period_end is None:
+            return _admin_error(
+                "period_start and period_end must be ISO timestamps", 400
+            )
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            return _admin_error("rows must be a list", 400)
+        try:
+            record, replayed = billing.record_import(
+                resolved_settings,
+                tenant_key=tenant_key,
+                provider=str(payload.get("provider") or ""),
+                period_start=period_start,
+                period_end=period_end,
+                currency=str(payload.get("currency") or ""),
+                source=str(payload.get("source") or ""),
+                rows=rows,
+            )
+        except billing.BillingError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 422
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not import billing ({_error_class(exc)})", 503
+            )
+        body = dict(record.to_public_dict())
+        body["replayed"] = replayed
+        return jsonify(body), 200 if replayed else 201
+
+    @app.get("/ai/usage/billing/imports/<import_id>/variance")
+    @require_admin_token
+    def usage_billing_variance(import_id: str):
+        """Estimated against billed, with the unmatched counts that explain it."""
+        if not _is_uuid(import_id):
+            return _admin_error("Billing import not found", 404)
+        tenant_key = request.args.get("tenant") or registry.DEFAULT_TENANT_KEY
+        try:
+            body = billing.variance(
+                resolved_settings, import_id, tenant_key=tenant_key
+            )
+        except billing.BillingError as exc:
+            return jsonify(
+                {"message": str(exc), "code": exc.code, "severity": "danger"}
+            ), 404
+        except Exception as exc:  # pragma: no cover - database failure path
+            return _admin_error(
+                f"Could not compare billing ({_error_class(exc)})", 503
+            )
+        return jsonify(body), 200
+
     @app.get("/ai/providers/types")
     @require_admin_token
     def provider_types():
         return jsonify({"result": registry.provider_types_payload()}), 200
-
     @app.get("/ai/providers")
     @require_admin_token
     def provider_list():

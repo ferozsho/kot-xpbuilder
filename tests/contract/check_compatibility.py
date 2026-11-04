@@ -1520,6 +1520,50 @@ def check_ai_usage_ledger(compatibility: dict) -> None:
         raise AssertionError('resolve_router must accept the usage context')
     if 'usage.recorder(' not in registry_source:
         raise AssertionError('resolve_router must install the usage recorder')
+    if 'budgets.guard(' not in registry_source:
+        raise AssertionError('resolve_router must install the budget guard')
+
+    # The browser cannot hold the service token, so every usage surface needs a
+    # proxy route — and a route without a granted permission is a silent 403.
+    proxy_view = (
+        ROOT / 'superset' / 'superset' / 'views' / 'ai_prompt' / 'views.py'
+    ).read_text(encoding='utf-8')
+    for route in (
+        '/api/usage/summary/',
+        '/api/usage/attempts/',
+        '/api/usage/reconciliation/',
+        '/api/usage/prices/',
+        '/api/usage/budgets/',
+        '/api/usage/outbox/',
+        '/api/usage/billing/imports/',
+    ):
+        if route not in proxy_view:
+            raise AssertionError(f'the usage proxy must expose {route}')
+    if 'def _usage_query(' not in proxy_view:
+        raise AssertionError('the usage proxy must forward only known filters')
+
+    permission_script = (
+        ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'
+    ).read_text(encoding='utf-8')
+    for permission in (
+        'can_api_usage_summary',
+        'can_api_usage_budgets',
+        'can_api_usage_billing_imports',
+    ):
+        if permission not in permission_script:
+            raise AssertionError(f'{permission} must be granted')
+    if 'ADMIN_ONLY_PERMISSIONS' not in permission_script:
+        raise AssertionError(
+            'usage permissions must be Admin-only: they expose cross-user spend'
+        )
+
+    routes_source = (
+        ROOT / 'superset' / 'superset-frontend' / 'src' / 'views' / 'routes.tsx'
+    ).read_text(encoding='utf-8')
+    if '/aiusage/' not in routes_source:
+        raise AssertionError('the SPA must route the AI usage dashboard')
+    if 'features/aiUsage/AIUsagePage' not in routes_source:
+        raise AssertionError('the usage route must load the usage page')
 
 
 def main():

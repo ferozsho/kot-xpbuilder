@@ -279,65 +279,128 @@ class MappingTests(unittest.TestCase):
 
 
 class RecordTests(unittest.TestCase):
-    """One row per attempt, and a replay cannot add a second (F01)."""
+    """One row per attempt, and a replay cannot add a second (F01).
 
-    def record(self, rows, summary=None):
+    Recording now goes through the outbox (F06), so these tests drive the two
+    halves separately: the event that is queued, and the consumer that applies it.
+    """
+
+    def summary(self) -> AttemptSummary:
+        return AttemptSummary(
+            provider="google",
+            model="gemini-2.5-flash",
+            outcome="succeeded",
+            correlation_id="abc123",
+            operation="chat_turn",
+            usage=TokenUsage(1_000_000, 0, 0, None, 1_000_000, "reported"),
+        )
+
+    def record(self, rows):
         cursor = _FakeCursor(rows)
-        with mock.patch.object(
-            usage, "connect", return_value=_FakeConnection(cursor)
+        with (
+            mock.patch.object(
+                usage, "connect", return_value=_FakeConnection(cursor)
+            ),
+            mock.patch.object(usage.outbox, "emit", return_value="event-1") as emit,
+            mock.patch.object(
+                usage.outbox,
+                "deliver",
+                return_value={
+                    "claimed": 1,
+                    "delivered": 1,
+                    "duplicates": 0,
+                    "failed": 0,
+                },
+            ) as deliver,
         ):
             written = usage.record(
                 settings(),
                 usage.Context(tenant_key="default", module="chat"),
-                summary
-                or AttemptSummary(
-                    provider="google",
-                    model="gemini-2.5-flash",
-                    outcome="succeeded",
-                    correlation_id="abc123",
-                    operation="chat_turn",
-                    usage=TokenUsage(1_000_000, 0, 0, None, 1_000_000, "reported"),
-                ),
+                self.summary(),
             )
-        return written, cursor
+        return written, cursor, emit, deliver
 
-    def test_recording_is_idempotent_by_constraint(self) -> None:
-        written, cursor = self.record([{"id": TENANT_ID}, price_row(), {"id": "row"}])
+    def test_an_attempt_is_queued_before_it_is_applied(self) -> None:
+        written, _, emit, deliver = self.record([{"id": TENANT_ID}])
 
         self.assertTrue(written)
-        statement = cursor.statements[-1]
+        emit.assert_called_once()
+        deliver.assert_called_once()
+
+    def test_the_queued_event_carries_the_priced_row(self) -> None:
+        _, cursor, emit, _ = self.record([{"id": TENANT_ID}])
+
+        payload = emit.call_args.kwargs["payload"]
+        self.assertEqual(payload["tenant_id"], TENANT_ID)
+        self.assertEqual(payload["provider"], "google")
+        self.assertEqual(payload["usage_source"], "reported")
+        # Pricing is resolved before queueing, so a retried delivery cannot
+        # reprice the attempt.
+        self.assertIn("estimated_cost_micros", payload)
+        self.assertIn("price_version", payload)
+        del cursor
+
+    def test_the_consumer_is_idempotent_by_constraint(self) -> None:
+        cursor = _FakeCursor([{"id": "row"}])
+        written = usage.apply_event(cursor, self.payload())
+
+        self.assertTrue(written)
+        statement = cursor.statements[0]
         self.assertIn("INSERT INTO ai_provider_attempt", statement)
         self.assertIn("ON CONFLICT", statement)
         self.assertIn("DO NOTHING", statement)
         self.assertIn("correlation_id <> ''", statement)
 
-    def test_a_replay_reports_that_nothing_was_written(self) -> None:
-        written, _ = self.record([{"id": TENANT_ID}, price_row(), None])
-        self.assertFalse(written)
+    def test_a_redelivered_event_writes_no_second_row(self) -> None:
+        cursor = _FakeCursor([None])
+        self.assertFalse(usage.apply_event(cursor, self.payload()))
 
-    def test_the_price_version_is_snapshotted_on_the_row(self) -> None:
-        _, cursor = self.record([{"id": TENANT_ID}, price_row(), {"id": "row"}])
-        params = cursor.params[-1]
-        # The version and the currency travel with the attempt, so a later price
-        # edit cannot change what this call cost (F05).
-        self.assertIn(3, params)
-        self.assertIn("usd", params)
+    def test_an_incomplete_event_is_refused_rather_than_half_written(self) -> None:
+        cursor = _FakeCursor([{"id": "row"}])
+        with self.assertRaises(usage.UsageError) as caught:
+            usage.apply_event(cursor, {"tenant_id": TENANT_ID})
+        self.assertEqual(caught.exception.code, "invalid_event")
+        self.assertEqual(cursor.statements, [])
 
     def test_an_unpriced_model_records_no_cost(self) -> None:
-        _, cursor = self.record([{"id": TENANT_ID}, None, {"id": "row"}])
-        params = cursor.params[-1]
-        self.assertIn(None, params)  # price_version
-        cost_index = params.index(None)
-        self.assertIsNone(params[cost_index])
+        payload = self.payload()
+        del payload["estimated_cost_micros"]
+        cursor = _FakeCursor([{"id": "row"}])
+        usage.apply_event(cursor, payload)
+        # A missing cost is written as NULL, never as 0.
+        self.assertIsNone(cursor.params[0][26])
 
     def test_an_unprovisioned_tenant_is_refused(self) -> None:
         cursor = _FakeCursor([None])
-        with mock.patch.object(
-            usage, "connect", return_value=_FakeConnection(cursor)
-        ), self.assertRaises(usage.UsageError):
+        with (
+            mock.patch.object(
+                usage, "connect", return_value=_FakeConnection(cursor)
+            ),
+            self.assertRaises(usage.UsageError),
+        ):
             usage.record(
-                settings(), usage.Context(tenant_key="ghost"), _summary()
+                settings(), usage.Context(tenant_key="ghost"), self.summary()
             )
+
+    def payload(self, **overrides) -> dict:
+        body = {
+            "tenant_id": TENANT_ID,
+            "correlation_id": "abc123",
+            "module": "chat",
+            "provider": "google",
+            "model": "gemini-2.5-flash",
+            "operation": "chat_turn",
+            "attempt_ordinal": 1,
+            "status": "succeeded",
+            "usage_source": "reported",
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "estimated_cost_micros": 1_000_000,
+            "price_version": 3,
+            "currency": "usd",
+        }
+        body.update(overrides)
+        return body
 
 
 class AggregateTests(unittest.TestCase):
@@ -401,12 +464,18 @@ class PriceValidationTests(unittest.TestCase):
 class ReconciliationTests(unittest.TestCase):
     """The ledger can say whether its own totals are trustworthy (F10)."""
 
-    def reconcile(self, ledger: dict, gaps: list | None = None):
+    def reconcile(self, ledger: dict, gaps: list | None = None, outbox_counts=None):
         cursor = _FakeCursor(
             [{"id": TENANT_ID}, ledger, {"providers": 1}, *(gaps or [])]
         )
-        with mock.patch.object(
-            usage, "connect", return_value=_FakeConnection(cursor)
+        counts = outbox_counts or {
+            "pending": 0, "delivering": 0, "delivered": 0, "dead_letter": 0
+        }
+        with (
+            mock.patch.object(
+                usage, "connect", return_value=_FakeConnection(cursor)
+            ),
+            mock.patch.object(usage.outbox, "pending", return_value=counts),
         ):
             return usage.reconcile(settings())
 
@@ -433,11 +502,31 @@ class ReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(body["price_gaps"], ["google/gemini-2.5-flash"])
 
+    def test_a_dead_lettered_event_makes_the_ledger_unhealthy(self) -> None:
+        body = self.reconcile(
+            {"attempts": 1},
+            outbox_counts={
+                "pending": 0,
+                "delivering": 0,
+                "delivered": 4,
+                "dead_letter": 1,
+            },
+        )
+        self.assertFalse(body["healthy"])
+        self.assertEqual(body["outbox_dead_letter"], 1)
 
-def _summary() -> AttemptSummary:
-    return AttemptSummary(
-        provider="google", model="gemini-2.5-flash", outcome="succeeded"
-    )
+    def test_undelivered_events_are_visible_without_failing_health(self) -> None:
+        body = self.reconcile(
+            {"attempts": 1},
+            outbox_counts={
+                "pending": 3,
+                "delivering": 0,
+                "delivered": 0,
+                "dead_letter": 0,
+            },
+        )
+        self.assertEqual(body["outbox_pending"], 3)
+        self.assertTrue(body["healthy"])
 
 
 if __name__ == "__main__":

@@ -167,6 +167,13 @@ const AIPromptWorkspace = lazy(
     ),
 );
 
+const AIUsageDashboard = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "AIUsageDashboard" */ 'src/features/aiUsage/AIUsagePage'
+    ),
+);
+
 const TaskList = lazy(
   () => import(/* webpackChunkName: "TaskList" */ 'src/pages/TaskList'),
 );
@@ -368,6 +375,14 @@ export const routes: Routes = [
   {
     path: '/aiprompt/list/',
     Component: AIPromptWorkspace,
+  },
+  {
+    path: '/aiusage/',
+    Component: AIUsageDashboard,
+  },
+  {
+    path: '/aiusage/list/',
+    Component: AIUsageDashboard,
   },
   {
     path: '/tasks/list/',

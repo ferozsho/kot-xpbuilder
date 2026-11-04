@@ -200,7 +200,14 @@ def run_turn(
                 "correlation_id": request.correlation_id,
             },
         )
-        raise ChatError(exc.code, "The AI provider could not complete the request") from exc
+        # A budget refusal is the deployment's own decision, so its sentence is
+        # the useful one; every other provider failure stays generic.
+        raise ChatError(
+            exc.code,
+            str(exc)
+            if exc.code == "budget_exhausted"
+            else "The AI provider could not complete the request",
+        ) from exc
 
     scored_correlation = routed.attempts[0].correlation_id if routed.attempts else None
     correlation_id = scored_correlation or request.correlation_id or ""
