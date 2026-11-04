@@ -165,7 +165,11 @@ def candidate(candidate_id: str, viz: str = "echarts_timeseries_line") -> chart_
         viz_type=viz,
         family="trend",
         title=f"title {candidate_id}",
-        form_data={"viz_type": viz, "x_axis": "d", "metrics": ["m"]},
+        form_data={
+            "viz_type": viz,
+            "x_axis": "d",
+            "metrics": [chart_rules.adhoc_metric("m")],
+        },
         rationale="because",
         score=0.5,
     )

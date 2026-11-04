@@ -53,6 +53,11 @@ PERMISSIONS = (
     "can_api_dataset_draft_create",
     "can_api_dataset_draft_save",
     "can_api_dataset_draft_scrap",
+    "can_api_charts_recommend",
+    "can_api_chart_draft_create",
+    "can_api_chart_preview",
+    "can_api_chart_draft_save",
+    "can_api_chart_draft_scrap",
 )
 VIEW_MENU = "AIPrompt"
 

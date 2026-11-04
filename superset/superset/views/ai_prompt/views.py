@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import time
 from typing import Any
 
@@ -43,7 +44,7 @@ from superset import db, security_manager
 from superset.exceptions import SupersetSecurityException
 from superset.models.core import Database
 from superset.superset_typing import FlaskResponse
-from superset.utils.json import loads as json_loads
+from superset.utils.json import dumps as json_dumps, loads as json_loads
 from superset.views.ai_provider.views import call_xp_prompt
 from superset.views.base import BaseSupersetView
 
@@ -327,6 +328,233 @@ class AIPromptView(BaseSupersetView):
         payload["superset_user_id"] = owner
         status, body = call_xp_prompt(
             "POST", f"/ai/sql/patterns/{pattern_id}/{action}", payload=payload
+        )
+        return self.json_response(body, status)
+
+    # --- Chart recommendation, preview and save (P7-F06/F07/F08/F10) -----
+
+    @expose("/api/charts/recommend/", methods=("POST",))
+    @has_access_api
+    def api_charts_recommend(self) -> FlaskResponse:
+        """Recommend visualizations for a dataset the caller may already use.
+
+        The proxy supplies what this deployment can render and what the columns look
+        like; the service owns the rules and the control contracts. Nothing here decides
+        what is appropriate — it only measures and authorizes.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        dataset, failure = _chart_dataset(payload.get("dataset_id"))
+        if failure is not None:
+            return self.json_response(*failure)
+        measured = _chart_measured(dataset) if payload.get("measure", True) else {}
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/charts/recommend",
+            payload={
+                "superset_user_id": owner,
+                **_chart_catalog_payload(),
+                "columns": _chart_columns(dataset),
+                "measured": measured.get("columns"),
+                "row_count": measured.get("row_count"),
+                "question": str(payload.get("question") or ""),
+                "rank_with_model": bool(payload.get("rank_with_model")),
+                "include_profile": True,
+            },
+        )
+        if status != 200:
+            return self.json_response(body, status)
+        body["dataset"] = _chart_dataset_summary(dataset)
+        body["measured"] = bool(measured)
+        return self.json_response(body, 200)
+
+    @expose("/api/charts/drafts/", methods=("POST",))
+    @has_access_api
+    def api_chart_draft_create(self) -> FlaskResponse:
+        """Turn one chosen candidate into a validated draft (P7-F05)."""
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        dataset, failure = _chart_dataset(payload.get("dataset_id"))
+        if failure is not None:
+            return self.json_response(*failure)
+        candidate = (
+            payload.get("candidate")
+            if isinstance(payload.get("candidate"), dict)
+            else {}
+        )
+        status, body = call_xp_prompt(
+            "POST",
+            "/ai/charts/drafts",
+            payload={
+                "superset_user_id": owner,
+                **_chart_catalog_payload(),
+                "viz_type": str(candidate.get("viz_type") or ""),
+                "title": str(payload.get("title") or candidate.get("title") or ""),
+                "dataset_id": int(dataset.id),
+                "dataset_name": str(dataset.table_name or ""),
+                "database": str(getattr(dataset.database, "database_name", "") or ""),
+                "form_data": candidate.get("form_data") or {},
+                "rationale": str(candidate.get("rationale") or ""),
+                "candidate_id": str(candidate.get("id") or ""),
+                "ranking_source": str(payload.get("ranking_source") or ""),
+                "conversation_id": str(payload.get("conversation_id") or ""),
+                "correlation_id": str(payload.get("correlation_id") or ""),
+                "idempotency_key": str(payload.get("idempotency_key") or ""),
+            },
+        )
+        return self.json_response(body, status)
+
+    @expose("/api/charts/preview/", methods=("POST",))
+    @has_access_api
+    def api_chart_preview(self) -> FlaskResponse:
+        """Render a draft's data through Superset, in the caller's own context (P7-F06).
+
+        This is the real query path — ``QueryContextFactory`` plus ``ChartDataCommand``
+        — not a mock: the numbers a user sees are the numbers their permissions allow.
+        The preview blocks (masking, row caps) are still the service's decision.
+        """
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        draft_id = str(payload.get("draft_id") or "").strip()
+        if not draft_id:
+            return self.json_response(
+                {"message": _("draft_id is required"), "severity": "danger"}, 400
+            )
+        status, body = call_xp_prompt(
+            "GET", f"/ai/charts/drafts/{draft_id}?superset_user_id={owner}"
+        )
+        if status != 200:
+            return self.json_response(body, status)
+        draft = body.get("draft") or {}
+        dataset, failure = _chart_dataset(draft.get("dataset_id"))
+        if failure is not None:
+            return self.json_response(*failure)
+
+        frame, failure = _chart_frame(dataset, draft)
+        if failure is not None:
+            hint, kind = _classify_failure(owner, "", failure)
+            return self.json_response(
+                {
+                    "message": hint,
+                    "severity": "danger",
+                    "code": "chart_render_failed",
+                    "failure": kind,
+                },
+                422,
+            )
+        preview = frame.head(MAX_PREVIEW_ROWS)
+        result_status, verdict = call_xp_prompt(
+            "POST",
+            "/ai/sql/result",
+            payload={
+                "superset_user_id": owner,
+                "columns": [str(column) for column in preview.columns],
+                "rows": [
+                    list(row) for row in preview.itertuples(index=False, name=None)
+                ],
+                "row_count": int(len(frame)),
+                "truncated": len(frame) > len(preview),
+                "intent": "query",
+                "max_rows": MAX_PREVIEW_ROWS,
+            },
+        )
+        if result_status != 200:
+            return self.json_response(verdict, result_status)
+        call_xp_prompt(
+            "POST",
+            f"/ai/charts/drafts/{draft_id}/runs",
+            payload={"superset_user_id": owner},
+        )
+        return self.json_response(
+            {
+                **verdict,
+                "viz_type": draft.get("viz_type"),
+                "dataset_id": draft.get("dataset_id"),
+            },
+            200,
+        )
+
+    @expose("/api/charts/drafts/<draft_id>/save/", methods=("POST",))
+    @has_access_api
+    def api_chart_draft_save(self, draft_id: str) -> FlaskResponse:
+        """Create the chart through Superset's command, then read it back (F08/F10)."""
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        status, body = call_xp_prompt(
+            "GET", f"/ai/charts/drafts/{draft_id}?superset_user_id={owner}"
+        )
+        if status != 200:
+            return self.json_response(body, status)
+        draft = body.get("draft") or {}
+        if draft.get("status") != "draft":
+            return self.json_response(
+                {
+                    "message": _("This draft is %(status)s and cannot be saved again")
+                    % {"status": draft.get("status")},
+                    "severity": "warning",
+                    "code": "not_open",
+                },
+                409,
+            )
+        dataset, failure = _chart_dataset(draft.get("dataset_id"))
+        if failure is not None:
+            return self.json_response(*failure)
+        try:
+            chart = _create_chart(owner, dataset, draft)
+        except Exception as exc:  # pylint: disable=broad-except
+            hint, kind = _classify_failure(owner, "", f"{type(exc).__name__}: {exc}")
+            _scrap_chart_draft(owner, draft_id, f"save_failed:{kind}")
+            logger.warning("XP Prompt chart save failed: %s", type(exc).__name__)
+            return self.json_response(
+                {
+                    "message": hint,
+                    "severity": "danger",
+                    "code": "chart_save_failed",
+                    "failure": kind,
+                },
+                422,
+            )
+        call_xp_prompt(
+            "POST",
+            f"/ai/charts/drafts/{draft_id}/saved",
+            payload={"superset_user_id": owner, "slice_id": int(chart.id)},
+        )
+        return self.json_response(
+            {"chart": _chart_record(chart), "blocks": _chart_saved_blocks(chart)},
+            201,
+        )
+
+    @expose("/api/charts/drafts/<draft_id>/scrap/", methods=["POST"])
+    @has_access_api
+    def api_chart_draft_scrap(self, draft_id: str) -> FlaskResponse:
+        owner = _current_user_id()
+        if owner is None:
+            return self.json_response(
+                {"message": _("No authenticated user"), "severity": "danger"}, 401
+            )
+        payload = _body()
+        status, body = call_xp_prompt(
+            "POST",
+            f"/ai/charts/drafts/{draft_id}/scrap",
+            payload={
+                "superset_user_id": owner,
+                "reason": str(payload.get("reason") or "discarded"),
+            },
         )
         return self.json_response(body, status)
 
@@ -976,8 +1204,24 @@ MAX_EQUIVALENTS = 5
 #: A profile is computed over a bounded sample: aggregates only, never a value.
 MAX_PROFILE_ROWS = 1_000
 MAX_PROFILE_COLUMNS = 200
+MAX_TITLE_CHARS = 256
 MAX_DESCRIPTION_CHARS = 1_000
 MAX_EXPRESSION_CHARS = 1_000
+#: Rows read to decide cardinality before recommending a chart. Small on purpose: the
+#: rules only need to know "a handful" from "thousands".
+CHART_SAMPLE_ROWS = 200
+#: The modern visualizations this frontend build registers. A deployment may override
+#: the set with XPBUILDER_CHART_VIZ_TYPES; the configured denylist always wins.
+DECLARED_CHART_VIZ: tuple[str, ...] = (
+    "echarts_timeseries_line",
+    "echarts_timeseries_bar",
+    "echarts_timeseries_area",
+    "echarts_timeseries_scatter",
+    "pie",
+    "heatmap_v2",
+    "big_number_total",
+    "table",
+)
 
 
 def _explain_estimate(
@@ -1301,6 +1545,227 @@ def _sql_digest(sql: str) -> str:
     """Whitespace-insensitive identity for "the same query" (never the text itself)."""
     text = " ".join((sql or "").split()).lower()
     return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
+def _chart_catalog_payload() -> dict[str, Any]:
+    """What this deployment can render: its frontend build, minus the denylist.
+
+    The API process cannot enumerate the frontend's plugin registry, so the declared set
+    is a deployment fact: ``XPBUILDER_CHART_VIZ_TYPES`` when set, otherwise the modern
+    types this build ships. Superset's own backend registry is added on top, and the
+    configured denylist always wins.
+    """
+    from flask import current_app
+
+    from superset.viz import viz_types
+
+    denied = [
+        str(name)
+        for name in (current_app.config.get("VIZ_TYPE_DENYLIST") or [])
+        if name
+    ]
+    names = {str(name) for name in viz_types if name}
+    declared = os.environ.get("XPBUILDER_CHART_VIZ_TYPES", "").strip()
+    if declared:
+        names |= {part.strip() for part in declared.split(",") if part.strip()}
+    else:
+        names |= set(DECLARED_CHART_VIZ)
+    entries = [{"viz_type": name} for name in sorted(names) if name not in denied]
+    return {"viz_types": entries, "denylist": denied}
+
+
+def _chart_dataset(dataset_id: Any) -> tuple[Any, tuple[dict[str, Any], int] | None]:
+    """Resolve the dataset and prove the caller may read it, or answer with why not."""
+    from superset.daos.dataset import DatasetDAO
+
+    try:
+        identifier = int(dataset_id)
+    except (TypeError, ValueError):
+        return None, (
+            {"message": _("dataset_id is required"), "severity": "danger"},
+            400,
+        )
+    dataset = DatasetDAO.find_by_id(identifier)
+    if dataset is None:
+        return None, ({"message": _("Dataset not found"), "severity": "danger"}, 404)
+    try:
+        security_manager.raise_for_access(datasource=dataset)
+    except SupersetSecurityException:
+        return None, (
+            {
+                "message": _("You are not authorized for this dataset"),
+                "severity": "danger",
+                "code": "dataset_not_authorized",
+            },
+            403,
+        )
+    return dataset, None
+
+
+def _chart_columns(dataset: Any) -> list[dict[str, Any]]:
+    """The dataset's declared columns, in the shape the profiler expects."""
+    return [
+        {
+            "name": column.column_name,
+            "type": column.type or "",
+            "role": "temporal" if column.is_dttm else "",
+        }
+        for column in (dataset.columns or [])[:MAX_PROFILE_COLUMNS]
+    ]
+
+
+def _chart_measured(dataset: Any) -> dict[str, Any]:
+    """Cardinality and nulls from a bounded sample, so the rules are not guessing.
+
+    One query, at most ``CHART_SAMPLE_ROWS`` rows, for a virtual dataset. A physical
+    dataset is left unmeasured rather than issuing a scan whose shape we do not
+    control — the rules then skip the checks that need a cardinality.
+    """
+    if not dataset.sql:
+        return {}
+    try:
+        # The definition is the dataset's own, already validated when it was saved
+        # (the guard refuses anything but a single read-only query), and it runs under
+        # the caller's own credentials.
+        frame = dataset.database.get_df(_chart_sample_sql(dataset.sql))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.info("XP Prompt chart sample unavailable: %s", type(exc).__name__)
+        return {}
+    profile = _profile(frame, columns=_chart_columns(dataset), grain=[])
+    return {
+        "columns": profile.get("columns") or [],
+        "row_count": profile.get("row_count") or 0,
+    }
+
+
+def _chart_sample_sql(definition: str, limit: int = CHART_SAMPLE_ROWS) -> str:
+    """Wrap a stored dataset definition in a bounded sample subquery."""
+    return f"SELECT * FROM ({definition}) AS xp_s LIMIT {limit}"  # noqa: S608
+
+
+def _chart_dataset_summary(dataset: Any) -> dict[str, Any]:
+    return {
+        "dataset_id": int(dataset.id),
+        "name": dataset.table_name,
+        "schema": dataset.schema or "",
+        "database": getattr(dataset.database, "database_name", ""),
+        "columns": len(dataset.columns or []),
+    }
+
+
+def _chart_frame(
+    dataset: Any, draft: dict[str, Any]
+) -> tuple[Any, str]:
+    """Run a draft's configuration through the chart-data path (P7-F06).
+
+    Returns ``(frame, error_text)``; the frame is the real result set for this user, and
+    ``error_text`` is the exception's own text, bounded, for the Phase 5 taxonomy.
+    """
+    import pandas as pd
+
+    from superset.commands.chart.data.get_data_command import ChartDataCommand
+    from superset.common.query_context_factory import QueryContextFactory
+
+    form_data = dict(draft.get("form_data") or {})
+    form_data["datasource"] = f"{int(dataset.id)}__table"
+    queries = [_chart_query(draft)]
+    try:
+        query_context = QueryContextFactory().create(
+            datasource={"id": int(dataset.id), "type": "table"},
+            queries=queries,
+            form_data=form_data,
+            force=False,
+        )
+        command = ChartDataCommand(query_context)
+        command.validate()
+        result = command.run()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("XP Prompt chart render failed: %s", type(exc).__name__)
+        return None, f"{type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS]
+    rows: list[dict[str, Any]] = []
+    if isinstance(result, dict):
+        queries_result = result.get("queries") or []
+        if queries_result:
+            rows = list(queries_result[0].get("data") or [])
+    frame = pd.DataFrame(rows)
+    return frame, ""
+
+
+def _chart_query(draft: dict[str, Any]) -> dict[str, Any]:
+    """The one query a draft describes: its dimensions, its metrics and its cap."""
+    form_data = draft.get("form_data") or {}
+    columns: list[str] = []
+    x_axis = form_data.get("x_axis")
+    if isinstance(x_axis, str) and x_axis:
+        columns.append(x_axis)
+    for entry in form_data.get("groupby") or []:
+        if isinstance(entry, str) and entry not in columns:
+            columns.append(entry)
+    metrics = list(form_data.get("metrics") or [])
+    single = form_data.get("metric")
+    if single:
+        metrics = [*metrics, single]
+    return {
+        "columns": columns,
+        "metrics": metrics,
+        "row_limit": int(form_data.get("row_limit") or MAX_PREVIEW_ROWS),
+        "order_desc": True,
+        "filters": list(form_data.get("adhoc_filters") or []),
+    }
+
+
+def _create_chart(owner: int, dataset: Any, draft: dict[str, Any]) -> Any:
+    """Create the chart through Superset's command, so its own validation applies."""
+    from superset.commands.chart.create import CreateChartCommand
+
+    data = {
+        "slice_name": str(draft.get("title") or "")[:MAX_TITLE_CHARS],
+        "viz_type": str(draft.get("viz_type") or ""),
+        "datasource_type": "table",
+        "datasource_id": int(dataset.id),
+        "params": json_dumps(dict(draft.get("form_data") or {})),
+        "description": str(draft.get("description") or "")[:MAX_DESCRIPTION_CHARS],
+        "owners": [int(owner)],
+        "dashboards": [],
+    }
+    return CreateChartCommand(data).run()
+
+
+def _chart_record(chart: Any) -> dict[str, Any]:
+    return {
+        "slice_id": int(chart.id),
+        "name": chart.slice_name,
+        "viz_type": chart.viz_type,
+        "dataset_id": int(chart.datasource_id) if chart.datasource_id else None,
+        "verified": bool(chart.viz_type),
+    }
+
+
+def _chart_saved_blocks(chart: Any) -> list[dict[str, Any]]:
+    return [
+        {"type": "warnings", "items": [_("The chart was saved to Superset.")]},
+        {
+            "type": "links",
+            "items": [
+                {
+                    "label": _("Open the chart"),
+                    "entity_type": "chart",
+                    "entity_id": str(int(chart.id)),
+                }
+            ],
+        },
+    ]
+
+
+def _scrap_chart_draft(owner: int, draft_id: str, reason: str) -> None:
+    try:
+        call_xp_prompt(
+            "POST",
+            f"/ai/charts/drafts/{draft_id}/scrap",
+            payload={"superset_user_id": owner, "reason": reason},
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("XP Prompt chart draft scrap failed: %s", type(exc).__name__)
 
 
 def _dataset_equivalents(

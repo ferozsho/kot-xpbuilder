@@ -63,7 +63,10 @@ class TrendTest(unittest.TestCase):
 
         self.assertEqual(found.candidates[0].viz_type, "echarts_timeseries_line")
         self.assertEqual(found.candidates[0].form_data["x_axis"], "created_at")
-        self.assertEqual(found.candidates[0].form_data["metrics"], ["score"])
+        metric = found.candidates[0].form_data["metrics"][0]
+        self.assertEqual(metric["column"]["column_name"], "score")
+        self.assertEqual(metric["expressionType"], "SIMPLE")
+        self.assertEqual(metric["aggregate"], "SUM")
 
     def test_the_rationale_names_the_fields_it_used(self) -> None:
         found = chart_rules.recommend(TIME_MEASURE, catalog())
@@ -267,6 +270,28 @@ class CatalogGateTest(unittest.TestCase):
         found = chart_rules.recommend(profile([], measured=[]), catalog())
 
         self.assertTrue(found.empty)
+
+
+class AdhocMetricTest(unittest.TestCase):
+    def test_a_metric_is_runnable_not_just_a_name(self) -> None:
+        metric = chart_rules.adhoc_metric("score")
+
+        self.assertEqual(metric["expressionType"], "SIMPLE")
+        self.assertEqual(metric["aggregate"], "SUM")
+        self.assertEqual(metric["column"], {"column_name": "score"})
+        self.assertEqual(metric["label"], "SUM(score)")
+        self.assertTrue(metric["hasCustomLabel"])
+
+    def test_every_candidate_metric_can_be_run(self) -> None:
+        found = chart_rules.recommend(CATEGORY_MEASURE, catalog())
+
+        for candidate in found.candidates:
+            for metric in candidate.form_data.get("metrics") or []:
+                self.assertIsInstance(metric, dict, candidate.viz_type)
+                self.assertIn("expressionType", metric, candidate.viz_type)
+            single = candidate.form_data.get("metric")
+            if single is not None:
+                self.assertIsInstance(single, dict, candidate.viz_type)
 
 
 class ShapingTest(unittest.TestCase):

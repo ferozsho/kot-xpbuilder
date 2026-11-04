@@ -146,6 +146,22 @@ def recommend(
     )
 
 
+def adhoc_metric(column: str, aggregate: str = "SUM") -> dict[str, Any]:
+    """A metric Superset can actually run: an aggregate over a named column.
+
+    A bare column name in ``metrics`` would be looked up as a *saved* metric and fail, so
+    every candidate carries an adjacency-free adhoc definition instead.
+    """
+    label = f"{aggregate}({column})"
+    return {
+        "expressionType": "SIMPLE",
+        "column": {"column_name": column},
+        "aggregate": aggregate,
+        "label": label,
+        "hasCustomLabel": True,
+    }
+
+
 # --- the rules -------------------------------------------------------------
 
 
@@ -170,7 +186,7 @@ def _trend(
         return
     form = {
         "x_axis": temporal.name,
-        "metrics": [measure.name],
+        "metrics": [adhoc_metric(measure.name)],
         "time_grain_sqla": _grain_for(temporal),
         "row_limit": row_limit,
     }
@@ -242,7 +258,7 @@ def _comparison(
         title=f"{measure.name} by {category.name}",
         form_data={
             "x_axis": category.name,
-            "metrics": [measure.name],
+            "metrics": [adhoc_metric(measure.name)],
             "row_limit": row_limit,
         },
         rationale=(
@@ -286,7 +302,7 @@ def _part_to_whole(
         title=f"{measure.name} share by {category.name}",
         form_data={
             "groupby": [category.name],
-            "metric": measure.name,
+            "metric": adhoc_metric(measure.name),
             "row_limit": row_limit,
             "show_legend": True,
         },
@@ -328,7 +344,7 @@ def _matrix(
         form_data={
             "x_axis": first.name,
             "groupby": [second.name],
-            "metric": measure.name,
+            "metric": adhoc_metric(measure.name),
             "row_limit": row_limit,
         },
         rationale=(
@@ -359,7 +375,7 @@ def _correlation(
         "echarts_timeseries_scatter",
         family="correlation",
         title=f"{first.name} against {second.name}",
-        form_data={"x_axis": first.name, "metrics": [second.name], "row_limit": row_limit},
+        form_data={"x_axis": first.name, "metrics": [adhoc_metric(second.name)], "row_limit": row_limit},
         rationale=(
             f"Two measures ({first.name}, {second.name}) are better compared as points "
             "than as two series on one axis."
@@ -387,7 +403,7 @@ def _single_value(
         "big_number_total",
         family="single_value",
         title=str(measure.name),
-        form_data={"metric": measure.name},
+        form_data={"metric": adhoc_metric(measure.name)},
         rationale=(
             f"A single measure is most legible as one number; {measure.name} is the "
             "only measure in this dataset."
@@ -410,7 +426,7 @@ def _detail(
 ) -> None:
     """The table is always safe, and it is the honest answer for wide or detailed data."""
     groupby = [field.name for field in categories[:4]]
-    metrics = [field.name for field in numerics[:4]]
+    metrics = [adhoc_metric(field.name) for field in numerics[:4]]
     high = any(
         field.cardinality is not None and field.cardinality > chart_profile.HIGH_CARDINALITY
         for field in categories
