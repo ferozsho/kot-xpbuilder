@@ -128,3 +128,61 @@ export async function rollbackSetting(
   });
   return json as SettingChange;
 }
+
+export interface HeldAtCeiling {
+  key: string;
+  stored: unknown;
+  in_force: unknown;
+}
+
+export interface SettingsHealth {
+  tenant: string;
+  stored: number;
+  declared: number;
+  restart_required: string[];
+  held_at_ceiling: HeldAtCeiling[];
+  limits: {
+    max_rows: number;
+    timeout_ms: number;
+    max_concurrent: number;
+    max_bytes: number;
+  };
+  alerts: { enabled: boolean; webhook: boolean; breaches: number };
+  sql_slots_active: number;
+  healthy: boolean;
+}
+
+export interface RetentionPreview {
+  windows: Record<string, number>;
+  would_delete: Record<string, number>;
+}
+
+export interface RetentionResult {
+  windows: Record<string, number>;
+  removed: Record<string, number>;
+  total: number;
+}
+
+export async function fetchHealth(tenant?: string): Promise<SettingsHealth> {
+  const query = tenant ? `?tenant=${encodeURIComponent(tenant)}` : '';
+  const { json } = await SupersetClient.get({
+    endpoint: `${BASE}/health/${query}`,
+  });
+  return json as SettingsHealth;
+}
+
+export async function fetchRetention(tenant?: string): Promise<RetentionPreview> {
+  const query = tenant ? `?tenant=${encodeURIComponent(tenant)}` : '';
+  const { json } = await SupersetClient.get({
+    endpoint: `/aiprompt/api/retention/${query}`,
+  });
+  return json as RetentionPreview;
+}
+
+export async function applyRetention(tenant?: string): Promise<RetentionResult> {
+  const { json } = await SupersetClient.post({
+    endpoint: '/aiprompt/api/retention/',
+    jsonPayload: tenant ? { tenant } : {},
+  });
+  return json as RetentionResult;
+}

@@ -194,3 +194,47 @@ export async function fetchBillingExport(): Promise<{
   });
   return json as { rows: number; replayed: boolean; source: string };
 }
+
+export interface AlertBreach {
+  id: string;
+  scope: string;
+  scope_ref: string;
+  period: string;
+  state: string;
+  percent_used: number;
+  warn_percent: number;
+  cost_micros_limit: number | null;
+}
+
+export interface AlertReport {
+  tenant: string;
+  enabled: boolean;
+  recipient: string;
+  webhook: boolean;
+  breaches: AlertBreach[];
+  count: number;
+  delivered: boolean;
+  generated_at: string;
+}
+
+export interface AlertDelivery {
+  delivered: boolean;
+  reason: string;
+  state: AlertReport;
+}
+
+export async function fetchAlerts(tenant?: string): Promise<AlertReport> {
+  const query = tenant ? `?tenant=${encodeURIComponent(tenant)}` : '';
+  const { json } = await SupersetClient.get({
+    endpoint: `${BASE}/alerts/${query}`,
+  });
+  return json as AlertReport;
+}
+
+export async function deliverAlert(tenant?: string): Promise<AlertDelivery> {
+  const { json } = await SupersetClient.post({
+    endpoint: `${BASE}/alerts/deliver/`,
+    jsonPayload: tenant ? { tenant } : {},
+  });
+  return json as AlertDelivery;
+}

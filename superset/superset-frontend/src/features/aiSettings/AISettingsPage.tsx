@@ -40,6 +40,8 @@ import {
   saveSettings,
   SettingEntry,
 } from './api';
+import RetentionCard from './RetentionCard';
+import SettingsHealthCard from './SettingsHealthCard';
 
 /**
  * The service is the authority on every bound, so this page renders what the
@@ -356,6 +358,9 @@ export default function AISettingsPage() {
           ]}
         />
       </Card>
+
+      <SettingsHealthCard />
+      <RetentionCard />
     </Page>
   );
 }

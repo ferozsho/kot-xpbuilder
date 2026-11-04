@@ -29,6 +29,7 @@ import {
   Tag,
 } from '@superset-ui/core/components';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
+import AlertsCard from './AlertsCard';
 import {
   deleteBudget,
   describeError,
@@ -670,6 +671,8 @@ export default function AIUsagePage() {
           </State>
         )}
       </Card>
+
+      <AlertsCard />
     </Page>
   );
 }
