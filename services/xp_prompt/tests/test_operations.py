@@ -13,7 +13,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from xp_prompt import metrics, retention
+from xp_prompt import metrics, ratelimit, retention
 from xp_prompt import settings_registry as sr
 from xp_prompt.config import Settings
 
@@ -200,6 +200,79 @@ class LeaseTests(unittest.TestCase):
         source = Path("/app/xp_prompt/xp_prompt/jobs.py").read_text(encoding="utf-8")
         self.assertIn("if worker_id and not heartbeat_job(", source)
         self.assertIn("reason=lease_lost", source)
+
+
+class _FakeRedis:
+    def __init__(self, fail: bool = False) -> None:
+        self.counts: dict[str, int] = {}
+        self.fail = fail
+
+    def incr(self, key: str) -> int:
+        if self.fail:
+            raise RuntimeError("redis down")
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    def expire(self, key: str, ttl: int) -> bool:
+        return True
+
+
+class RateLimitTests(unittest.TestCase):
+    """A limit that fails closed would turn a cache problem into an outage."""
+
+    def settings(self, limit: int) -> Settings:
+        from dataclasses import replace
+
+        return replace(settings(), rate_limit_per_minute=limit)
+
+    def test_a_limit_of_zero_disables_the_check(self) -> None:
+        decision = ratelimit.check(self.settings(0), subject="user-1")
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.limit, 0)
+
+    def test_the_window_counts_and_then_refuses(self) -> None:
+        fake = _FakeRedis()
+        limited = self.settings(2)
+        with mock.patch.object(ratelimit, "_client", return_value=fake):
+            first = ratelimit.check(limited, subject="user-1")
+            second = ratelimit.check(limited, subject="user-1")
+            third = ratelimit.check(limited, subject="user-1")
+        self.assertTrue(first.allowed)
+        self.assertTrue(second.allowed)
+        self.assertFalse(third.allowed)
+        self.assertEqual(third.retry_after, 60)
+
+    def test_one_caller_cannot_exhaust_another(self) -> None:
+        fake = _FakeRedis()
+        limited = self.settings(1)
+        with mock.patch.object(ratelimit, "_client", return_value=fake):
+            ratelimit.check(limited, subject="user-1")
+            other = ratelimit.check(limited, subject="user-2")
+        self.assertTrue(other.allowed)
+
+    def test_a_broken_limiter_fails_open(self) -> None:
+        with mock.patch.object(
+            ratelimit, "_client", return_value=_FakeRedis(fail=True)
+        ):
+            decision = ratelimit.check(self.settings(1), subject="user-1")
+        self.assertTrue(decision.allowed)
+
+    def test_the_client_facing_headers_are_set(self) -> None:
+        self.assertEqual(
+            ratelimit.SECURITY_HEADERS["X-Content-Type-Options"], "nosniff"
+        )
+        self.assertEqual(ratelimit.SECURITY_HEADERS["Cache-Control"], "no-store")
+        self.assertEqual(ratelimit.SECURITY_HEADERS["X-Frame-Options"], "DENY")
+
+    def test_the_decorator_is_on_the_expensive_routes_only(self) -> None:
+        from pathlib import Path
+
+        source = Path("/app/xp_prompt/xp_prompt/api.py").read_text(encoding="utf-8")
+        self.assertIn('@rate_limited("chat")', source)
+        self.assertIn('@rate_limited("sql")', source)
+        self.assertIn('@rate_limited("repair")', source)
+        # A read-only admin surface must not be throttled by the AI budget.
+        self.assertNotIn('@rate_limited("settings")', source)
 
 
 if __name__ == "__main__":

@@ -1848,6 +1848,65 @@ def check_operations_hardening() -> None:
             raise AssertionError(f'{key} must be a declared setting')
 
 
+def check_backup_and_hardening() -> None:
+    """The backup must cover every durable store, and the hardenings must stay.
+
+    A backup that skips a store restores a deployment that looks healthy and has
+    forgotten what it did; a rate limit that is not wired is a hope. Both are
+    checked here because both fail silently.
+    """
+    backup = (ROOT / 'bin' / 'backup.sh').read_text(encoding='utf-8')
+    for marker in ('ai.dump', 'qdrant', 'ai_row_counts', 'secrets_not_included'):
+        if marker not in backup:
+            raise AssertionError(f'the backup must cover every durable store: {marker}')
+    verify = ROOT / 'bin' / 'verify-backup.sh'
+    if not verify.exists():
+        raise AssertionError('a backup that has never been restored is a guess')
+    verify_source = verify.read_text(encoding='utf-8')
+    for marker in ('xprompt_verify', 'pg_restore', 'MISMATCH'):
+        if marker not in verify_source:
+            raise AssertionError(f'the restore drill must prove a restore: {marker}')
+
+    services = ROOT / 'services' / 'xp_prompt' / 'xp_prompt'
+    ratelimit_source = (services / 'ratelimit.py').read_text(encoding='utf-8')
+    for marker in ('def check(', 'SECURITY_HEADERS', 'rate_limit_per_message'):
+        if marker == 'rate_limit_per_message':
+            continue
+        if marker not in ratelimit_source:
+            raise AssertionError(f'the limiter must expose {marker}')
+    api_source = (services / 'api.py').read_text(encoding='utf-8')
+    for marker in ('@app.after_request', 'def rate_limited(', '@rate_limited("chat")'):
+        if marker not in api_source:
+            raise AssertionError(f'hardening must be wired: {marker}')
+    config_source = (services / 'config.py').read_text(encoding='utf-8')
+    if 'XP_PROMPT_RATE_LIMIT_PER_MINUTE' not in config_source:
+        raise AssertionError('the rate limit must be configurable')
+
+    for runbook in ('release.md', 'incident.md', 'restore.md'):
+        path = ROOT / 'docs' / 'runbooks' / runbook
+        if not path.exists() or len(path.read_text(encoding='utf-8')) < 1_000:
+            raise AssertionError(f'the operator runbook {runbook} must exist')
+
+
+def check_standalone_regression() -> None:
+    """The AI service must not depend on the optional Moodle integration (F11).
+
+    The runtime is standalone by default and the integration is an opt-in flag;
+    shared code that quietly imports it would make the default mode untestable.
+    """
+    services = ROOT / 'services' / 'xp_prompt' / 'xp_prompt'
+    offenders = [
+        path.name
+        for path in services.rglob('*.py')
+        if 'moodle' in path.read_text(encoding='utf-8').lower()
+    ]
+    if offenders:
+        raise AssertionError(
+            'the AI service must not reference the optional Moodle integration: '
+            + ', '.join(sorted(offenders))
+        )
+
+
 def check_schema_audit() -> None:
     """The schema audit must pass, and the audit history must be tenant-scoped.
 
@@ -1988,6 +2047,8 @@ def main():
     check_ai_usage_ledger(compatibility)
     check_ai_configuration(compatibility)
     check_schema_audit()
+    check_backup_and_hardening()
+    check_standalone_regression()
     check_operations_hardening()
 
     check_ai_schema_slice(compatibility)

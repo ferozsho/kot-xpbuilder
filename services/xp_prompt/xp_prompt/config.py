@@ -89,6 +89,9 @@ class Settings:
     redis_database: int
     qdrant_url: str
     dependency_timeout_seconds: int
+    #: Requests one caller may make per minute against the expensive endpoints.
+    #: 0 disables the limit.
+    rate_limit_per_minute: int = 60
     service_secret: str | None = field(default=None, repr=False)
     gemini_api_key: str | None = field(default=None, repr=False)
     gemini_model: str | None = None
@@ -166,6 +169,15 @@ class Settings:
                 3,
                 minimum=1,
                 maximum=30,
+            ),
+            # Requests one caller may make per minute against the expensive
+            # endpoints. 0 disables the limit (P11-F10).
+            rate_limit_per_minute=_integer(
+                source,
+                "XP_PROMPT_RATE_LIMIT_PER_MINUTE",
+                60,
+                minimum=0,
+                maximum=10_000,
             ),
             service_secret=(
                 _optional(source, "XP_PROMPT_SERVICE_SECRET")

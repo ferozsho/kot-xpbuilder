@@ -31,7 +31,7 @@ mariadb_partial="$mariadb_backup.partial"
 
 umask 077
 mkdir -p "$destination"
-trap 'rm -f "$partial" "$uploads_partial" "$mariadb_partial"' EXIT
+trap 'rm -f "$partial" "$uploads_partial" "$mariadb_partial" "$ai_partial"' EXIT
 
 compose=(docker compose --env-file "$env_file" -f "$root/compose.yml" -p "$project")
 
@@ -65,6 +65,58 @@ if [ "$uploads_present" = "1" ]; then
     chmod 0600 "$uploads_backup"
 fi
 
+ai_db="xprompt"
+ai_backup="$destination/ai.dump"
+ai_partial="$ai_backup.partial"
+ai_checksum=""
+ai_present="$("${compose[@]}" ps -q xp-prompt-db 2>/dev/null || true)"
+if [ -n "$ai_present" ] \
+    && [ "$(docker inspect --format '{{.State.Running}}' "$ai_present")" = "true" ]; then
+    # The KOT5 AI database is a durable store in its own right: conversations,
+    # jobs, the usage ledger, repair patterns, drafts, settings and their audit.
+    # Leaving it out of the backup would restore a deployment that has forgotten
+    # everything it did (P11-F08).
+    echo "Backing up the AI service database ($ai_db)"
+    "${compose[@]}" exec -T xp-prompt-db \
+        pg_dump -U xprompt -d "$ai_db" --format=custom > "$ai_partial"
+    if [ ! -s "$ai_partial" ]; then
+        echo "ERROR: $ai_db backup is empty" >&2
+        exit 1
+    fi
+    mv "$ai_partial" "$ai_backup"
+    ai_checksum="$(sha256sum "$ai_backup" | awk '{print $1}')"
+    chmod 0600 "$ai_backup"
+fi
+
+# Vector store: snapshots are the supported export, so they are taken per
+# collection rather than by copying files out of the volume.
+qdrant_dir="$destination/qdrant"
+qdrant_snapshots=""
+qdrant_id="$("${compose[@]}" ps -q xp-prompt-qdrant 2>/dev/null || true)"
+api_id="$("${compose[@]}" ps -q xp-prompt-api 2>/dev/null || true)"
+if [ -n "$qdrant_id" ] && [ -n "$api_id" ] \
+    && [ "$(docker inspect --format '{{.State.Running}}' "$qdrant_id")" = "true" ] \
+    && [ "$(docker inspect --format '{{.State.Running}}' "$api_id")" = "true" ]; then
+    # The service already knows where Qdrant is, so the helper runs there rather
+    # than needing a second copy of the URL and a client in this shell.
+    mkdir -p "$qdrant_dir"
+    for collection in $("${compose[@]}" exec -T xp-prompt-api \
+        /app/.venv/bin/python /app/xp_prompt/tools/qdrant_snapshot.py list \
+        2>/dev/null); do
+        [ -z "$collection" ] && continue
+        echo "Snapshotting Qdrant collection $collection"
+        "${compose[@]}" exec -T xp-prompt-api \
+            /app/.venv/bin/python /app/xp_prompt/tools/qdrant_snapshot.py \
+            download "$collection" > "$qdrant_dir/$collection.snapshot" 2>/dev/null || true
+        if [ -s "$qdrant_dir/$collection.snapshot" ]; then
+            qdrant_snapshots="$qdrant_snapshots$collection.snapshot "
+            chmod 0600 "$qdrant_dir/$collection.snapshot"
+        else
+            rm -f "$qdrant_dir/$collection.snapshot"
+        fi
+    done
+fi
+
 image_id="$(docker inspect --format '{{.Image}}' "${project}_superset" 2>/dev/null || true)"
 
 # The bundled MariaDB is backed up with its own dump. A stack that has not been
@@ -92,16 +144,31 @@ if [ -n "$mariadb_id" ] \
     chmod 0600 "$mariadb_backup"
 fi
 
+# Row counts are the read-back half of a backup: a dump that restores is not the
+# same as a dump that restored the right number of records.
+# Real counts, not planner estimates: the point of the drill is to prove the
+# restored rows, and n_live_tup is only an estimate.
+ai_counts_file="$destination/ai-row-counts.txt"
+: > "$ai_counts_file"
+if [ -n "$ai_checksum" ]; then
+    # Exact counts: pg_stat is an estimate, and an estimate cannot prove a restore.
+    "${compose[@]}" exec -T xp-prompt-db \
+        psql -U xprompt -d "$ai_db" -tAF'|' -c \
+        "SELECT relname, (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', schemaname, relname), false, true, '')))[1]::text::int FROM pg_stat_user_tables ORDER BY relname" \
+        > "$ai_counts_file"
+fi
+
 python3 - "$destination/manifest.json" "$project" "$timestamp" "$checksum" \
     "$image_id" "$uploads_db" "$uploads_checksum" "$mariadb_db" \
-    "$mariadb_checksum" <<'PY'
+    "$mariadb_checksum" "$ai_db" "$ai_checksum" "${qdrant_snapshots:-}" \
+    "$ai_counts_file" <<'PY'
 import json
 import sys
 
 uploads_checksum = sys.argv[7]
 mariadb_checksum = sys.argv[9]
 manifest = {
-    'schema_version': 3,
+    'schema_version': 4,
     'instance': sys.argv[2],
     'created_at_utc': sys.argv[3],
     'metadata_backup': 'superset-metadata.dump',
@@ -113,6 +180,21 @@ manifest = {
     'mariadb_database': sys.argv[8] if mariadb_checksum else None,
     'mariadb_backup': 'mariadb.dump' if mariadb_checksum else None,
     'mariadb_sha256': mariadb_checksum or None,
+    'ai_database': sys.argv[10] if sys.argv[11] else None,
+    'ai_backup': 'ai.dump' if sys.argv[11] else None,
+    'ai_sha256': sys.argv[11] or None,
+    'qdrant_snapshots': sorted(sys.argv[12].split()) or None,
+    'ai_row_counts': {
+        line.split('|')[0]: int(line.split('|')[1] or 0)
+        for line in open(sys.argv[13], encoding='utf-8').read().splitlines()
+        if '|' in line
+    },
+    # The AI provider keys are sealed with the deployment's root secret, which is
+    # deliberately not in this backup: a restore needs the same
+    # XP_PROMPT_SERVICE_SECRET from the environment, or those rows are unreadable.
+    'secrets_not_included': ['XP_PROMPT_SERVICE_SECRET', 'SECRET_KEY',
+                             'XP_PROMPT_POSTGRES_PASSWORD', 'POSTGRES_PASSWORD',
+                             'XP_PROMPT_REDIS_PASSWORD', 'MARIADB_ROOT_PASSWORD'],
 }
 with open(sys.argv[1], 'w', encoding='utf-8') as handle:
     json.dump(manifest, handle, indent=2)

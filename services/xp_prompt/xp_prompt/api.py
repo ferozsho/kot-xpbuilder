@@ -59,6 +59,7 @@ from xp_prompt import (
     result_validation,
     schema_slice,
     metrics,
+    ratelimit,
     retention,
     settings_registry,
     sql_candidate,
@@ -312,6 +313,50 @@ def create_app(settings: Settings | None = None) -> Flask:
 
         return wrapper
 
+    @app.after_request
+    def _security_headers(response: Any) -> Any:
+        """No sniffing, no framing, no shared caching (P11-F10).
+
+        A response can carry a prompt, a statement preview or a cost total. These
+        headers are set here rather than in the proxy so they also cover a direct
+        call to the service, which is how the workers and the ops tooling reach it.
+        """
+        for name, value in ratelimit.SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
+
+    def rate_limited(bucket: str = "ai") -> Callable[[Callable[..., Any]], Any]:
+        """Limit one caller's use of an endpoint that spends money.
+
+        The subject is the authenticated Superset user from the body or query, so a
+        runaway client cannot exhaust a colleague's allowance.
+        """
+
+        def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
+            @wraps(view)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                subject = str(_conversation_owner() or "") or "anonymous"
+                decision = ratelimit.check(
+                    resolved_settings, subject=subject, bucket=bucket
+                )
+                if not decision.allowed:
+                    response = jsonify(
+                        {
+                            "message": "Too many requests; slow down and retry",
+                            "code": "rate_limited",
+                            "severity": "warning",
+                            "retry_after": decision.retry_after,
+                        }
+                    )
+                    response.status_code = 429
+                    response.headers["Retry-After"] = str(decision.retry_after)
+                    return response
+                return view(*args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
     def _request_tenant() -> str:
         """The tenant a request is acting for, from its body or query string."""
         payload = request.get_json(silent=True)
@@ -522,6 +567,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/conversations/<conversation_id>/messages")
     @require_admin_token
+    @rate_limited("chat")
     def conversation_message(conversation_id: str):
         if not registry.is_provider_id(conversation_id):
             return _admin_error("Conversation not found", 404)
@@ -1010,6 +1056,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/sql/candidate")
     @require_admin_token
+    @rate_limited("sql")
     def sql_candidate_generate():
         """Generate one candidate against the authorized slice and guard it.
 
@@ -1218,6 +1265,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.post("/ai/sql/repair")
     @require_admin_token
+    @rate_limited("repair")
     def sql_repair_propose():
         """Propose what to try next for a failure — or refuse to try anything.
 
