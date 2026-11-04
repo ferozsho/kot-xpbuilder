@@ -1306,6 +1306,7 @@ def check_ai_dashboard_builder(compatibility: dict) -> None:
         '/ai/dashboards/plan',
         '/ai/dashboards/layout',
         '/ai/dashboards/preview',
+        '/ai/dashboards/publish',
     ):
         if route not in service_source:
             raise AssertionError(f'the service must expose {route}')
@@ -1328,6 +1329,63 @@ def check_ai_dashboard_builder(compatibility: dict) -> None:
         raise AssertionError('the dashboard plan must be built from the authorized slice')
     if 'def _plan_charts' not in proxy_source:
         raise AssertionError('reuse requires the saved charts on those datasets')
+
+    check_ai_dashboard_publish(services, proxy_source)
+
+
+def check_ai_dashboard_publish(services: Path, proxy_source: str) -> None:
+    """Publishing must record what it creates, and undo it in reverse.
+
+    The properties pinned here are the ones whose absence is invisible until a
+    publish fails: an attempt that is opened before anything is created, a ledger
+    that holds every created id, a guarded transition so a closed attempt cannot be
+    reopened, a replay that cannot publish twice, and a compensation that deletes a
+    dashboard this attempt made but restores one it edited.
+    """
+    publish_path = services / 'dashboard_publish.py'
+    if not publish_path.exists():
+        raise AssertionError('dashboard_publish.py must exist')
+    publish_source = publish_path.read_text(encoding='utf-8')
+
+    for marker in (
+        'def decide(',
+        'def revision_conflict(',
+        'def position_fingerprint(',
+        'def start(',
+        'def complete(',
+        'def fail(',
+        'idempotency_key',
+        'position_fingerprint',
+        'created_objects',
+    ):
+        if marker not in publish_source:
+            raise AssertionError(f'dashboard_publish.py lost {marker}')
+    # A closed attempt must not be reopened by a late or duplicated caller.
+    if publish_source.count("AND p.status = 'pending'") < 2:
+        raise AssertionError('publish transitions must be guarded on a pending attempt')
+    for code in ('not_permitted', 'role_not_allowed', 'embed_not_allowed'):
+        if code not in publish_source:
+            raise AssertionError(f'publishing lost the {code} refusal')
+
+    proxy_publish_path = (
+        ROOT / 'superset' / 'superset' / 'views' / 'ai_prompt' / 'dashboard_publish.py'
+    )
+    if not proxy_publish_path.exists():
+        raise AssertionError('the proxy must own the publish transaction')
+    proxy_publish_source = proxy_publish_path.read_text(encoding='utf-8')
+    for marker in (
+        'def compensate(',
+        'def _restore_dashboard(',
+        'DeleteDashboardCommand',
+        'DeleteChartCommand',
+        'CopyDashboardCommand',
+        'UpdateDashboardCommand',
+        'left_behind',
+    ):
+        if marker not in proxy_publish_source:
+            raise AssertionError(f'the publish transaction lost {marker}')
+    if 'def api_dashboard_publish' not in proxy_source:
+        raise AssertionError('the proxy must expose the publish endpoint')
 
     permissions = (
         ROOT / 'docker' / 'ensure_ai_prompt_permissions.py'

@@ -61,6 +61,7 @@ PERMISSIONS = (
     "can_api_dashboard_plan",
     "can_api_dashboard_layout",
     "can_api_dashboard_preview",
+    "can_api_dashboard_publish",
 )
 VIEW_MENU = "AIPrompt"
 
