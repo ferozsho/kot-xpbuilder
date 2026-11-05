@@ -125,6 +125,12 @@ LEFT JOIN feedback fb          ON fb.completed = oc.id;
 -- (mdl_local_classroom_users -> mdl_local_classroom_trainers). One teacher per
 -- student keeps the grain at teacher x student, so a teacher's
 -- teacher_avg_* / teacher_student_count describe exactly their own cohort.
+-- The classroom can be CO-TAUGHT (the KEF FLN workshops have 3-4 trainers with
+-- identical activity timestamps). All trainers of the student's most recent
+-- classroom are kept, so each trainer's report contains the students they
+-- actually taught; picking a single "primary trainer" was both arbitrary and
+-- non-deterministic (the same learner resolved to three different teachers
+-- across runs before the ORDER BY was pinned).
 -- The window averages are computed before any row-level (RLS) filter, so a
 -- teacher-scoped view still shows that teacher's true averages.
 -- ---------------------------------------------------------------------------
@@ -176,17 +182,18 @@ stu AS (
   GROUP BY pr.pair_key, pr.baseline_course, pr.endline_course, g.userid
 ),
 teach AS (
-  SELECT userid, trainerid FROM (
-    SELECT cu.userid, t.trainerid,
+  SELECT DISTINCT x.userid, t.trainerid
+  FROM (
+    SELECT cu.userid, cu.classroomid,
            ROW_NUMBER() OVER (PARTITION BY cu.userid
              ORDER BY GREATEST(COALESCE(cu.timemodified, 0), COALESCE(cl.timemodified, 0)) DESC,
                       cu.classroomid DESC) AS rn
     FROM mdl_local_classroom_users cu
-    JOIN mdl_local_classroom_trainers t ON t.classroomid = cu.classroomid
     JOIN mdl_local_classroom cl ON cl.id = cu.classroomid
     WHERE cu.userid IN (SELECT userid FROM stu)
   ) x
-  WHERE rn = 1
+  JOIN mdl_local_classroom_trainers t ON t.classroomid = x.classroomid
+  WHERE x.rn = 1
 )
 SELECT
   s.pair_key,
@@ -217,3 +224,50 @@ LEFT JOIN mdl_local_school ss ON ss.id = u.open_school
 LEFT JOIN teach t             ON t.userid = s.userid
 LEFT JOIN mdl_user tu         ON tu.id = t.trainerid
 LEFT JOIN mdl_local_school ts ON ts.id = tu.open_school;
+
+-- ---------------------------------------------------------------------------
+-- KPI #5 - Grade and feedback against every artefact (learner-facing)
+-- One row per graded assignment submission: the artefact (assignment) name,
+-- course, submission/grading dates, grade and max grade, the percentage and
+-- the grader's written feedback. `student_username` is the column used by the
+-- Moodle row-level mapping so a learner sees only their own rows.
+--
+-- mdl_assign.grade holds the assignment maximum; mdl_assign_grades.grade = -1
+-- means "not graded yet" and is filtered out.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW auditonekef.kpi5_artefact_grades AS
+SELECT
+  ag.id                                        AS grade_id,
+  a.id                                         AS artefact_id,
+  a.name                                       AS artefact,
+  c.id                                         AS course_id,
+  c.fullname                                   AS course_name,
+  ag.userid                                    AS student_id,
+  u.username                                   AS student_username,
+  TRIM(CONCAT(COALESCE(u.firstname, ''), ' ', COALESCE(u.lastname, ''))) AS student_name,
+  COALESCE(s.school_name, '(not set)')         AS student_school,
+  DATE(FROM_UNIXTIME(sub.timemodified))        AS submitted_on,
+  DATE(FROM_UNIXTIME(ag.timemodified))         AS graded_on,
+  ROUND(ag.grade, 2)                           AS grade,
+  ROUND(a.grade, 2)                            AS max_grade,
+  ROUND(100 * ag.grade / NULLIF(a.grade, 0), 1) AS grade_pct,
+  COALESCE(g.firstname, '')                    AS grader_firstname,
+  TRIM(CONCAT(COALESCE(g.firstname, ''), ' ', COALESCE(g.lastname, ''))) AS grader_name,
+  g.username                                   AS grader_username,
+  TRIM(REGEXP_REPLACE(
+    REGEXP_REPLACE(
+      REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(afc.commenttext, ''),
+        '&#039;', ''''), '&amp;', '&'), '&quot;', '"'), '&nbsp;', ' '),
+      '<[^>]*>', ' '),
+    '[[:space:]]+', ' '))                     AS feedback
+FROM mdl_assign_grades ag
+JOIN mdl_assign a             ON a.id = ag.assignment
+JOIN mdl_course c             ON c.id = a.course
+JOIN mdl_user u               ON u.id = ag.userid
+LEFT JOIN mdl_user g          ON g.id = ag.grader
+LEFT JOIN mdl_local_school s  ON s.id = u.open_school
+LEFT JOIN mdl_assign_submission sub
+       ON sub.assignment = ag.assignment AND sub.userid = ag.userid
+      AND sub.latest = 1 AND sub.status = 'submitted'
+LEFT JOIN mdl_assignfeedback_comments afc ON afc.grade = ag.id
+WHERE ag.grade >= 0;
