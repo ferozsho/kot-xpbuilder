@@ -194,6 +194,36 @@ teach AS (
   ) x
   JOIN mdl_local_classroom_trainers t ON t.classroomid = x.classroomid
   WHERE x.rn = 1
+),
+school_primary AS (
+  -- Fallback for beneficiaries who never joined a classroom (332 of 684 in the
+  -- OneKEF data): the school's most active trainer, i.e. the trainer of that
+  -- school with the most distinct classroom members. `trainerid ASC` keeps the
+  -- pick deterministic when two trainers are equally active.
+  SELECT school_id, trainerid FROM (
+    SELECT tr.open_school AS school_id, x.trainerid,
+           ROW_NUMBER() OVER (PARTITION BY tr.open_school
+                              ORDER BY COUNT(DISTINCT cu.userid) DESC, x.trainerid ASC) AS rn
+    FROM mdl_user tr
+    JOIN mdl_local_classroom_trainers x ON x.trainerid = tr.id
+    JOIN mdl_local_classroom_users cu  ON cu.classroomid = x.classroomid
+    WHERE tr.open_school > 0
+      AND tr.open_school IN (SELECT u.open_school FROM mdl_user u
+                             WHERE u.id IN (SELECT userid FROM stu))
+    GROUP BY tr.open_school, x.trainerid
+  ) z
+  WHERE rn = 1
+),
+teacher_link AS (
+  -- Direct classroom link wins; the school trainer is used only when the
+  -- beneficiary has no classroom trainer at all.
+  SELECT t.userid, t.trainerid FROM teach t
+  UNION ALL
+  SELECT s.userid, sp.trainerid
+  FROM stu s
+  JOIN mdl_user su ON su.id = s.userid
+  JOIN school_primary sp ON sp.school_id = su.open_school
+  WHERE NOT EXISTS (SELECT 1 FROM teach t2 WHERE t2.userid = s.userid)
 )
 SELECT
   s.pair_key,
@@ -221,7 +251,7 @@ SELECT
 FROM stu s
 JOIN mdl_user u               ON u.id = s.userid
 LEFT JOIN mdl_local_school ss ON ss.id = u.open_school
-LEFT JOIN teach t             ON t.userid = s.userid
+LEFT JOIN teacher_link t      ON t.userid = s.userid
 LEFT JOIN mdl_user tu         ON tu.id = t.trainerid
 LEFT JOIN mdl_local_school ts ON ts.id = tu.open_school;
 
@@ -271,3 +301,20 @@ LEFT JOIN mdl_assign_submission sub
       AND sub.latest = 1 AND sub.status = 'submitted'
 LEFT JOIN mdl_assignfeedback_comments afc ON afc.grade = ag.id
 WHERE ag.grade >= 0;
+
+-- ---------------------------------------------------------------------------
+-- Learner variant of the baseline/endline report.
+--
+-- `kpi7_baseline_endline_teacher` is scoped by `teacher_username` on the
+-- management dashboard. Re-using the same dataset for the learner dashboard
+-- means two mapped columns on one dataset, and the row filter then depends on
+-- the OR/AND setting stored per dataset. This thin wrapper keeps the learner
+-- report mapping a single column (`student_username`) so scoping is unambiguous.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW auditonekef.kpi7_learner_baseline_endline AS
+SELECT pair_key, survey_label, baseline_course, endline_course,
+       teacher_id, teacher_name, teacher_username, teacher_school,
+       student_id, student_name, student_username, student_school,
+       baseline_pct, endline_pct, gain_pct,
+       teacher_avg_baseline_pct, teacher_avg_endline_pct, teacher_student_count
+FROM auditonekef.kpi7_baseline_endline_teacher;
