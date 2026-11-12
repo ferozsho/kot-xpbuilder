@@ -84,6 +84,11 @@ type Props = {
   onAddMetric: (metric: MetricRef) => void;
   onRemoveMetric: (index: number) => void;
   onUpdateMetric: (index: number, metric: MetricRef) => void;
+  /**
+   * Add every column of every selected dataset as a detail field at once
+   * (the designer equivalent of `SELECT *`).
+   */
+  onAddAll?: () => void;
 };
 
 function datasetLabel(datasets: DatasetOption[], id: number): string {
@@ -94,11 +99,13 @@ function datasetLabel(datasets: DatasetOption[], id: number): string {
 function DropBand({
   title,
   icon,
+  action,
   children,
   onDropField,
 }: {
   title: string;
   icon?: React.ReactNode;
+  action?: React.ReactNode;
   children: React.ReactNode;
   onDropField: (payload: DragPayload) => void;
 }) {
@@ -122,6 +129,7 @@ function DropBand({
       <StyledBandTitle>
         {icon}
         {title}
+        {action}
       </StyledBandTitle>
       {children}
     </StyledBand>
@@ -141,12 +149,22 @@ export default function FieldsPanel({
   onAddMetric,
   onRemoveMetric,
   onUpdateMetric,
+  onAddAll,
 }: Props) {
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <DropBand
         title={t('Detail fields')}
         icon={<Icons.UnorderedListOutlined />}
+        action={
+          onAddAll ? (
+            <Tooltip title={t('Add every column of the selected tables')}>
+              <Button size="small" type="link" onClick={onAddAll}>
+                {t('All fields')}
+              </Button>
+            </Tooltip>
+          ) : undefined
+        }
         onDropField={payload =>
           onAddColumn({
             dataset: payload.dataset,

@@ -104,6 +104,12 @@ type Props = {
    */
   onSyncTables?: (databaseId?: number) => void;
   syncing?: boolean;
+  /**
+   * Append every column of one table to the detail fields in a single action.
+   * Dragging nine columns one by one was the only way to build a full-row
+   * report; this is the "select all" equivalent of `SELECT *`.
+   */
+  onAddAllColumns?: (datasetId: number, columns: string[]) => void;
 };
 
 export default function DatasetPanel({
@@ -113,6 +119,7 @@ export default function DatasetPanel({
   onSelectDataset,
   onSyncTables,
   syncing,
+  onAddAllColumns,
 }: Props) {
   const [databaseFilter, setDatabaseFilter] = useState<string | undefined>();
   // One image serves both modes: hide the Moodle-only actions when the runtime
@@ -257,6 +264,28 @@ export default function DatasetPanel({
                   </Tooltip>
                   <Typography.Text strong>{ds.table_name}</Typography.Text>
                   <Tag>{ds.schema || ds.catalog || 'public'}</Tag>
+                  {onAddAllColumns && ds.columns.length > 0 && (
+                    <Tooltip
+                      title={t(
+                        'Add every column of this table as a detail field',
+                      )}
+                    >
+                      <Button
+                        size="small"
+                        type="link"
+                        onClick={event => {
+                          // Keep the collapse panel from toggling.
+                          event.stopPropagation();
+                          onAddAllColumns(
+                            ds.id,
+                            ds.columns.map(col => col.column_name),
+                          );
+                        }}
+                      >
+                        {t('Add all')}
+                      </Button>
+                    </Tooltip>
+                  )}
                 </Space>
               }
             >

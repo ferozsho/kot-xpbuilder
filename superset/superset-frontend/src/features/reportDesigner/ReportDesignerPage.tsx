@@ -350,6 +350,39 @@ export default function ReportDesignerPage() {
     [definition.columns, updateDefinition],
   );
 
+  /** Append many detail fields at once, skipping ones already present. */
+  const handleAddAllColumns = useCallback(
+    (pairs: Array<{ dataset: number; column: string }>) => {
+      setDefinition(prev => {
+        const seen = new Set(
+          prev.columns.map(item => `${item.dataset}:${item.column}`),
+        );
+        const additions = pairs
+          .filter(pair => !seen.has(`${pair.dataset}:${pair.column}`))
+          .map(pair => ({
+            dataset: pair.dataset,
+            column: pair.column,
+            label: pair.column,
+          }));
+        if (!additions.length) return prev;
+        return { ...prev, columns: [...prev.columns, ...additions] };
+      });
+    },
+    [],
+  );
+
+  const handleAddAllFields = useCallback(() => {
+    const selected = definition.datasets;
+    const pairs: Array<{ dataset: number; column: string }> = [];
+    selected.forEach(ds => {
+      const meta = datasets.find(item => item.id === ds.id);
+      meta?.columns.forEach(col =>
+        pairs.push({ dataset: ds.id, column: col.column_name }),
+      );
+    });
+    handleAddAllColumns(pairs);
+  }, [datasets, definition.datasets, handleAddAllColumns]);
+
   const handleAddGroup = useCallback(
     (field: FieldRef) => {
       const exists = definition.group_by.some(
@@ -593,6 +626,11 @@ export default function ReportDesignerPage() {
             onSelectDataset={handleSelectDataset}
             onSyncTables={handleSyncTables}
             syncing={syncingTables}
+            onAddAllColumns={(datasetId, columnNames) =>
+              handleAddAllColumns(
+                columnNames.map(column => ({ dataset: datasetId, column })),
+              )
+            }
           />
         </StyledLeft>
 
@@ -748,6 +786,7 @@ export default function ReportDesignerPage() {
                     columns={definition.columns}
                     groupBy={definition.group_by}
                     metrics={definition.metrics}
+                    onAddAll={handleAddAllFields}
                     onAddColumn={handleAddColumn}
                     onRemoveColumn={index =>
                       updateDefinition({
