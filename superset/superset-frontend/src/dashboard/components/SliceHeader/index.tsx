@@ -245,7 +245,10 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
       }
     }, [sliceName, width, height, canExplore]);
 
-    const exploreUrl = `/explore/?dashboard_page_id=${dashboardPageId}&slice_id=${slice.slice_id}`;
+    // `dashboard_id` is what the explore bootstrap reads (URL_PARAMS.dashboardId)
+    // to prefill the save modal's dashboard; without it a save from a dashboard
+    // produced a chart that was not attached anywhere.
+    const exploreUrl = `/explore/?dashboard_page_id=${dashboardPageId}&dashboard_id=${dashboardId}&slice_id=${slice.slice_id}`;
 
     const renderExploreLink = (title: string) => (
       <Link

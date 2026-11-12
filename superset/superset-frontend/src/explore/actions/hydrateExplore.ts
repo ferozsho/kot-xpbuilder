@@ -154,9 +154,14 @@ export const hydrateExplore =
       // which will be manipulable by future reducers.
       can_add: findPermission('can_write', 'Chart', user?.roles),
       can_download: findPermission('can_csv', 'Superset', user?.roles),
-      can_overwrite: ensureIsArray(slice?.owners).includes(
-        user?.userId as number,
-      ),
+      // Ownership is the default rule, but a chart published from the Report
+      // Designer is owned only by whoever pressed "Publish", so every other
+      // editor used to fall back to "Save as..." and silently duplicated the
+      // chart. Site admins may always overwrite, which keeps a published
+      // chart stable on its dashboard.
+      can_overwrite:
+        ensureIsArray(slice?.owners).includes(user?.userId as number) ||
+        ensureIsArray(user?.roles).includes('Admin'),
       isDatasourceMetaLoading: false,
       isStarred: false,
       triggerRender: false,

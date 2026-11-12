@@ -265,6 +265,19 @@ test('disables overwrite option for non-owner', () => {
   expect(getByRole('radio', { name: 'Save (Overwrite)' })).toBeDisabled();
 });
 
+test('allows overwrite for an admin who does not own the chart', () => {
+  // Report-Designer published charts are owned only by the publisher, so
+  // without this an admin editing the chart could only "Save as...".
+  const { getByRole } = setup(
+    {},
+    mockStore({
+      ...initialState,
+      user: { userId: 2, roles: ['Admin'] },
+    }),
+  );
+  expect(getByRole('radio', { name: 'Save (Overwrite)' })).not.toBeDisabled();
+});
+
 test('updates slice name and selected dashboard', async () => {
   const dashboardId = mockEvent.value;
   const saveDataset = jest.fn().mockResolvedValue(undefined);

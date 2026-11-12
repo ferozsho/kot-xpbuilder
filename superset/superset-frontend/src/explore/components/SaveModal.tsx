@@ -123,10 +123,13 @@ class SaveModal extends Component<SaveModalProps, SaveModalState> {
   }
 
   canOverwriteSlice(): boolean {
-    return (
-      this.props.slice?.owners?.includes(this.props.user.userId) &&
-      !this.props.slice?.is_managed_externally
-    );
+    const { slice, user } = this.props;
+    // A Report-Designer published chart is owned only by the publisher, so a
+    // second editor could never overwrite it and had to "Save as...", which
+    // left a duplicate chart next to the original one. Admins may overwrite.
+    const isOwner = !!slice?.owners?.includes(user.userId);
+    const isAdmin = (user?.roles ?? []).includes('Admin');
+    return (isOwner || isAdmin) && !slice?.is_managed_externally;
   }
 
   async componentDidMount() {
