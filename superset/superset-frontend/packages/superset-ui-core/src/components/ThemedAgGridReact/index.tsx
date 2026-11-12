@@ -28,6 +28,7 @@ import {
   type FirstDataRenderedEvent,
 } from 'ag-grid-community';
 import { useTheme, useThemeMode } from '@apache-superset/core/theme';
+import { ensureAGGridModules } from './setupAGGridModules';
 
 // Note: With ag-grid v34's new theming API, CSS files are injected automatically
 // Do NOT import 'ag-grid-community/styles/ag-grid.css' or theme CSS files
@@ -84,6 +85,11 @@ export const ThemedAgGridReact = forwardRef<
   { themeOverrides, onGridReady, onFirstDataRendered, ...props },
   ref,
 ) {
+  // Safety net: the embedded bundle and lazily loaded chart plugins never call
+  // setupAGGridModules() themselves, which previously made AG Grid throw
+  // error #272 ("No AG Grid modules are registered!").
+  ensureAGGridModules();
+
   const theme = useTheme();
   const isDarkMode = useThemeMode();
   const containerRef = useRef<AgGridContainerElement>(null);
@@ -234,4 +240,8 @@ export {
 export { AgGridReact } from 'ag-grid-react';
 
 // Export the setup function and default modules for AG-Grid
-export { setupAGGridModules, defaultModules } from './setupAGGridModules';
+export {
+  setupAGGridModules,
+  ensureAGGridModules,
+  defaultModules,
+} from './setupAGGridModules';

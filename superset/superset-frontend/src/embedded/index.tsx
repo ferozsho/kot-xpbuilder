@@ -42,6 +42,7 @@ import { addDangerToast } from 'src/components/MessageToasts/actions';
 import ToastContainer from 'src/components/MessageToasts/ToastContainer';
 import { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
 import setupCodeOverrides from 'src/setup/setupCodeOverrides';
+import { setupAGGridModules } from '@superset-ui/core/components/ThemedAgGridReact';
 import {
   EmbeddedContextProviders,
   getThemeController,
@@ -51,6 +52,9 @@ import { getDataMaskChangeTrigger } from './utils';
 
 setupPlugins();
 setupCodeOverrides({ embedded: true });
+// AG Grid modules are registered per JS bundle; the embedded entry needs its
+// own registration or grids throw error #272 (e.g. the "Chart Data" modal).
+setupAGGridModules();
 
 const debugMode = process.env.WEBPACK_MODE === 'development';
 const bootstrapData = getBootstrapData();

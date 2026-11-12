@@ -63,6 +63,27 @@ export const defaultModules: Module[] = [
   CustomFilterModule,
 ];
 
+/**
+ * Tracks whether the default modules have been registered already. Registration
+ * happens per JS bundle, so every entry point (SPA, embedded, plugins) needs it.
+ */
+let modulesRegistered = false;
+
 export const setupAGGridModules = (additionalModules: Module[] = []) => {
   ModuleRegistry.registerModules([...defaultModules, ...additionalModules]);
+  modulesRegistered = true;
+};
+
+/**
+ * Registers the default AG Grid modules if they have not been registered yet.
+ *
+ * This is a safety net for entry points that never call
+ * `setupAGGridModules()` explicitly (e.g. the embedded dashboard bundle) and
+ * for lazily loaded chart plugins. Without any registered module AG Grid
+ * throws error #272 ("No AG Grid modules are registered!").
+ */
+export const ensureAGGridModules = () => {
+  if (!modulesRegistered) {
+    setupAGGridModules();
+  }
 };
