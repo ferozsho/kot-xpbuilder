@@ -562,6 +562,20 @@ def publish_report(
     chart = None
     if report.chart_id:
         chart = db.session.get(Slice, report.chart_id)
+    if chart is None:
+        # The stored chart id can go stale (chart deleted out of band). Adopt a
+        # chart with the same name on the same dataset instead of creating a
+        # second one, otherwise the old chart stays attached to the dashboard
+        # and the report ends up with two copies of the same panel.
+        chart = (
+            db.session.query(Slice)
+            .filter(
+                Slice.slice_name == slice_name,
+                Slice.datasource_id == dataset.id,
+            )
+            .order_by(Slice.id.asc())
+            .first()
+        )
     created = chart is None
     if created:
         chart = Slice(
