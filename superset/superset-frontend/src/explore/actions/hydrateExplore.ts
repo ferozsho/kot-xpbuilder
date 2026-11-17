@@ -46,6 +46,7 @@ import { getDatasourceUid } from 'src/utils/getDatasourceUid';
 import { getUrlParam } from 'src/utils/urlUtils';
 import { URL_PARAMS } from 'src/constants';
 import { findPermission } from 'src/utils/findPermission';
+import { isUserAdmin } from 'src/dashboard/util/permissionUtils';
 
 enum ColorSchemeType {
   CATEGORICAL = 'CATEGORICAL',
@@ -159,9 +160,12 @@ export const hydrateExplore =
       // editor used to fall back to "Save as..." and silently duplicated the
       // chart. Site admins may always overwrite, which keeps a published
       // chart stable on its dashboard.
+      //
+      // `user.roles` is an object map (`{Admin: [[perm, view], ...]}`), so the
+      // admin test goes through `isUserAdmin`, never `.includes`.
       can_overwrite:
         ensureIsArray(slice?.owners).includes(user?.userId as number) ||
-        ensureIsArray(user?.roles).includes('Admin'),
+        isUserAdmin(user),
       isDatasourceMetaLoading: false,
       isStarred: false,
       triggerRender: false,

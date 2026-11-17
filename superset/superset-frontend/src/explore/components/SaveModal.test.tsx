@@ -268,14 +268,29 @@ test('disables overwrite option for non-owner', () => {
 test('allows overwrite for an admin who does not own the chart', () => {
   // Report-Designer published charts are owned only by the publisher, so
   // without this an admin editing the chart could only "Save as...".
+  // `roles` is the REAL bootstrap shape: an object map, not an array.
   const { getByRole } = setup(
     {},
     mockStore({
       ...initialState,
-      user: { userId: 2, roles: ['Admin'] },
+      user: { userId: 2, permissions: {}, roles: { Admin: [] } },
     }),
   );
   expect(getByRole('radio', { name: 'Save (Overwrite)' })).not.toBeDisabled();
+});
+
+test('does not throw when the user has no roles', () => {
+  // Regression: `user.roles` was passed to `.includes`, which threw
+  // "TypeError: ... .includes is not a function" and blanked the modal.
+  const { getByRole } = setup(
+    {},
+    mockStore({
+      ...initialState,
+      user: { userId: 2, permissions: {} },
+    }),
+  );
+  expect(getByRole('dialog', { name: 'Save chart' })).toBeInTheDocument();
+  expect(getByRole('radio', { name: 'Save as...' })).toBeChecked();
 });
 
 test('updates slice name and selected dashboard', async () => {

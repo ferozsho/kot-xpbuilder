@@ -48,7 +48,10 @@ import {
 } from '@apache-superset/core/theme';
 import { Radio } from '@superset-ui/core/components/Radio';
 import { GRID_COLUMN_COUNT } from 'src/dashboard/util/constants';
-import { canUserEditDashboard } from 'src/dashboard/util/permissionUtils';
+import {
+  canUserEditDashboard,
+  isUserAdmin,
+} from 'src/dashboard/util/permissionUtils';
 import { setSaveChartModalVisibility } from 'src/explore/actions/saveModalActions';
 import { SaveActionType, ChartStatusType } from 'src/explore/types';
 import { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
@@ -127,9 +130,12 @@ class SaveModal extends Component<SaveModalProps, SaveModalState> {
     // A Report-Designer published chart is owned only by the publisher, so a
     // second editor could never overwrite it and had to "Save as...", which
     // left a duplicate chart next to the original one. Admins may overwrite.
+    //
+    // `user.roles` is an object map (`{Admin: [[perm, view], ...]}`), never an
+    // array: calling `.includes` on it threw "... .includes is not a function"
+    // in this constructor and broke the Save dialog for every user.
     const isOwner = !!slice?.owners?.includes(user.userId);
-    const isAdmin = (user?.roles ?? []).includes('Admin');
-    return (isOwner || isAdmin) && !slice?.is_managed_externally;
+    return (isOwner || isUserAdmin(user)) && !slice?.is_managed_externally;
   }
 
   async componentDidMount() {
