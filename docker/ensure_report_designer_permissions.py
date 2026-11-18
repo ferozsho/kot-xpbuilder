@@ -9,7 +9,13 @@ permission on ``ReportDesigner`` (``can_<method name>``):
   ``XPBUILDER_MOODLE_INTEGRATION=true``);
 * ``POST /reportdesigner/api/prepare_table/`` → ``can_api_prepare_table`` (the
   Moodle "Sync DB" pass creates each staging table from the source schema
-  before any rows are copied).
+  before any rows are copied);
+* ``POST /reportdesigner/api/apply_delta/`` → ``can_api_apply_delta`` (the
+  incremental pass upserts the rows that changed and deletes the ones that
+  disappeared);
+* ``POST /reportdesigner/api/table_stats/`` → ``can_api_table_stats`` (row
+  counts and highest keys of the copy, so the pass knows whether it has to
+  send a delete pass at all).
 
 Flask-AppBuilder creates those rows only when the permission sync runs, and it
 never grants them to existing roles afterwards — so on a deployment whose role
@@ -49,6 +55,8 @@ from superset.app import create_app
 PERMISSIONS = (
     "can_api_sync_tables",
     "can_api_prepare_table",
+    "can_api_apply_delta",
+    "can_api_table_stats",
 )
 VIEW_MENU = "ReportDesigner"
 

@@ -548,6 +548,91 @@ class ReportDesignerView(BaseSupersetView):
             logger.exception("Failed to prepare staging table")
             return json_error_response(utils.error_msg_from_exception(ex), 400)
 
+    @expose("/api/apply_delta/", methods=("POST",))
+    @has_access_api
+    def api_apply_delta(self) -> FlaskResponse:
+        """Merge a changed-rows CSV into a table the sync already created.
+
+        The Moodle "Sync DB" pass sends only the rows that changed since its
+        last successful pass; this endpoint upserts them (``mode=upsert``) or
+        deletes the rows that no longer exist on the source (``mode=prune``).
+        ``mode=replace`` keeps the historic whole-file behaviour.
+        """
+        from superset.views.report_designer.delta_apply import (
+            apply_delta,
+            DeltaError,
+        )
+
+        try:
+            database_id = int(request.form.get("database_id") or 0)
+            table = (request.form.get("table") or "").strip()
+            schema = (
+                (request.form.get("schema") or "").replace("\n", "").replace("\r", "").strip()
+                or None
+            )
+            key = (request.form.get("key") or "").strip()
+            mode = (request.form.get("mode") or "upsert").lower()
+            file_storage = request.files.get("file")
+            if file_storage is None:
+                return json_error_response(_("No file provided"), 400)
+            database = db.session.get(Database, database_id) if database_id else None
+            if database is None:
+                return json_error_response(_("Database not found"), 400)
+            if not table:
+                return json_error_response(_("Table name is required"), 400)
+            payload = apply_delta(
+                database,
+                table,
+                schema,
+                file_storage.stream,
+                key,
+                mode=mode,
+            )
+            return self.json_response(payload, 200)
+        except (DeltaError, ValueError) as ex:
+            db.session.rollback()
+            return json_error_response(str(ex), 400)
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Failed to apply a delta")
+            return json_error_response(utils.error_msg_from_exception(ex), 400)
+
+    @expose("/api/table_stats/", methods=("POST",))
+    @has_access_api
+    def api_table_stats(self) -> FlaskResponse:
+        """Row counts and highest keys of the staged tables, in one request.
+
+        The prune pass has to know whether the source and the copy disagree
+        before it sends a single key, and asking per table would cost one
+        request per table per pass.
+        """
+        from superset.views.report_designer.delta_apply import (
+            table_stats,
+            DeltaError,
+        )
+
+        try:
+            payload = request.get_json(silent=True) or {}
+            database_id = int(payload.get("database_id") or 0)
+            schema = (
+                str(payload.get("schema") or "").replace("\n", "").replace("\r", "").strip()
+                or None
+            )
+            tables = payload.get("tables") or []
+            if not isinstance(tables, list):
+                return json_error_response(_("tables must be a list"), 400)
+            database = db.session.get(Database, database_id) if database_id else None
+            if database is None:
+                return json_error_response(_("Database not found"), 400)
+            return self.json_response({"result": table_stats(database, schema, tables)}, 200)
+        except (DeltaError, ValueError) as ex:
+            db.session.rollback()
+            return json_error_response(str(ex), 400)
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Failed to read staged table stats")
+            return json_error_response(utils.error_msg_from_exception(ex), 400)
+
     @expose("/api/upload/", methods=("POST",))
     @has_access_api
     def api_upload(self) -> FlaskResponse:
